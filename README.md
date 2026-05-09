@@ -51,7 +51,7 @@ speccraft is **deliberately small in scope**. For codebase-wide structural queri
 In a Claude Code session:
 
 ```
-/plugin marketplace add <owner>/speccraft
+/plugin marketplace add dcstolf/speccraft
 /plugin install speccraft@speccraft
 ```
 

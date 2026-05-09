@@ -619,11 +619,11 @@ speccraft/
   "version": "1.0.0",
   "description": "Spec-first, test-driven development with cross-model review and regex-enforced guardrails for Claude Code.",
   "author": {
-    "name": "<author>",
-    "url": "https://github.com/<owner>/speccraft"
+    "name": "Daniel Stolf <daniel.stolf@perforce.com>",
+    "url": "https://github.com/dcstolf/speccraft"
   },
   "license": "MIT",
-  "homepage": "https://github.com/<owner>/speccraft",
+  "homepage": "https://github.com/dcstolf/speccraft",
   "keywords": ["spec", "tdd", "code-review", "delegation", "go"]
 }
 ```
@@ -1885,7 +1885,7 @@ set -euo pipefail
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$PLUGIN_DIR/bin"
 VERSION_FILE="$PLUGIN_DIR/.binary-version"
-RELEASE_BASE="https://github.com/<owner>/speccraft/releases/download"
+RELEASE_BASE="https://github.com/dcstolf/speccraft/releases/download"
 
 EXPECTED="$(jq -r '.version' "$PLUGIN_DIR/.claude-plugin/plugin.json")"
 INSTALLED="$([ -f "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo "none")"
@@ -1957,7 +1957,7 @@ EOF
 exit 1
 ```
 
-The `<owner>` placeholder is filled in at release time. The script is idempotent and safe to call from every `SessionStart` — the fast path is a single `cat` and a string compare.
+The owner (`dcstolf`) is already substituted in this file. The script is idempotent and safe to call from every `SessionStart` — the fast path is a single `cat` and a string compare.
 
 ---
 
