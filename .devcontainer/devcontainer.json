@@ -1,0 +1,65 @@
+{
+  "name": "speccraft-dev",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+
+  "features": {
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+  },
+
+  // Named volume keeps ~/.claude (OAuth token, settings, session history)
+  // across rebuilds. ${devcontainerId} scopes it per-project so multiple
+  // speccraft checkouts don't share auth state.
+  // SECURITY: do NOT bind-mount the host's ~/.claude. See:
+  // https://code.claude.com/docs/en/devcontainer
+  "mounts": [
+    "source=speccraft-claude-config-${devcontainerId},target=/home/vscode/.claude,type=volume"
+  ],
+
+  "containerEnv": {
+    // Skip telemetry from the dev environment.
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+
+    // For non-interactive e2e runs, set this in a .env.devcontainer file
+    // (gitignored) using `claude setup-token` on your Mac:
+    //   echo "CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)" > ~/.env.devcontainer
+    // Then uncomment the next line. For interactive use, leave it out and
+    // run `claude` once inside the container to do the browser flow.
+    // "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+
+    // Aux-agent tokens (only for tests against real agents; mocked by default).
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY:}",
+
+    // speccraft dev knobs.
+    "SPECCRAFT_LOG_LEVEL": "debug"
+  },
+
+  "remoteUser": "vscode",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "go.toolsManagement.autoUpdate": false,
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+
+  // Useful when iterating on the plugin: rebuild binaries on every container
+  // start (cheap; <2s if cache is warm).
+  "postStartCommand": "bash scripts/install-binaries.sh || true",
+
+  // Forward nothing by default. Speccraft has no network services.
+  "forwardPorts": [],
+
+  // Workspace mount. Default behavior is fine; documented here for clarity.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/speccraft,type=bind,consistency=cached",
+  "workspaceFolder": "/workspaces/speccraft"
+}
