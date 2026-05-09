@@ -527,6 +527,36 @@ See [SPEC.md](./speccraft-v1-spec.md) for the full v1 spec and detailed roadmap 
 
 ---
 
+## Development
+
+speccraft is developed inside its own devcontainer. This ensures that buggy hooks under development can't lock up unrelated Claude Code sessions on your host machine.
+
+**Prerequisites:** VS Code with the Dev Containers extension installed.
+
+1. Clone the repo and open it in VS Code.
+2. `Cmd+Shift+P` → `Dev Containers: Reopen in Container`. The container installs Go, jq, bats, and mock aux-agent CLIs automatically.
+3. **Authenticate Claude Code inside the container** (one-time): run `claude` in the integrated terminal and complete the browser flow. The OAuth token lands in a named Docker volume and persists across `Rebuild Container`.
+4. Start a Claude Code session *inside the container*. All hook development and testing happens here — never against the host.
+
+**Run tests inside the container:**
+
+```bash
+# Go unit tests
+cd tools && go test ./...
+
+# Hook tests (bats)
+bats tests/hooks/
+
+# End-to-end lifecycle
+bash tests/e2e/run.sh
+```
+
+`KEEP_TEST_DIR=1 bash tests/e2e/run.sh` preserves the throwaway Go module on failure for inspection.
+
+**Non-interactive e2e (CI / no browser):** run `claude setup-token` on the host, store the result in `~/.env.devcontainer` (gitignored), and uncomment `CLAUDE_CODE_OAUTH_TOKEN` in `.devcontainer/devcontainer.json`.
+
+---
+
 ## Contributing
 
 speccraft is dogfood: it's developed in a speccraft-managed repo. The spec for v1 is itself a speccraft spec at `specs/0001-speccraft-v1/`.

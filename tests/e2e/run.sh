@@ -102,7 +102,6 @@ exists ".speccraft/history.md"
 exists ".speccraft/agents.toml"
 exists ".speccraft/state.json"
 exists "specs/.gitkeep"
-contains ".gitignore" ".speccraft/graph"
 contains ".gitignore" ".speccraft/state.json"
 
 # ---- 4. /spec:new ----

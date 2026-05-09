@@ -8,7 +8,7 @@ ARG NODE_VERSION=20
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System packages: build chain (CGO + tree-sitter), test prereqs, helpers.
+# System packages: build chain, test prereqs, helpers.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
@@ -39,6 +39,8 @@ ENV PATH=/home/vscode/go/bin:/usr/local/go/bin:${PATH}
 RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+#RUN sed -i '/^::1.*localhost/d' /etc/hosts
 
 # Optional: pre-install Codex/OpenCode if you want real-agent tests in the
 # container. Commented out by default to keep the image lean and tests

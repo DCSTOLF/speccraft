@@ -1,0 +1,12 @@
+{
+  "name": "speccraft",
+  "version": "1.0.0",
+  "description": "Spec-first, test-driven development with cross-model review and regex-enforced guardrails for Claude Code.",
+  "author": {
+    "name": "Daniel Stolf <daniel.stolf@perforce.com>",
+    "url": "https://github.com/dcstolf/speccraft"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/dcstolf/speccraft",
+  "keywords": ["spec", "tdd", "code-review", "delegation", "go"]
+}

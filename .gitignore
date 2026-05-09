@@ -1,0 +1,16 @@
+# Helper binaries — populated by install-binaries.sh at runtime
+bin/*
+!bin/.gitkeep
+.binary-version
+
+# Runtime state — machine state, not project intent
+.speccraft/state.json
+
+# Devcontainer local env (auth tokens, secrets)
+.env.devcontainer
+
+# E2E test logs
+tests/e2e/.logs/
+
+# Go build artifacts
+tools/bin/

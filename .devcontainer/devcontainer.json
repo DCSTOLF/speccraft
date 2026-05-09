@@ -26,7 +26,7 @@
     //   echo "CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)" > ~/.env.devcontainer
     // Then uncomment the next line. For interactive use, leave it out and
     // run `claude` once inside the container to do the browser flow.
-    // "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
 
     // Aux-agent tokens (only for tests against real agents; mocked by default).
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY:}",
