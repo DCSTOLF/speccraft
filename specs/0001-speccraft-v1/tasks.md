@@ -24,11 +24,11 @@ spec: "0001"
 
 ## Phase 1 — SessionStart skill + hook
 
-- [ ] T1.1 — speccraft-context SKILL.md
-- [ ] T1.2 — hooks.json (SessionStart)
-- [ ] T1.3 — session-start.sh (no binary deps)
-- [ ] T1.4 — index.md template
-- [ ] T1.5 — manual test: index.md content in session
+- [x] T1.1 — speccraft-context SKILL.md
+- [x] T1.2 — hooks.json (all hooks registered; non-Phase-1 scripts are stubs)
+- [x] T1.3 — session-start.sh (pure-bash root-walk; falls back to binary when available)
+- [x] T1.4 — index.md template
+- [ ] T1.5 — manual test: index.md content in session (needs user verification)
 
 ## Phase 2 — /speccraft:init and templates
 
