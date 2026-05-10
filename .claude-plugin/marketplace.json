@@ -1,0 +1,15 @@
+{
+  "name": "speccraft",
+  "owner": {
+    "name": "dcstolf",
+    "url": "https://github.com/dcstolf/speccraft"
+  },
+  "plugins": [
+    {
+      "name": "speccraft",
+      "source": ".",
+      "description": "Spec-first, test-driven development with cross-model review for Claude Code.",
+      "version": "1.0.0"
+    }
+  ]
+}
