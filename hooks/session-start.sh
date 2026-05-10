@@ -10,8 +10,7 @@ export PATH="${CLAUDE_PLUGIN_ROOT}/bin:$PATH"
 "${CLAUDE_PLUGIN_ROOT}/scripts/install-binaries.sh" >&2
 
 # Find .speccraft/ by walking up from cwd.
-# Phase 1: no binary yet — use a pure-bash walk. Phase 2 replaces this with
-# `speccraft-state find-root`.
+# Use the binary when available; fall back to pure-bash walk.
 find_speccraft_root() {
   local dir="${PWD}"
   while [ "$dir" != "/" ]; do
@@ -24,7 +23,11 @@ find_speccraft_root() {
   return 1
 }
 
-ROOT="$(find_speccraft_root 2>/dev/null || true)"
+if command -v speccraft-state >/dev/null 2>&1; then
+  ROOT="$(speccraft-state find-root 2>/dev/null || true)"
+else
+  ROOT="$(find_speccraft_root 2>/dev/null || true)"
+fi
 if [ -z "$ROOT" ]; then
   # Not a speccraft repo. Quietly succeed.
   exit 0

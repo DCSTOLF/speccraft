@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-latest
+          - os: macos
+            arch: amd64
+            runner: macos-13
+          - os: macos
+            arch: arm64
+            runner: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: tools/go.sum
+
+      - name: Build binaries
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.os == 'macos' && 'darwin' || matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        working-directory: tools
+        run: |
+          mkdir -p dist
+          for cmd in speccraft-state speccraft-guard speccraft-drift; do
+            go build -o dist/$cmd ./cmd/$cmd
+          done
+
+      - name: Create tarball
+        env:
+          VERSION: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.os }}-${{ matrix.arch }}
+        run: |
+          cd tools/dist
+          TARBALL="speccraft-${VERSION#v}-${PLATFORM}.tar.gz"
+          tar -czf "$TARBALL" speccraft-state speccraft-guard speccraft-drift
+          sha256sum "$TARBALL" >> checksums.txt
+          echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: speccraft-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            tools/dist/*.tar.gz
+            tools/dist/checksums.txt
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Merge checksums
+        run: cat dist/checksums.txt | sort | uniq > dist/checksums-merged.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums-merged.txt
+          name: speccraft ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
