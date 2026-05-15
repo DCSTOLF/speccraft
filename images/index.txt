@@ -1,0 +1,2 @@
+speccraft-logo.png
+speccraft-logo-transparent.png
