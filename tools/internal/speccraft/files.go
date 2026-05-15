@@ -1,20 +1,28 @@
 package speccraft
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 )
 
-// IsTestFile returns true for Go test files (*_test.go).
+// IsTestFile returns true for Go or Python test files.
 func IsTestFile(path string) bool {
 	base := filepath.Base(path)
-	return strings.HasSuffix(base, "_test.go")
+	return strings.HasSuffix(base, "_test.go") ||
+		strings.HasSuffix(base, "_test.py") ||
+		(strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py"))
 }
 
 // IsProductionGoFile returns true for Go source files that are not tests.
 func IsProductionGoFile(path string) bool {
 	base := filepath.Base(path)
 	return strings.HasSuffix(base, ".go") && !strings.HasSuffix(base, "_test.go")
+}
+
+// IsProductionPythonFile returns true for Python source files that are not tests.
+func IsProductionPythonFile(path string) bool {
+	return strings.HasSuffix(path, ".py") && !IsTestFile(path)
 }
 
 // IsAlwaysAllowed returns true for paths that bypass the TDD invariant:
@@ -44,12 +52,69 @@ func IsAlwaysAllowed(root, absPath string) bool {
 		rel == "specs"
 }
 
-// SiblingTestFiles returns all *_test.go files in the same directory as path.
-func SiblingTestFiles(path string) ([]string, error) {
+// SiblingTestFiles returns test files that cover path using a two-tier lookup.
+//
+// Tier 1 — same-directory siblings (language-appropriate globs):
+//   - Go:     *_test.go
+//   - Python: test_*.py, *_test.py
+//
+// Tier 2 — configured test roots (Python only, only when tier 1 finds nothing):
+// each root under repoRoot is walked recursively; files whose base name is
+// test_<stem>.py or <stem>_test.py are collected.
+//
+// Pass nil/empty testRoots to get tier-1-only behaviour (same as pre-0003).
+// Go files are never affected by testRoots.
+func SiblingTestFiles(path, repoRoot string, testRoots []string) ([]string, error) {
 	dir := filepath.Dir(path)
-	matches, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
-	if err != nil {
-		return nil, err
+	isPython := strings.ToLower(filepath.Ext(path)) == ".py"
+
+	var patterns []string
+	if isPython {
+		patterns = []string{
+			filepath.Join(dir, "test_*.py"),
+			filepath.Join(dir, "*_test.py"),
+		}
+	} else {
+		patterns = []string{filepath.Join(dir, "*_test.go")}
 	}
-	return matches, nil
+
+	seen := make(map[string]struct{})
+	var results []string
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range matches {
+			if _, ok := seen[m]; !ok {
+				seen[m] = struct{}{}
+				results = append(results, m)
+			}
+		}
+	}
+
+	// Tier 2: walk configured test roots for a stem match.
+	if len(results) == 0 && isPython && len(testRoots) > 0 {
+		stem := strings.TrimSuffix(filepath.Base(path), ".py")
+		want1 := "test_" + stem + ".py"
+		want2 := stem + "_test.py"
+		for _, rel := range testRoots {
+			absRoot := filepath.Join(repoRoot, rel)
+			_ = filepath.Walk(absRoot, func(p string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return nil
+				}
+				base := filepath.Base(p)
+				if base == want1 || base == want2 {
+					if _, ok := seen[p]; !ok {
+						seen[p] = struct{}{}
+						results = append(results, p)
+					}
+				}
+				return nil
+			})
+		}
+	}
+
+	return results, nil
 }

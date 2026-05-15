@@ -488,7 +488,18 @@ Complementary. `.speccraft/index.md` is the always-injected one-pager — simila
 Yes. Skip `/spec:review` and `/spec:review-code`. Everything else (specs, TDD enforcement, memory) works without a single external CLI configured.
 
 **Can I use it in a non-Go repo?**
-Spec workflows, memory injection, and drift detection (regex mode) all work language-agnostically. The TDD invariant uses a Go-specific sibling-test heuristic in v1 (same-directory `*_test.go`); for non-Go repos in v1, you can run with `SPECCRAFT_TDD_MODE=soft` until per-language sibling resolvers land in v1.x.
+Spec workflows, memory injection, and drift detection (regex mode) all work language-agnostically. TDD enforcement supports Go and Python:
+
+- **Go:** same-directory `*_test.go` sibling (no config needed).
+- **Python, colocated tests:** `test_bar.py` or `bar_test.py` beside `bar.py` (no config needed).
+- **Python, separate `tests/` tree:** add `.speccraft/speccraft.toml`:
+  ```toml
+  [tdd]
+  test_roots = ["tests"]
+  ```
+  `/speccraft:init` detects `tests/` and `test/` at the repo root and offers to write this file automatically.
+
+For other languages, set `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings.
 
 **What happens to specs after a spec is closed?**
 They stay in `specs/`, marked `status: closed`. They become history. `/speccraft:sync` can `archive` very old closed specs (move under `specs/archive/`) but it never deletes them — they're git-versioned and serve as a record of decisions.

@@ -36,6 +36,25 @@ Steps:
    {"version":1,"active_spec":null,"session":{"id":"","edited_test_files":[],"edited_prod_files":[]}}
    ```
 
+7a. **Detect Python test roots.** Check whether `tests/` or `test/` exists at the
+    repo root (in that order). If found, ask the user:
+
+    ```
+    Detected test directory: <name>/
+    Add to .speccraft/speccraft.toml as a Python TDD test root? [Y/n]
+    ```
+
+    - If the user confirms, write `.speccraft/speccraft.toml`:
+      ```toml
+      [tdd]
+      test_roots = ["<name>"]
+      ```
+      and add `speccraft.toml` to the printed file list in step 10.
+    - If the user declines, or neither directory is found, do not create
+      `speccraft.toml` (same-directory sibling behaviour applies by default).
+    - If both `tests/` and `test/` exist, prefer `tests/` and mention both in
+      the prompt so the user can correct it manually if needed.
+
 8. Open `.speccraft/index.md`, `.speccraft/architecture.md`, and
    `.speccraft/conventions.md` in the conversation. Ask the user to fill in:
    - **Project name and description** (one sentence)

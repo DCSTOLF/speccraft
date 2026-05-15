@@ -76,6 +76,7 @@ func preToolUse() error {
 		// Not a speccraft repo → allow.
 		return nil
 	}
+	cfg := speccraft.ReadConfig(root)
 
 	// Rule 1: outside repo → allow.
 	rel, err := filepath.Rel(root, absPath)
@@ -94,8 +95,8 @@ func preToolUse() error {
 		return nil
 	}
 
-	// Rule 4: production Go file → check active spec + TDD invariant.
-	if speccraft.IsProductionGoFile(absPath) {
+	// Rule 4: production file (Go or Python) → check active spec + TDD invariant.
+	if speccraft.IsProductionGoFile(absPath) || speccraft.IsProductionPythonFile(absPath) {
 		state, err := speccraft.LoadState(root)
 		if err != nil {
 			return nil
@@ -119,7 +120,7 @@ func preToolUse() error {
 		}
 
 		// TDD invariant: check sibling tests.
-		siblings, _ := speccraft.SiblingTestFiles(absPath)
+		siblings, _ := speccraft.SiblingTestFiles(absPath, root, cfg.TDD.TestRoots)
 		dir := filepath.Dir(absPath)
 		editedTests := state.Session.EditedTestFiles
 
@@ -132,7 +133,7 @@ func preToolUse() error {
 				}
 			}
 			return fmt.Errorf(
-				"TDD invariant: edit a test in %s/ this session before editing\n"+
+				"TDD invariant: edit a sibling test in %s/ this session before editing\n"+
 					"the production file.\n\n"+
 					"If no test exists yet, create one (RED) first.\n"+
 					"Sibling test files found:%s\n\n"+
