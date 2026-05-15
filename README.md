@@ -1,4 +1,4 @@
-# speccraft
+![speccraft logo](images/speccraft-logo.png) 
 
 > Spec-first, test-driven development for [Claude Code](https://claude.com/code).
 > Versioned intent. Auto-injected memory. Cross-model review. Hook-enforced TDD.
