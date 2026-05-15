@@ -1,2 +1,3 @@
 speccraft-logo.png
 speccraft-logo-transparent.png
+speccraft-logo-banner.png
