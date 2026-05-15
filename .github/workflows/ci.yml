@@ -58,8 +58,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install devcontainer CLI
         run: npm install -g @devcontainers/cli
-      - name: Build devcontainer
-        run: devcontainer build --workspace-folder .
+      - name: Start devcontainer
+        run: devcontainer up --workspace-folder .
       - name: Run e2e tests
         run: |
           devcontainer exec --workspace-folder . bash tests/e2e/run.sh
