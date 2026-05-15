@@ -52,10 +52,11 @@ In a Claude Code session:
 
 ```
 /plugin marketplace add dcstolf/speccraft
-/plugin install speccraft@speccraft
+/plugin install speccraft@dcstolf-tools
+/reload-plugins
 ```
 
-Restart Claude Code, then in your project root:
+Then in your project root:
 
 ```
 /speccraft:init
