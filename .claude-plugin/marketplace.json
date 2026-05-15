@@ -1,8 +1,9 @@
 {
-  "name": "speccraft",
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "dcstolf-tools",
   "owner": {
     "name": "dcstolf",
-    "url": "https://github.com/dcstolf/speccraft"
+    "url": "https://github.com"
   },
   "plugins": [
     {
