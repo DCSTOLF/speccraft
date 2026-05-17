@@ -40,7 +40,16 @@ echo "==> Plugin:    $PLUGIN_DIR"
 echo "==> Logs:      $LOG_DIR"
 
 # ---- assertion helpers ----
-fail()   { echo "FAIL: $*" >&2; exit 2; }
+LAST_LOG=""
+fail() {
+  echo "FAIL: $*" >&2
+  if [ -n "$LAST_LOG" ] && [ -f "$LOG_DIR/$LAST_LOG" ]; then
+    echo "--- last claude log ($LAST_LOG) ---" >&2
+    cat "$LOG_DIR/$LAST_LOG" >&2
+    echo "--- end log ---" >&2
+  fi
+  exit 2
+}
 pass()   { echo "PASS: $*"; }
 exists() { [ -e "$1" ] || fail "expected to exist: $1"; pass "exists $1"; }
 contains() {
@@ -55,6 +64,7 @@ status_is() {
 
 run_claude() {
   local prompt="$1" log="$2"
+  LAST_LOG="$log"
   echo "    > $prompt"
   "$CLAUDE_BIN" -p \
     --permission-mode bypassPermissions \
