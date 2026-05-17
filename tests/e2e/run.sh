@@ -112,22 +112,22 @@ exists ".speccraft/state.json"
 exists "specs/.gitkeep"
 contains ".gitignore" ".speccraft/state.json"
 
-# ---- 3. /spec:new ----
-echo "==> [3/7] /spec:new"
-run_claude "/spec:new \"Add farewell function\". Answers: why='symmetry with greeting'; what='add farewell() that returns goodbye, called from main'; AC='1) farewell() returns \"goodbye\" 2) main prints both greeting and farewell 3) test covers farewell'; oos='internationalization'; questions=none." 03-new.log
+# ---- 3. /speccraft:spec:new ----
+echo "==> [3/7] /speccraft:spec:new"
+run_claude "/speccraft:spec:new \"Add farewell function\". Answers: why='symmetry with greeting'; what='add farewell() that returns goodbye, called from main'; AC='1) farewell() returns \"goodbye\" 2) main prints both greeting and farewell 3) test covers farewell'; oos='internationalization'; questions=none." 03-new.log
 SPEC_DIR="$(find specs -maxdepth 1 -name '0001-*' -type d 2>/dev/null | head -1)"
 [ -n "$SPEC_DIR" ] || fail "spec dir 0001-* not created"
 exists "$SPEC_DIR/spec.md"
 status_is "$SPEC_DIR/spec.md" "draft"
 
-# ---- 4. /spec:review (with mock agents) ----
-echo "==> [4/7] /spec:review (mock agents)"
-run_claude "/spec:review --agents codex,opencode" 04-review.log
+# ---- 4. /speccraft:spec:review (with mock agents) ----
+echo "==> [4/7] /speccraft:spec:review (mock agents)"
+run_claude "/speccraft:spec:review --agents codex,opencode" 04-review.log
 exists "$SPEC_DIR/review.md"
 
-# ---- 5. /spec:plan ----
-echo "==> [5/7] /spec:plan"
-run_claude "/spec:plan --skip-review" 05-plan.log
+# ---- 5. /speccraft:spec:plan ----
+echo "==> [5/7] /speccraft:spec:plan"
+run_claude "/speccraft:spec:plan --skip-review" 05-plan.log
 exists "$SPEC_DIR/plan.md"
 exists "$SPEC_DIR/tasks.md"
 status_is "$SPEC_DIR/spec.md" "planned"
@@ -145,9 +145,9 @@ contains "main.go" "farewell"
 go test ./... >> "$LOG_DIR/06c-go-test.log" 2>&1 || fail "go test failed after implementation"
 pass "go test passes"
 
-# ---- 7. /spec:close ----
-echo "==> [7/7] /spec:close"
-run_claude "/spec:close. Approve all proposed memory updates." 07-close.log
+# ---- 7. /speccraft:spec:close ----
+echo "==> [7/7] /speccraft:spec:close"
+run_claude "/speccraft:spec:close. Approve all proposed memory updates." 07-close.log
 exists "$SPEC_DIR/changelog.md"
 status_is "$SPEC_DIR/spec.md" "closed"
 contains ".speccraft/history.md" "farewell"
