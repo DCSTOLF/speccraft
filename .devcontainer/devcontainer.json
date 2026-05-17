@@ -21,12 +21,10 @@
     // Skip telemetry from the dev environment.
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 
-    // For non-interactive e2e runs, set this in a .env.devcontainer file
-    // (gitignored) using `claude setup-token` on your Mac:
-    //   echo "CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)" > ~/.env.devcontainer
-    // Then uncomment the next line. For interactive use, leave it out and
-    // run `claude` once inside the container to do the browser flow.
-    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+    // For non-interactive/CI runs, set ANTHROPIC_API_KEY in the environment
+    // (or as a GitHub Actions secret). For interactive use, leave it unset
+    // and run `claude` once inside the container to do the browser flow.
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
 
     // Aux-agent tokens (only for tests against real agents; mocked by default).
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY:}",
