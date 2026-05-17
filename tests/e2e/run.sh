@@ -84,6 +84,8 @@ func TestGreeting(t *testing.T) {
     if greeting() != "hello" { t.Fatal("wrong greeting") }
 }
 GO
+git config user.email "ci@speccraft.test"
+git config user.name "speccraft CI"
 git add . && git commit -qm "initial"
 
 # ---- 2. Install plugin from local path ----
