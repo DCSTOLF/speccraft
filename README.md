@@ -38,7 +38,7 @@ speccraft fixes three specific problems:
 
 - **Intent is ephemeral.** Specs live alongside code under `specs/NNNN-slug/`, version-controlled, written *before* implementation, and reviewed by a second model before code is written.
 - **Project memory is too long for every prompt.** A small `.speccraft/index.md` is auto-injected at session start; deeper files (guardrails, architecture, conventions, history) load on demand.
-- **Reviews are single-model.** `/spec:review` and `/spec:review-code` route to Codex, OpenCode, or any CLI agent you configure, in parallel, and synthesize the verdicts.
+- **Reviews are single-model.** `/speccraft:spec:review` and `/speccraft:spec:review-code` route to Codex, OpenCode, or any CLI agent you configure, in parallel, and synthesize the verdicts.
 
 It also enforces TDD with a hook, not a prompt: edits to production files are blocked unless a sibling `*_test.go` was edited more recently in the same session.
 
@@ -73,37 +73,37 @@ This creates `.speccraft/` and `specs/` in the repo and walks you through person
 In a Go repo, after `/speccraft:init`:
 
 ```
-/spec:new "Add a /healthz endpoint"
+/speccraft:spec:new "Add a /healthz endpoint"
 ```
 
 speccraft interviews you Socratically — *why*, *what*, *acceptance criteria* — and writes `specs/0001-add-a-healthz-endpoint/spec.md`.
 
 ```
-/spec:review
+/speccraft:spec:review
 ```
 
 Codex and OpenCode (whichever you've configured) review the spec in parallel, flag ambiguity, missing edge cases, and untestable criteria. The synthesis lands in `review.md`.
 
 ```
-/spec:plan
+/speccraft:spec:plan
 ```
 
 A test-first plan: each step is RED → GREEN → REFACTOR with concrete file paths and test function names.
 
 ```
-/spec:implement
+/speccraft:spec:implement
 ```
 
 speccraft executes the plan. The TDD hook ensures you write failing tests before production code. Tasks can be delegated:
 
 ```
-/spec:delegate codex "Generate table-driven tests for internal/health/handler.go"
+/speccraft:spec:delegate codex "Generate table-driven tests for internal/health/handler.go"
 ```
 
 When done:
 
 ```
-/spec:close
+/speccraft:spec:close
 ```
 
 A changelog is written, the `memory-keeper` agent proposes additions to `history.md` and `conventions.md`, you approve.
@@ -144,7 +144,7 @@ A complete spec lifecycle, illustrated:
 ### 1. New spec
 
 ```
-> /spec:new "Rate limit public API"
+> /speccraft:spec:new "Rate limit public API"
 
 I'll help you draft this spec. A few questions first.
 
@@ -169,13 +169,13 @@ Open questions?
 
 Drafting spec.md... done.
 Active spec: 0042-rate-limit-public-api
-Next: /spec:review (recommended) or /spec:plan
+Next: /speccraft:spec:review (recommended) or /speccraft:spec:plan
 ```
 
 ### 2. Cross-model review
 
 ```
-> /spec:review
+> /speccraft:spec:review
 
 Routing to: codex, opencode (parallel)
 
@@ -189,13 +189,13 @@ Routing to: codex, opencode (parallel)
 
 Synthesizing...
 Wrote review.md. Status: changes-requested.
-Update spec.md and re-run /spec:review.
+Update spec.md and re-run /speccraft:spec:review.
 ```
 
 ### 3. Plan
 
 ```
-> /spec:plan
+> /speccraft:spec:plan
 
 Scanning packages: internal/http, internal/middleware
 - Existing test files: internal/http/router_test.go, internal/middleware/auth_test.go
@@ -209,7 +209,7 @@ Status: planned.
 ### 4. Implement (TDD-enforced)
 
 ```
-> /spec:implement
+> /speccraft:spec:implement
 
 T1 — Bucket tests (RED)
   Edit internal/middleware/ratelimit/bucket_test.go ✓
@@ -233,7 +233,7 @@ The hook didn't actually block the second attempt — the test *was* already edi
 ### 5. Close
 
 ```
-> /spec:close
+> /speccraft:spec:close
 
 Reading diff from started_at_sha to HEAD...
 All tasks complete (7/7).
@@ -264,14 +264,14 @@ Active spec cleared.
 |---|---|
 | `/speccraft:init` | Bootstrap `.speccraft/` and `specs/` in this repo. |
 | `/speccraft:sync` | Drift scan + memory-keeper audit. Reconcile drift. |
-| `/spec:new "<title>"` | Start a new spec via Socratic interview. |
-| `/spec:review` | Cross-model review of the active spec. |
-| `/spec:plan` | Generate a test-first plan from a reviewed spec. |
-| `/spec:implement` | Execute the active plan TDD-style. |
-| `/spec:delegate <agent> "<task>"` | Hand a discrete task to an aux agent. |
-| `/spec:review-code [--base <ref>]` | Cross-model review of the current diff. |
-| `/spec:close` | Write changelog, propose memory updates, close the spec. |
-| `/spec:override "<reason>"` | One-time bypass of the TDD invariant. Logged. |
+| `/speccraft:spec:new "<title>"` | Start a new spec via Socratic interview. |
+| `/speccraft:spec:review` | Cross-model review of the active spec. |
+| `/speccraft:spec:plan` | Generate a test-first plan from a reviewed spec. |
+| `/speccraft:spec:implement` | Execute the active plan TDD-style. |
+| `/speccraft:spec:delegate <agent> "<task>"` | Hand a discrete task to an aux agent. |
+| `/speccraft:spec:review-code [--base <ref>]` | Cross-model review of the current diff. |
+| `/speccraft:spec:close` | Write changelog, propose memory updates, close the spec. |
+| `/speccraft:spec:override "<reason>"` | One-time bypass of the TDD invariant. Logged. |
 
 Each command takes optional flags; run with `--help` for details.
 
@@ -326,8 +326,8 @@ acp_agent = "codex"
 Agents can be enabled/disabled per call:
 
 ```
-/spec:review --agents codex,opencode
-/spec:delegate claude-p "Refactor internal/foo to use slog"
+/speccraft:spec:review --agents codex,opencode
+/speccraft:spec:delegate claude-p "Refactor internal/foo to use slog"
 ```
 
 ---
@@ -381,7 +381,7 @@ Install CodeGraphContext per its README; once it's a Claude Code MCP server, the
 
 ### rtk (Rust Token Killer) — tool-call token compression
 
-[rtk](https://github.com/rtk-ai/rtk) compresses the token cost of LLM tool-calling. If you're hammering aux agents through `/spec:delegate` or `/spec:review`, or if your sessions tend to chain many tool calls, rtk can cut per-message overhead substantially without changing semantics.
+[rtk](https://github.com/rtk-ai/rtk) compresses the token cost of LLM tool-calling. If you're hammering aux agents through `/speccraft:spec:delegate` or `/speccraft:spec:review`, or if your sessions tend to chain many tool calls, rtk can cut per-message overhead substantially without changing semantics.
 
 It's especially worth considering when:
 
@@ -399,7 +399,7 @@ The `PreToolUse` hook intercepts every `Edit`/`Write`. For Go production files, 
 
 This trades precision for simplicity. It correctly catches the "writing prod before tests" pattern in 100% of cases for code that follows Go's idiomatic test colocation. It can't tell you *which specific test* covers a given function — for that, install CodeGraphContext.
 
-Tests, docs, README, and `scratch/` are always allowed without restriction. `/spec:override "<reason>"` provides a one-shot bypass with the reason logged into the active spec.
+Tests, docs, README, and `scratch/` are always allowed without restriction. `/speccraft:spec:override "<reason>"` provides a one-shot bypass with the reason logged into the active spec.
 
 ---
 
@@ -429,7 +429,7 @@ Beyond `agents.toml`, a few environment variables tune behavior:
 
 - `go` ≥ 1.22 — only needed if you want to build helper binaries from source instead of downloading the release tarball.
 - `acpx` — only needed if you opt into ACP-mode aux agents.
-- `codex`, `opencode`, etc. — only needed if you actually call them via `/spec:delegate` or `/spec:review`.
+- `codex`, `opencode`, etc. — only needed if you actually call them via `/speccraft:spec:delegate` or `/speccraft:spec:review`.
 - [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) — for codebase-wide structural queries (see [Recommended companions](#recommended-companions)).
 - [rtk](https://github.com/rtk-ai/rtk) — for tool-call token compression in heavy aux-agent workflows.
 
@@ -451,7 +451,7 @@ to diagnose. Common causes: no network, corporate proxy blocking GitHub Releases
 **Edits to test files are being blocked**
 That's a bug — tests/docs/scratch should always be allowed. Check `SPECCRAFT_TDD_MODE`; if set to `hard` it blocks all edits without an active spec. Default is `hybrid`. File a bug if it reproduces with `hybrid`.
 
-**`/spec:review` reports "agent not found"**
+**`/speccraft:spec:review` reports "agent not found"**
 The aux agent's CLI isn't on `PATH` in the Claude Code session's environment. Verify with:
 ```
 which codex
@@ -460,7 +460,7 @@ which opencode
 If the binary is in a non-default location, add it to `PATH` in your shell rc *and* restart Claude Code (it inherits the shell's environment at launch).
 
 **TDD invariant blocks an edit but I did write a test**
-The hook checks **same-directory** sibling tests for Go: editing `pkg/foo/bar.go` requires a recently-edited `pkg/foo/*_test.go`. Tests in a different package don't satisfy it. If your project keeps tests in a separate tree, set `SPECCRAFT_TDD_MODE=soft` until the per-language resolver lands in v1.x, or use `/spec:override "<reason>"` for one-off cases.
+The hook checks **same-directory** sibling tests for Go: editing `pkg/foo/bar.go` requires a recently-edited `pkg/foo/*_test.go`. Tests in a different package don't satisfy it. If your project keeps tests in a separate tree, set `SPECCRAFT_TDD_MODE=soft` until the per-language resolver lands in v1.x, or use `/speccraft:spec:override "<reason>"` for one-off cases.
 
 **"Where is X called?" — speccraft can't tell me**
 Correct, by design. v1 doesn't carry a code graph. Install [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) as an MCP server and Claude Code will pick up its tools automatically. See [Recommended companions](#recommended-companions).
@@ -486,7 +486,7 @@ Reports on every dependency, the binary version stamp, network reachability, and
 Complementary. `.speccraft/index.md` is the always-injected one-pager — similar role to AGENTS.md or CLAUDE.md. Some teams use them in parallel; in that case, point your AGENTS.md at `.speccraft/index.md` so they don't drift.
 
 **Can I use speccraft without aux agents?**
-Yes. Skip `/spec:review` and `/spec:review-code`. Everything else (specs, TDD enforcement, memory) works without a single external CLI configured.
+Yes. Skip `/speccraft:spec:review` and `/speccraft:spec:review-code`. Everything else (specs, TDD enforcement, memory) works without a single external CLI configured.
 
 **Can I use it in a non-Go repo?**
 Spec workflows, memory injection, and drift detection (regex mode) all work language-agnostically. TDD enforcement supports Go and Python:
@@ -506,7 +506,7 @@ For other languages, set `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings
 They stay in `specs/`, marked `status: closed`. They become history. `/speccraft:sync` can `archive` very old closed specs (move under `specs/archive/`) but it never deletes them — they're git-versioned and serve as a record of decisions.
 
 **Will the TDD invariant block me when I'm just experimenting?**
-Three escape hatches: (1) edit tests/docs/scratch freely, (2) `/spec:override "<reason>"` for a one-time bypass with a logged reason, (3) `SPECCRAFT_TDD_MODE=soft` to convert all blocks to warnings.
+Three escape hatches: (1) edit tests/docs/scratch freely, (2) `/speccraft:spec:override "<reason>"` for a one-time bypass with a logged reason, (3) `SPECCRAFT_TDD_MODE=soft` to convert all blocks to warnings.
 
 **Why doesn't speccraft have a built-in code graph?**
 Earlier drafts did. We removed it because (a) it nearly doubled the v1 implementation cost, (b) a graph that drifts from the source produces confidently wrong answers, and (c) [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) already does this well as an MCP server. speccraft v1 is small on purpose; install CodeGraphContext alongside it when you need structural queries.
@@ -575,8 +575,8 @@ speccraft is dogfood: it's developed in a speccraft-managed repo. The spec for v
 
 If you want to contribute:
 
-1. `/spec:new "<your change>"` to draft a spec.
-2. `/spec:review` to get cross-model critique.
+1. `/speccraft:spec:new "<your change>"` to draft a spec.
+2. `/speccraft:spec:review` to get cross-model critique.
 3. PR with the spec, plan, and implementation.
 
 Before opening a PR, run:
