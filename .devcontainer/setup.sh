@@ -27,8 +27,8 @@ command -v claude || echo "   claude: NOT FOUND (install via Feature)"
 command -v go     && go version
 command -v jq     && jq --version
 command -v git    && git --version
-command -v codex  && codex --version || echo "   codex: mock"
-command -v opencode && opencode --version || echo "   opencode: mock"
+command -v codex    && echo "   codex: $(command -v codex)" || echo "   codex: NOT FOUND"
+command -v opencode && echo "   opencode: $(command -v opencode)" || echo "   opencode: NOT FOUND"
 
 if [ -x bin/speccraft-state ]; then
   echo "   speccraft-state: $(bin/speccraft-state --version 2>&1 | head -1)"
