@@ -73,5 +73,5 @@ jobs:
         run: |
           devcontainer up --workspace-folder .
           devcontainer exec --workspace-folder . \
-            --env ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            --remote-env ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             bash tests/e2e/run.sh
