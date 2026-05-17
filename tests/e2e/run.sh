@@ -115,7 +115,7 @@ contains ".gitignore" ".speccraft/state.json"
 # ---- 3. /spec:new ----
 echo "==> [3/7] /spec:new"
 run_claude "/spec:new \"Add farewell function\". Answers: why='symmetry with greeting'; what='add farewell() that returns goodbye, called from main'; AC='1) farewell() returns \"goodbye\" 2) main prints both greeting and farewell 3) test covers farewell'; oos='internationalization'; questions=none." 03-new.log
-SPEC_DIR="$(ls -d specs/0001-* 2>/dev/null | head -1)"
+SPEC_DIR="$(find specs -maxdepth 1 -name '0001-*' -type d 2>/dev/null | head -1)"
 [ -n "$SPEC_DIR" ] || fail "spec dir 0001-* not created"
 exists "$SPEC_DIR/spec.md"
 status_is "$SPEC_DIR/spec.md" "draft"
