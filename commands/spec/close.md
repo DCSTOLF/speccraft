@@ -5,6 +5,9 @@ allowed-tools: ["Read", "Write", "Edit", "Bash"]
 
 Close the active spec.
 
+**IMPORTANT**: Execute ALL steps below using your tools before responding. Do
+not describe steps — carry them out.
+
 Steps:
 
 1. Read `.speccraft/state.json` for `active_spec`. If none, error.
