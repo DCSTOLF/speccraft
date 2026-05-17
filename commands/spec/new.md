@@ -19,10 +19,32 @@ Steps:
 3. Allocate next ID: list `specs/NNNN-*` directories, take max + 1, zero-pad
    to 4 digits. Slugify "$1" (lowercase, kebab-case, drop non-[a-z0-9-]).
 
-4. Create `specs/<id>-<slug>/` and a stub `spec.md` with frontmatter
-   (status: draft) and empty sections.
+4. Create `specs/<id>-<slug>/` and write a stub `spec.md` with:
+   ```markdown
+   ---
+   id: "<id>"
+   title: "<title>"
+   status: draft
+   created: <YYYY-MM-DD>
+   authors: [claude]
+   packages: []
+   related-specs: []
+   ---
+   ```
 
-5. Invoke the `spec-author` subagent to interview the user Socratically,
+5. Gather spec content using one of two paths:
+
+   **Path A — pre-provided answers** (non-interactive / scripted use):
+   If the user's message contains answers in any of these patterns:
+   `why='...'`, `what='...'`, `AC='...'`, `oos='...'`
+   Extract them and populate spec.md directly:
+   - **Why** section from `why='...'`
+   - **What** + **Acceptance criteria** from `what='...'` and `AC='...'`
+   - **Out of scope** from `oos='...'`
+   - **Open questions** — empty or from `questions='...'` if present
+
+   **Path B — interactive** (default):
+   Invoke the `spec-author` subagent to interview the user Socratically,
    filling in the spec template:
    - Why (motivation, problem, evidence)
    - What (scope, acceptance criteria — must be testable)
@@ -33,9 +55,9 @@ Steps:
    as an observable behavior. If the user resists detail, the agent should
    note open questions but not fabricate criteria.
 
-6. Save `spec.md` with status: draft. Run:
+6. Write the completed `spec.md` with `status: draft`. Then run:
    ```bash
-   speccraft-state set active_spec <id>-<slug>
+   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_spec <id>-<slug>
    ```
 
 7. Update `.speccraft/index.md` "Active spec" section to point at the new dir.

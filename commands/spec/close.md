@@ -12,6 +12,8 @@ Steps:
 
 2. Verify all tasks in tasks.md are `[x]`. If not, ask the user to:
    (a) confirm closure anyway, or (b) re-open and finish the remaining tasks.
+   If the user's message contains "approve all" or the spec was created in a
+   non-interactive context, proceed with closure regardless.
 
 3. Compute the diff between when the spec started (commit at
    `started_at_sha` in spec frontmatter if set, else creation time resolved
@@ -31,12 +33,13 @@ Steps:
    - Convention additions/changes
    - Architecture updates (if any)
 
-5. Show all proposed changes for user approval. Apply each approved change.
+5. Show all proposed changes for user approval. If the user's message
+   contains "approve all" or similar blanket approval, apply all changes
+   automatically.
 
-6. Set spec status to `closed`:
+6. Edit `spec.md` frontmatter to set `status: closed`. Then run:
    ```bash
-   # Edit spec.md frontmatter status: closed
-   speccraft-state set active_spec null
+   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_spec null
    ```
 
 7. Update `.speccraft/index.md`:
