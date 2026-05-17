@@ -21,14 +21,6 @@
     // Skip telemetry from the dev environment.
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 
-    // For non-interactive/CI runs, set ANTHROPIC_API_KEY in the environment
-    // (or as a GitHub Actions secret). For interactive use, leave it unset
-    // and run `claude` once inside the container to do the browser flow.
-    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
-
-    // Aux-agent tokens (only for tests against real agents; mocked by default).
-    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY:}",
-
     // speccraft dev knobs.
     "SPECCRAFT_LOG_LEVEL": "debug"
   },

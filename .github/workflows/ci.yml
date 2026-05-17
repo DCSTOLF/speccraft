@@ -72,4 +72,6 @@ jobs:
       - name: Run e2e tests
         run: |
           devcontainer up --workspace-folder .
-          devcontainer exec --workspace-folder . bash tests/e2e/run.sh
+          devcontainer exec --workspace-folder . \
+            --env ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+            bash tests/e2e/run.sh
