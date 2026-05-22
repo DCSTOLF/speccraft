@@ -22,7 +22,7 @@ Steps:
       GREEN steps expect success.
    d. On step completion, mark the task `[x]` in tasks.md.
 
-3. After last task, run full test suite. If green, suggest `/spec:close`.
+3. After last task, run full test suite. If green, suggest `/speccraft:spec:close`.
 
 4. If a step fails or stalls (>3 failed retries), pause and surface the
    blockage explicitly. Do not silently continue past failures.

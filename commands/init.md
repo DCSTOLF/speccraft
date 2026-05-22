@@ -105,7 +105,7 @@ Steps:
       .speccraft/state.json  (gitignored)
       specs/.gitkeep
 
-    Next: /spec:new "<title of your first spec>"
+    Next: /speccraft:spec:new "<title of your first spec>"
     ```
 
     If the user mentions they want call-graph or symbol-search capabilities,

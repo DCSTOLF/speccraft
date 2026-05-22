@@ -1,6 +1,6 @@
 ---
 name: tdd-planner
-description: "Turns a reviewed spec into RED→GREEN→REFACTOR steps with concrete file/test names. Use during /spec:plan."
+description: "Turns a reviewed spec into RED→GREEN→REFACTOR steps with concrete file/test names. Use during /speccraft:spec:plan."
 tools: [Read, Bash]
 model: opus
 ---

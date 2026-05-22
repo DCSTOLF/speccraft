@@ -12,7 +12,7 @@ not describe steps — carry them out.
 Steps:
 
 1. Read `.speccraft/state.json` for `active_spec`. If none, error:
-   "No active spec. Run /spec:new first."
+   "No active spec. Run /speccraft:spec:new first."
 
 2. Read `.speccraft/agents.toml`. Determine which agents to invoke:
    - If `--agents` flag provided, use that list (validate each exists).
@@ -42,5 +42,5 @@ Steps:
    - If not met: leave at `draft` and surface the synthesis with next steps.
 
 8. Suggest next step:
-   - If reviewed: `/spec:plan`
-   - If changes-requested: edit spec.md, then re-run `/spec:review`
+   - If reviewed: `/speccraft:spec:plan`
+   - If changes-requested: edit spec.md, then re-run `/speccraft:spec:review`

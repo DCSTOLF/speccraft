@@ -1,6 +1,6 @@
 ---
 name: cross-reviewer
-description: "Synthesizes multiple aux-agent review outputs into a coherent verdict and review.md. Use after /spec:review collects responses."
+description: "Synthesizes multiple aux-agent review outputs into a coherent verdict and review.md. Use after /speccraft:spec:review collects responses."
 tools: [Read, Write]
 model: sonnet
 ---

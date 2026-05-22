@@ -34,4 +34,4 @@ Steps:
 
 5. Write `plan.md` and `tasks.md`. Update spec status to `planned`.
 
-6. Suggest next step: `/spec:implement` or manually start with the first RED test.
+6. Suggest next step: `/speccraft:spec:implement` or manually start with the first RED test.

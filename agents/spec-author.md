@@ -1,6 +1,6 @@
 ---
 name: spec-author
-description: "Drafts and refines spec.md via Socratic interviewing. Use during /spec:new."
+description: "Drafts and refines spec.md via Socratic interviewing. Use during /speccraft:spec:new."
 tools: [Read, Write, Edit]
 model: opus
 ---

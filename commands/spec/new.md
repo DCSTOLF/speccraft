@@ -17,7 +17,7 @@ Steps:
 
 2. Read `.speccraft/state.json`. If `active_spec` is set and that spec's
    status is `in-progress`, ask the user whether to:
-   (a) close the active spec first (`/spec:close`),
+   (a) close the active spec first (`/speccraft:spec:close`),
    (b) park it (set status: blocked), or
    (c) cancel the new spec.
    If running non-interactively (answers pre-provided in the message), proceed
@@ -91,4 +91,4 @@ Steps:
    `specs/<id>-<slug>/`
 
 8. Respond with a brief confirmation: spec ID, title, and suggested next step
-   (`/spec:review` recommended, or `/spec:plan --skip-review`).
+   (`/speccraft:spec:review` recommended, or `/speccraft:spec:plan --skip-review`).

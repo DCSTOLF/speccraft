@@ -1,6 +1,6 @@
 ---
 name: spec-critic
-description: "Reviews a spec for ambiguity, missing edge cases, untestable criteria. Use during /spec:review or as a self-check before delegating."
+description: "Reviews a spec for ambiguity, missing edge cases, untestable criteria. Use during /speccraft:spec:review or as a self-check before delegating."
 tools: [Read]
 model: opus
 ---

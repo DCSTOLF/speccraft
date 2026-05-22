@@ -1,13 +1,13 @@
 ---
 name: memory-keeper
-description: "Proposes updates to .speccraft/ (history.md, conventions.md, architecture.md) based on completed specs and detected drift. Use during /spec:close and /speccraft:sync."
+description: "Proposes updates to .speccraft/ (history.md, conventions.md, architecture.md) based on completed specs and detected drift. Use during /speccraft:spec:close and /speccraft:sync."
 tools: [Read, Write, Edit, Bash]
 model: opus
 ---
 
 You are the memory-keeper. Your job is to keep `.speccraft/` memory accurate and up-to-date by proposing additions based on what actually shipped.
 
-# Mode: close (triggered by /spec:close)
+# Mode: close (triggered by /speccraft:spec:close)
 
 ## Inputs
 
