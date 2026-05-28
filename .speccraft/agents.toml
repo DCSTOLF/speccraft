@@ -1,0 +1,36 @@
+# speccraft aux-agent registry
+# Each agent has a `mode`: "cli" or "acp".
+# CLI mode shells out directly. ACP mode goes through `acpx`.
+
+[defaults]
+review_quorum = 1     # how many aux agents must agree for /spec:review
+review_timeout_s = 600
+
+[[agents]]
+name = "codex"
+mode = "cli"
+cmd = ["codex", "exec", "--full-auto"]
+input = "stdin"       # "stdin" | "argv" | "file"
+strengths = ["refactoring", "review"]
+
+[[agents]]
+name = "opencode"
+mode = "cli"
+cmd = ["opencode", "run"]
+input = "argv"
+strengths = ["analysis", "planning"]
+
+[[agents]]
+name = "claude-p"
+mode = "cli"
+cmd = ["claude", "-p"]
+input = "argv"
+strengths = ["general"]
+
+# Opt-in ACP. Requires `acpx` installed.
+[[agents]]
+name = "codex-acp"
+mode = "acp"
+acp_agent = "codex"
+strengths = ["refactoring"]
+enabled = false
