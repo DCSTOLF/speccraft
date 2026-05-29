@@ -18,8 +18,11 @@ EOF
 }
 
 # codex: review-shaped output.
+# Detach stdin to /dev/null so the mock never blocks on a non-EOF
+# parent stdin (claude -p sessions do not close their child stdin).
+# The canned response does not need the input.
 install_mock "codex" '
-INPUT="$(cat)"
+exec </dev/null
 if [ -n "${SPECCRAFT_MOCK_CODEX_RESPONSE_FILE:-}" ] && [ -f "${SPECCRAFT_MOCK_CODEX_RESPONSE_FILE}" ]; then
   cat "${SPECCRAFT_MOCK_CODEX_RESPONSE_FILE}"
   exit 0
@@ -38,8 +41,12 @@ RESP
 '
 
 # opencode: planner-shaped output.
+# agents.toml sets input="argv" for opencode, so the prompt arrives via
+# $@, not stdin — but the mock still inherits stdin from claude -p,
+# which never EOFs. Detach explicitly to avoid the previous hang at
+# the review step.
 install_mock "opencode" '
-INPUT="$(cat 2>/dev/null || true)"
+exec </dev/null
 if [ -n "${SPECCRAFT_MOCK_OPENCODE_RESPONSE_FILE:-}" ] && [ -f "${SPECCRAFT_MOCK_OPENCODE_RESPONSE_FILE}" ]; then
   cat "${SPECCRAFT_MOCK_OPENCODE_RESPONSE_FILE}"
   exit 0
