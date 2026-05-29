@@ -33,6 +33,46 @@ Introduced by spec 0007.
 
 - When a single fixture script exercises multiple acceptance criteria that share the same project directory, the script must reset session state between scenarios so earlier mutations to `state.json` (e.g. `EditedTestFiles`) do not silently mask later reject assertions. The canonical form is a `reset_state()` (or `reset_session()`) helper that rewrites `.speccraft/state.json` from a literal JSON template with empty `edited_test_files` / `edited_prod_files`. See `python_cycle.sh::reset_state` and the equivalent in the Rust fixtures for reference implementations.
 
+## CI
+
+Introduced by spec 0008.
+
+### Job-split convention
+
+`.github/workflows/ci.yml` carries two e2e jobs with different cost and credential profiles. Future e2e additions pick a job by cost:
+
+- **`e2e-language-only` (cheap, hermetic).** Runs on every `push` and `pull_request`. Does NOT receive `ANTHROPIC_API_KEY` (must run on PR-from-fork). Executes `bash tests/e2e/run.sh --language-only` inside the devcontainer. New language fixtures (`tests/e2e/<lang>_cycle.sh`) get exercised here automatically by adding them to `run_language_fixtures()` in `tests/e2e/run.sh`.
+- **`e2e-devcontainer` (expensive, credit-gated).** Gated to `push` on `main`. Receives `ANTHROPIC_API_KEY` from repo secrets. Runs the full lifecycle (`claude -p`-driven spec workflow + language fixtures).
+
+Anything that invokes `claude -p` belongs in the lifecycle job. Anything that exercises `speccraft-guard` against a representative project layout (no API calls) belongs in the language-only job.
+
+### `ENVIRONMENT_FAILURE:` annotation pattern
+
+When `claude -p` fails in the lifecycle job, `classify_claude_failure()` in `tests/e2e/run.sh` greps the captured log and emits one of:
+
+- `ENVIRONMENT_FAILURE: credit_exhausted` — Anthropic "Credit balance is too low" string.
+- `ENVIRONMENT_FAILURE: auth` — HTTP 401/403, unset/empty `ANTHROPIC_API_KEY`, or one of `invalid x-api-key` / `authentication failed` / `unauthorized` (case-insensitive).
+- `ENVIRONMENT_FAILURE: transient_api` — HTTP 5xx, HTTP 429, or one of `network` / `timeout` / `connection refused` (case-insensitive).
+
+Rules:
+- **Order matters.** Classification runs credit → auth → transient → none. Credit exhaustion must come first so auth matchers don't eat it.
+- **Exit code stays non-zero.** This is observability, not error-swallowing.
+- **Unmatched failures are not annotated.** Plain assertion mismatches stay unadorned; the absence of the tag is itself a signal ("this is a real defect").
+- **Extend, don't fork.** New environmental failure modes (new categories or new matchers within existing categories) extend `classify_claude_failure`; do not introduce parallel detection mechanisms.
+
+### Mock aux-agent stdin detach
+
+`claude -p` does not EOF the stdin of subagent CLIs it launches. Mock aux-agent CLIs (the ones installed by `.devcontainer/install-mock-agents.sh` for hermetic e2e) must therefore detach stdin at startup:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+exec </dev/null
+# ... rest of mock ...
+```
+
+Without this, any mock that reads stdin (e.g. `INPUT="$(cat)"`) blocks forever when invoked through `claude -p`. The opencode mock additionally declares `input = "argv"` in `.speccraft/agents.toml`, so it should not be reading stdin at all — the detach is the load-bearing safety net.
+
 ## Markdown frontmatter
 
 - **Slash commands (`commands/**.md`):** YAML frontmatter with at minimum `description:`. Fully qualified command names live in the filename path (e.g. `commands/spec/new.md` becomes `/speccraft:spec:new`).
@@ -59,6 +99,17 @@ reserves-specs: ["0006"]
 
 - Spec IDs are zero-padded four-digit (`0001`, `0002`, …) and never reused.
 - Closed specs (`status: closed`) are immutable. Corrections go in a follow-up spec.
+
+### Close-commit invariant
+
+Introduced by spec 0008 (codex R3 finding).
+
+The `/speccraft:spec:close` commit must contain **both** the `changelog.md` write **and** the `status: → closed` flip on `spec.md`. The parent commit must still show the pre-close status. Rules:
+
+- **One commit, both edits.** Splitting them across two commits creates a window in which `status:` is `closed` but the changelog is missing the close-gate evidence, or vice versa.
+- **Parent commit shows pre-close status.** Verifiable post-hoc with `git show <close-commit>^:specs/<id>/spec.md | grep ^status:`.
+- **No post-close edits.** Closed specs are immutable per the existing rule; this invariant extends that to the changelog. If something needs to be added after close, file a follow-up spec instead.
+- **Pre-close gate evidence (when applicable).** When a spec's §Post-merge verification names a CI run as a close gate (e.g. spec 0008's first-green-run requirement), the run URL goes in `changelog.md` as part of this same commit — by definition, before the status flip is visible on `main`.
 
 ## Rust (`tools/internal/speccraft/`)
 

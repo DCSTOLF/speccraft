@@ -1,8 +1,9 @@
 ---
 id: "0008"
 title: "CI hardening"
-status: in-progress
+status: closed
 created: 2026-05-29
+closed: 2026-05-29
 authors: [claude]
 packages: [".github/workflows", "tests/e2e", ".devcontainer"]
 related-specs: ["0005", "0007"]

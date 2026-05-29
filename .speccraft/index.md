@@ -35,10 +35,10 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-`specs/0008-ci-hardening/` (draft)
+none
 
 ## Recent decisions (last 3)
 
+- 2026-05-29 — CI hardening (spec 0008): two-job split (cheap language-only vs expensive lifecycle), `ENVIRONMENT_FAILURE:` annotation model, close-commit invariant convention; pre-close gate satisfied by run 26658905606 which also retroactively satisfied spec 0007 T10
 - 2026-05-29 — Python e2e fixture (spec 0007): symmetric-coverage gap closed; e2e-language-fixture pattern codified in conventions; T10 CI-verification deferred to spec 0008
 - 2026-05-29 — Rust language support (spec 0005): runner-invocation primitive + dispatch-by-language pattern + `reserves-specs` convention
-- 2026-05-22 — Command-name migration to `/speccraft:spec:*` fully-qualified

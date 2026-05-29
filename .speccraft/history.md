@@ -2,6 +2,18 @@
 
 Append-only. Newest first.
 
+## 2026-05-29 — CI hardening (spec 0008)
+
+**Spec:** specs/0008-ci-hardening/
+**Decision:** Split the e2e workflow into two CI jobs with different cost and credential profiles: `e2e-language-only` (cheap, hermetic, no `ANTHROPIC_API_KEY`, runs on every push and PR) executes the language-dispatch fixtures via a new `tests/e2e/run.sh --language-only` flag; `e2e-devcontainer` (expensive, requires API credits, gated to `push` on `main`) continues to run the full `claude -p`-driven lifecycle. Layer in an `ENVIRONMENT_FAILURE:` annotation model so the lifecycle job's failure logs distinguish environmental issues (credit exhaustion, auth, transient upstream) from real assertion failures. Defensive idempotent ownership fix for `~/.claude/session-env` in `.devcontainer/setup.sh`. Record the pre-close gate (first green `e2e-language-only` run on `main`) verbatim in the spec's `changelog.md` as the first concrete enforcement of the §Post-merge verification convention.
+**Why:** The single-job e2e pipeline conflated three failure modes — credit exhaustion, authentication, transient API — with real code defects, and the upstream `EACCES` on `~/.claude/session-env` blocked the `/speccraft:spec:review` step entirely. The combined effect: spec 0005's Rust fixtures and spec 0007's Python fixture, both wired into `run.sh`, had never actually run green in CI. Splitting cheap signals from expensive ones gives PR signal on language dispatch without burning API credits; the `ENVIRONMENT_FAILURE:` tag makes log triage cheap; the pre-close gate prevents closing on optimism.
+**Consequence:**
+- Future expensive e2e steps (anything calling `claude -p`) belong in the lifecycle job; future cheap dispatch-style e2e belongs in `e2e-language-only` via `run_language_fixtures()`. New `<lang>_cycle.sh` fixtures get picked up automatically when added to that helper. Codified in `.speccraft/conventions.md`.
+- The `ENVIRONMENT_FAILURE:` annotation is now the canonical pattern for environmental-failure observability. Categories are `credit_exhausted`, `auth`, `transient_api`; ordering is credit → auth → transient. Exit code stays non-zero. Future env failure modes extend this list, not create parallel mechanisms.
+- The §Post-merge verification "pre-close gate" convention now has its first concrete enforcement in the codebase. Spec 0007's deferred T10 was retroactively satisfied by the first green `e2e-language-only` run (https://github.com/DCSTOLF/speccraft/actions/runs/26658905606) without editing spec 0007's files — the closed-spec-immutability rule held.
+- Integration surfaced a latent mock-stdin bug: `claude -p`-launched subagent CLIs never EOF child stdin, so mocks doing `INPUT="$(cat)"` block forever. The fix — `exec </dev/null` at the top of every mock aux-agent script — is now a convention for any future mock CLI invoked through the aux-delegator path.
+- AC #1's exact CI-side root cause was not reproduced locally; the defensive idempotent ownership fix in `.devcontainer/setup.sh` covers both the named-volume-on-first-create race and any base-image ownership oddity. Recorded in 0008's changelog.
+
 ## 2026-05-29 — Python e2e fixture (spec 0007)
 
 **Spec:** specs/0007-python-e2e-fixture/

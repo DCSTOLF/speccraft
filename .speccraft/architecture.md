@@ -15,7 +15,7 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
 9. `tools/internal/speccraft/rusttok/` — Rust string/comment-aware tokenizer + `fn`-name extractor. Used by the Rust static-classification code in `tools/internal/speccraft/rust_*.go`.
 10. `tools/internal/delegate/` — auxiliary-agent delegation config parsing (`agents.toml`).
 11. `templates/speccraft/` — stack-agnostic Markdown templates copied into host repos by `/speccraft:init`.
-12. `tests/e2e/run.sh` + `tests/hooks/` — devcontainer-based end-to-end and hook unit tests.
+12. `tests/e2e/run.sh` + `tests/hooks/` — devcontainer-based end-to-end and hook unit tests. `run.sh` supports two execution modes: the default lifecycle path (Go module setup, five `claude -p` invocations, then language fixtures) and `--language-only` mode (Rust + Python fixtures only, no `claude -p`, no API key). CI runs both as separate jobs (`e2e-devcontainer` and `e2e-language-only`) — see `.github/workflows/ci.yml`.
 
 ## Dependency direction
 
@@ -40,6 +40,7 @@ See `history.md` for full ADR-style entries. Headlines:
 - Python TDD support added without forking the Go helper layout (specs 0002, 0003).
 - Slash-command names fully qualified as `/speccraft:spec:*` to avoid collisions with host-repo commands.
 - Rust language support introduces a shared **test-runner invocation primitive** (`tools/internal/speccraft/runner/`) and a **dispatch-by-language pattern** in `speccraft-guard` (spec 0005). Runner adoption by Go/Python is a non-goal.
+- CI is split into two jobs with different cost and credential profiles: `e2e-language-only` (cheap, hermetic, every push/PR, no API key) and `e2e-devcontainer` (expensive, gated to `push` on `main`, full `claude -p` lifecycle). Lifecycle-job failures classified by `classify_claude_failure` emit `ENVIRONMENT_FAILURE: <category>` lines so log triage distinguishes environmental issues from real defects. (spec 0008)
 
 ## Boundaries
 
