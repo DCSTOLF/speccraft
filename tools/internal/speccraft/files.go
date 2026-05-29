@@ -25,6 +25,15 @@ func IsProductionPythonFile(path string) bool {
 	return strings.HasSuffix(path, ".py") && !IsTestFile(path)
 }
 
+// IsRustFile returns true for any `.rs` source file. Rust does not have a
+// dedicated test-file naming convention (unit tests live inline inside
+// production files; integration tests live under tests/), so the
+// guard's Rust dispatch (spec 0005) uses delta-based classification
+// rather than a name-based test/prod split.
+func IsRustFile(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".rs")
+}
+
 // IsAlwaysAllowed returns true for paths that bypass the TDD invariant:
 // .speccraft/, specs/, docs/, *.md, scratch/.
 func IsAlwaysAllowed(root, absPath string) bool {

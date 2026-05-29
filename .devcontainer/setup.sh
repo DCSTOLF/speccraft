@@ -21,6 +21,17 @@ if [ -f tools/go.mod ]; then
   ( cd tools && go mod download )
 fi
 
+# 3b. Rust toolchain (spec 0005 AC #9). Idempotent — skipped if cargo is
+#     already on PATH (rustup re-runs are harmless but slow).
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "==> Installing Rust toolchain via rustup..."
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+  # shellcheck disable=SC1091
+  source "$HOME/.cargo/env" 2>/dev/null || true
+else
+  echo "==> Rust toolchain present: $(cargo --version)"
+fi
+
 # 4. Smoke check.
 echo "==> Smoke check"
 command -v claude || echo "   claude: NOT FOUND (install via Feature)"

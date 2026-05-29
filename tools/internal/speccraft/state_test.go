@@ -116,6 +116,67 @@ func TestResetSession(t *testing.T) {
 	}
 }
 
+func TestSession_RustTestBaseline_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := speccraft.LoadState(tmp)
+	s.Session.RustTestBaseline = []string{"foo::tests::a", "tests::bar::b"}
+	if err := speccraft.SaveState(tmp, s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := speccraft.LoadState(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"foo::tests::a", "tests::bar::b"}
+	if len(got.Session.RustTestBaseline) != len(want) {
+		t.Fatalf("RustTestBaseline = %v, want %v", got.Session.RustTestBaseline, want)
+	}
+	for i, v := range want {
+		if got.Session.RustTestBaseline[i] != v {
+			t.Errorf("RustTestBaseline[%d] = %q, want %q", i, got.Session.RustTestBaseline[i], v)
+		}
+	}
+}
+
+func TestSession_RustGateFingerprint_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := speccraft.LoadState(tmp)
+	s.Session.RustGateFingerprint = "abc123def456"
+	if err := speccraft.SaveState(tmp, s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := speccraft.LoadState(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Session.RustGateFingerprint != "abc123def456" {
+		t.Errorf("RustGateFingerprint = %q, want %q", got.Session.RustGateFingerprint, "abc123def456")
+	}
+}
+
+func TestSession_RustFields_EmptyByDefault(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := speccraft.LoadState(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Session.RustTestBaseline) != 0 {
+		t.Errorf("RustTestBaseline = %v, want empty", s.Session.RustTestBaseline)
+	}
+	if s.Session.RustGateFingerprint != "" {
+		t.Errorf("RustGateFingerprint = %q, want empty", s.Session.RustGateFingerprint)
+	}
+}
+
 func TestTasksDonePct(t *testing.T) {
 	tmp := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {

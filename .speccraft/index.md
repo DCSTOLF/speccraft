@@ -35,10 +35,10 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-`specs/0001-speccraft-v1/` (in-progress)
+none
 
 ## Recent decisions (last 3)
 
+- 2026-05-29 — Rust language support (spec 0005): runner-invocation primitive + dispatch-by-language pattern + `reserves-specs` convention
 - 2026-05-22 — Command-name migration to `/speccraft:spec:*` fully-qualified
 - 2026-05-15 — Python TDD support landed (specs 0002, 0003)
-- 2026-05-10 — Plugin packaged via `dcstolf-tools` marketplace

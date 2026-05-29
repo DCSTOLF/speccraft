@@ -17,6 +17,19 @@
 #   3  claude -p failed
 set -euo pipefail
 
+# >>> cargo-preamble (spec 0005 AC #9 — fail fast on missing Rust toolchain)
+# The e2e harness exercises Rust fixtures (inline + integration cycles per
+# AC #6); without cargo on PATH the assertions would misreport. Surface a
+# clear message instead of letting downstream `cargo test` invocations
+# fail with shell-not-found errors.
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo not found on PATH" >&2
+  echo "  The speccraft e2e harness requires a Rust toolchain (rustup + cargo)." >&2
+  echo "  Install via .devcontainer/setup.sh or 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh'." >&2
+  exit 1
+fi
+# <<< cargo-preamble
+
 # ---- config ----
 TEST_ROOT="${TEST_ROOT:-/tmp/speccraft-e2e-$$}"
 PLUGIN_DIR="${PLUGIN_DIR:-$(pwd)}"

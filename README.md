@@ -403,6 +403,72 @@ Tests, docs, README, and `scratch/` are always allowed without restriction. `/sp
 
 ---
 
+## Rust
+
+Rust support (spec 0005) ships a different model than Go and Python because Rust's idiomatic unit tests live **inline** inside the same `.rs` file as the production code under test (`#[cfg(test)] mod tests`). The sibling-edit heuristic doesn't apply; instead, the guard combines a delta-based static classifier with an authoritative test-runner invocation.
+
+### Config
+
+Opt into Rust support via `.speccraft/speccraft.toml`:
+
+```toml
+[tdd.rust]
+runner = "cargo"   # one of: "cargo" (default) | "nextest"
+```
+
+- `runner = "cargo"` — uses `cargo test --exact <fqtn>`. Always available wherever a Rust toolchain is installed.
+- `runner = "nextest"` — uses `cargo nextest run -E 'test(=<fqtn>)' --message-format libtest-json`. Requires `cargo install cargo-nextest --locked`. The guard exits with a clear error if `cargo-nextest` is not on PATH when this value is configured.
+- Unknown values produce a config-parse error that names the file, key, and allowed enum.
+- **No PATH auto-detection.** Selection is explicit so the same crate behaves the same on every machine.
+
+### How edits are classified
+
+Two idiomatic test locations are recognized:
+
+- **inline tests** — `mod <ident>` items inside `src/**/*.rs` whose preceding attribute list contains `#[cfg(test)]` (or `#[cfg(any(test, ...))]`). Multi-attribute mod items (e.g. `#[cfg(test)] / #[allow(dead_code)] / mod tests { ... }`) are recognized too. A string/comment-aware tokenizer skips matches inside string literals, raw strings (`r"..."`, `r#"..."#`, etc.), char literals, and line/block comments — so a `let s = "#[cfg(test)] mod ..."` in production code is **not** misclassified as a test edit.
+- **integration tests** — files at `tests/<stem>.rs` are stem-mapped to `src/<stem>.rs` (Rust 2015/2018 file form), `src/<stem>/mod.rs` (directory submodule), or the Rust 2018+ path form. `src/lib.rs` is the library crate root, not a stem-mapping target.
+
+The classifier asks "does this edit add at least one new test function?" by computing the canonical-ID delta of `<file-stem>::<module-path>::<fn>` between pre-edit and proposed post-edit content. This precisely answers the test-add question without the false positives a naive regex would produce.
+
+### Red-check via runner
+
+The runner is the authoritative oracle for whether a real failing test exists. Each just-added FQTN is invoked through the configured runner (cargo or nextest, always with a targeted single-test filter — never a full-suite run). The three outcomes:
+
+- `build_failed` → reject (`"build failed"`). Compile failure is **not** a valid red state.
+- `all_passed` → reject (`"no failing test observed"`). Records with `status == "ignored"` count as ran-and-passed and do **not** satisfy the accept branch.
+- `at_least_one_failed` → accept, and the failing-just-added IDs are appended to the baseline.
+
+### Pre-edit gate
+
+Before every `.rs` edit, a pre-edit gate compile-checks the crate via `cargo check --tests`. The gate is short-circuited by a **crate fingerprint** — SHA-256 of sorted `(path, mtime-nanos, size)` tuples over every `.rs` file under `src/`, `tests/`, `examples/`, `benches/`, plus `Cargo.toml`, `Cargo.lock`, and optional `rust-toolchain.toml` / `.cargo/config.toml`. `target/` is excluded. Cache hit → zero subprocesses. Cache miss → `cargo check --tests`. Whole-crate (not per-file) hashing ensures cross-file breakage doesn't escape the gate.
+
+### Baseline lifecycle
+
+The guard maintains `rust_test_baseline` in `.speccraft/state.json` (single-writer: `speccraft-state` only). Three mutation rules:
+
+- **Initial capture.** On the first guard invocation with the baseline unset, the crate is walked and all current canonical test IDs are written as the baseline. The red-check is **skipped** on this invocation; stderr announces `rust_test_baseline captured: N tests`. This snapshots the "prior green state" so subsequent edits can compute a meaningful just-added set.
+- **Post-accept update.** When the red-check accepts, the failing-just-added IDs are appended to the baseline. This prevents the same test from re-satisfying red on the next edit.
+- **Manual recapture.** Run `speccraft-state rust-baseline recapture` to overwrite the baseline with a freshly-walked snapshot. Use this when speccraft was installed on a crate that already had pre-existing failing tests — recapture clears the stale entries after you fix them.
+
+### Workspace handling
+
+Cargo workspaces (`[workspace]` in root `Cargo.toml`) are **out of scope** in this release. The guard detects them and exits with an actionable message referencing spec 0006 (Cargo workspace support, reserved). Single-crate projects only — a `Cargo.toml` with `[package]` and no `[workspace]` table.
+
+### What's out of scope
+
+- Cargo workspaces (reserved spec 0006).
+- Non-Cargo build systems (Buck2, Bazel).
+- Doctests (`/// # Examples`). Run `cargo test --doc` yourself outside the speccraft loop.
+- Proc-macro crates.
+- Benchmarks (`#[bench]`, criterion).
+- Retroactive runner-invocation adoption by Go and Python — the runner primitive is shared infrastructure, but Go/Python continue to use sibling-edit detection.
+
+### Documentation policy
+
+Spec 0005 added the runner primitive, Rust adapters, and the baseline lifecycle. Per the **stack-agnostic** guardrail, `templates/speccraft/**` was **not** modified — the templates ship to host repos without Rust-specific assumptions. All Rust-specific guidance lives here in the README.
+
+---
+
 ## Configuration
 
 Beyond `agents.toml`, a few environment variables tune behavior:
