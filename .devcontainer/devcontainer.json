@@ -5,7 +5,11 @@
   },
 
   "features": {
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "stable",
+      "profile": "minimal"
+    }
   },
 
   // Named volume keeps ~/.claude (OAuth token, settings, session history)
