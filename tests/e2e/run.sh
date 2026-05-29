@@ -17,6 +17,11 @@
 #   3  claude -p failed
 set -euo pipefail
 
+# Resolve absolute path to this script's directory BEFORE any cd. The
+# language-fixture invocations later need to invoke sibling scripts and
+# can't rely on $BASH_SOURCE staying meaningful after `cd "$TEST_ROOT"`.
+E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ---- flag parse (spec 0008 AC #2) ----
 # `--language-only` skips the entire claude -p driven lifecycle and runs
 # only the per-language fixture scripts (Rust + Python). Used by the
@@ -78,13 +83,14 @@ echo "==> Logs:      $LOG_DIR"
 # hermetic subshells. Each fixture is self-contained (builds its own
 # binaries into mktemp -d) and exits non-zero on assertion failure.
 run_language_fixtures() {
-  local e2e_dir
-  e2e_dir="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
-  ( bash "$e2e_dir/rust_inline_cycle.sh" )      || fail "rust_inline_cycle.sh failed"
+  # Use the absolute E2E_DIR captured at script-start (before any cd).
+  # Resolving $BASH_SOURCE here would fail because the script has
+  # already cd'd into $TEST_ROOT.
+  ( bash "$E2E_DIR/rust_inline_cycle.sh" )      || fail "rust_inline_cycle.sh failed"
   pass "rust_inline_cycle.sh"
-  ( bash "$e2e_dir/rust_integration_cycle.sh" ) || fail "rust_integration_cycle.sh failed"
+  ( bash "$E2E_DIR/rust_integration_cycle.sh" ) || fail "rust_integration_cycle.sh failed"
   pass "rust_integration_cycle.sh"
-  ( bash "$e2e_dir/python_cycle.sh" )           || fail "python_cycle.sh failed"
+  ( bash "$E2E_DIR/python_cycle.sh" )           || fail "python_cycle.sh failed"
   pass "python_cycle.sh"
 }
 
