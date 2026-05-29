@@ -5,7 +5,7 @@
 
 speccraft is a Claude Code plugin that turns code changes into deliberate, reviewable, test-driven workflows. Every change starts from a versioned spec; every implementation starts from a failing test; every repo carries a small, always-injected memory of guardrails, architecture, and conventions. Heavy work and second-opinion reviews can be offloaded to auxiliary CLI agents like Codex and OpenCode.
 
-**v1 status:** Go repositories. Multi-language and multi-repo are coming.
+**v1 status:** Go, Python, and Rust repositories supported. Multi-repo workspaces coming.
 
 ---
 
@@ -20,6 +20,8 @@ speccraft is a Claude Code plugin that turns code changes into deliberate, revie
 - [Auxiliary agents](#auxiliary-agents)
 - [Enforcing conventions](#enforcing-conventions)
 - [Recommended companions](#recommended-companions)
+- [TDD enforcement](#tdd-enforcement-how-it-works)
+- [Rust](#rust)
 - [Configuration](#configuration)
 - [Requirements](#requirements)
 - [Troubleshooting](#troubleshooting)
@@ -40,7 +42,7 @@ speccraft fixes three specific problems:
 - **Project memory is too long for every prompt.** A small `.speccraft/index.md` is auto-injected at session start; deeper files (guardrails, architecture, conventions, history) load on demand.
 - **Reviews are single-model.** `/speccraft:spec:review` and `/speccraft:spec:review-code` route to Codex, OpenCode, or any CLI agent you configure, in parallel, and synthesize the verdicts.
 
-It also enforces TDD with a hook, not a prompt: edits to production files are blocked unless a sibling `*_test.go` was edited more recently in the same session.
+It also enforces TDD with a hook, not a prompt: edits to production files are blocked unless a covering test has been written first. The exact rule is language-specific — Go and Python use a sibling-test heuristic, Rust uses a delta-based static classifier plus runner-as-oracle. See [TDD enforcement](#tdd-enforcement-how-it-works) for details.
 
 speccraft is **deliberately small in scope**. For codebase-wide structural queries (call graphs, symbol search) and tool-call token compression, it composes with existing tools — see [Recommended companions](#recommended-companions).
 
@@ -395,11 +397,15 @@ rtk is independent of speccraft — it operates at the LLM API layer, not the pl
 
 ## TDD enforcement (how it works)
 
-The `PreToolUse` hook intercepts every `Edit`/`Write`. For Go production files, it uses a **sibling-test heuristic**: edits to `pkg/foo/bar.go` are allowed only if some `pkg/foo/*_test.go` was edited more recently in this session.
+The `PreToolUse` hook intercepts every `Edit`/`Write`. The rule applied depends on the file's language; the rest of the workflow (active-spec check, override mechanism, tests/docs/scratch exemptions) is shared.
 
-This trades precision for simplicity. It correctly catches the "writing prod before tests" pattern in 100% of cases for code that follows Go's idiomatic test colocation. It can't tell you *which specific test* covers a given function — for that, install CodeGraphContext.
+**Go.** Sibling-test heuristic: edits to `pkg/foo/bar.go` are allowed only if some `pkg/foo/*_test.go` was edited more recently in this session. Trades precision for simplicity but catches the "writing prod before tests" pattern in 100% of cases for code following Go's idiomatic test colocation.
 
-Tests, docs, README, and `scratch/` are always allowed without restriction. `/speccraft:spec:override "<reason>"` provides a one-shot bypass with the reason logged into the active spec.
+**Python.** Two-tier lookup. Tier 1: same-directory siblings (`test_bar.py` or `bar_test.py` beside `bar.py`) — no config needed. Tier 2: when no sibling is found and `.speccraft/speccraft.toml` declares `test_roots`, the configured roots are walked recursively for `test_<stem>.py` / `<stem>_test.py`. Lets projects keep tests in a separate `tests/` tree.
+
+**Rust** (spec 0005). Different model because Rust's idiomatic unit tests live **inline** inside the same `.rs` file as the production code (`#[cfg(test)] mod tests`). The sibling-edit heuristic can't apply, so the guard combines (a) a delta-based static classifier — does this edit add a new canonical test ID? — with (b) an authoritative runner invocation that confirms the just-added test actually fails. A whole-crate fingerprint cache short-circuits `cargo check --tests` on Edit/Write events; a baseline lifecycle (initial-capture / post-accept update / manual recapture) keeps the just-added set well-defined across edits. See [Rust](#rust) below for the full model.
+
+In all three cases, tests, docs, README, and `scratch/` are always allowed without restriction. `/speccraft:spec:override "<reason>"` provides a one-shot bypass with the reason logged into the active spec. For unsupported languages, set `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings.
 
 ---
 
@@ -526,7 +532,12 @@ which opencode
 If the binary is in a non-default location, add it to `PATH` in your shell rc *and* restart Claude Code (it inherits the shell's environment at launch).
 
 **TDD invariant blocks an edit but I did write a test**
-The hook checks **same-directory** sibling tests for Go: editing `pkg/foo/bar.go` requires a recently-edited `pkg/foo/*_test.go`. Tests in a different package don't satisfy it. If your project keeps tests in a separate tree, set `SPECCRAFT_TDD_MODE=soft` until the per-language resolver lands in v1.x, or use `/speccraft:spec:override "<reason>"` for one-off cases.
+The hook's rule depends on the language:
+- **Go:** same-directory `pkg/foo/*_test.go` sibling required. Tests in a different package don't satisfy it.
+- **Python:** same-directory siblings (`test_*.py`, `*_test.py`) first; falls back to walking the roots in `.speccraft/speccraft.toml`'s `[tdd] test_roots = [...]` if no sibling is found.
+- **Rust:** delta-based. The guard checks whether the edit adds a new canonical test ID; if it does, the runner is invoked to confirm the test fails. If neither holds (and you've already initial-captured), the gate rejects with `"no failing test observed"` until a new failing test is added. Run `speccraft-state rust-baseline recapture` to reset the baseline if you started speccraft on a crate that already had failing tests.
+
+For one-off bypasses use `/speccraft:spec:override "<reason>"`; for unsupported languages set `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings.
 
 **"Where is X called?" — speccraft can't tell me**
 Correct, by design. v1 doesn't carry a code graph. Install [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) as an MCP server and Claude Code will pick up its tools automatically. See [Recommended companions](#recommended-companions).
@@ -555,7 +566,7 @@ Complementary. `.speccraft/index.md` is the always-injected one-pager — simila
 Yes. Skip `/speccraft:spec:review` and `/speccraft:spec:review-code`. Everything else (specs, TDD enforcement, memory) works without a single external CLI configured.
 
 **Can I use it in a non-Go repo?**
-Spec workflows, memory injection, and drift detection (regex mode) all work language-agnostically. TDD enforcement supports Go and Python:
+Spec workflows, memory injection, and drift detection (regex mode) all work language-agnostically. TDD enforcement supports Go, Python, and Rust:
 
 - **Go:** same-directory `*_test.go` sibling (no config needed).
 - **Python, colocated tests:** `test_bar.py` or `bar_test.py` beside `bar.py` (no config needed).
@@ -565,6 +576,7 @@ Spec workflows, memory injection, and drift detection (regex mode) all work lang
   test_roots = ["tests"]
   ```
   `/speccraft:init` detects `tests/` and `test/` at the repo root and offers to write this file automatically.
+- **Rust:** opt in via `[tdd.rust] runner = "cargo"` (or `"nextest"`) in `.speccraft/speccraft.toml`. The guard handles both inline `#[cfg(test)] mod tests` and `tests/<stem>.rs` integration tests, plus a crate-fingerprint-gated `cargo check --tests` pre-edit gate and a baseline lifecycle. Cargo workspaces are not supported in this release (spec 0006 reserved). See [Rust](#rust) for the full model.
 
 For other languages, set `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings.
 
@@ -612,7 +624,7 @@ speccraft is developed inside its own devcontainer. This ensures that buggy hook
 **Prerequisites:** VS Code with the Dev Containers extension installed.
 
 1. Clone the repo and open it in VS Code.
-2. `Cmd+Shift+P` → `Dev Containers: Reopen in Container`. The container installs Go, jq, bats, and mock aux-agent CLIs automatically.
+2. `Cmd+Shift+P` → `Dev Containers: Reopen in Container`. The container installs Go, the Rust toolchain (via rustup), jq, bats, and mock aux-agent CLIs automatically.
 3. **Authenticate Claude Code inside the container** (one-time): run `claude` in the integrated terminal and complete the browser flow. The OAuth token lands in a named Docker volume and persists across `Rebuild Container`.
 4. Start a Claude Code session *inside the container*. All hook development and testing happens here — never against the host.
 
