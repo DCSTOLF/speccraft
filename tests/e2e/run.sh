@@ -88,7 +88,7 @@ run_claude() {
 }
 
 # ---- 1. Set up a throwaway Go module ----
-echo "==> [1/7] Creating throwaway Go module"
+echo "==> [1/8] Creating throwaway Go module"
 git init -q
 go mod init example.com/sample >/dev/null
 cat > main.go <<'GO'
@@ -113,7 +113,7 @@ git config user.name "speccraft CI"
 git add . && git commit -qm "initial"
 
 # ---- 2. /speccraft:init ----
-echo "==> [2/7] /speccraft:init"
+echo "==> [2/8] /speccraft:init"
 run_claude "/speccraft:init. Use these answers when prompted: project='sample', stack='Go 1.22', layering='just main', top guardrails='no fmt.Println outside main; always handle errors; tests required for new code'." 02-init.log
 exists ".speccraft/index.md"
 exists ".speccraft/guardrails.md"
@@ -126,7 +126,7 @@ exists "specs/.gitkeep"
 contains ".gitignore" ".speccraft/state.json"
 
 # ---- 3. /speccraft:spec:new ----
-echo "==> [3/7] /speccraft:spec:new"
+echo "==> [3/8] /speccraft:spec:new"
 run_claude "/speccraft:spec:new \"Add farewell function\". Answers: why='symmetry with greeting'; what='add farewell() that returns goodbye, called from main'; AC='1) farewell() returns \"goodbye\" 2) main prints both greeting and farewell 3) test covers farewell'; oos='internationalization'; questions=none." 03-new.log
 SPEC_DIR="$(find specs -maxdepth 1 -name '0001-*' -type d 2>/dev/null | head -1)"
 [ -n "$SPEC_DIR" ] || fail "spec dir 0001-* not created"
@@ -134,19 +134,19 @@ exists "$SPEC_DIR/spec.md"
 status_is "$SPEC_DIR/spec.md" "draft"
 
 # ---- 4. /speccraft:spec:review (with mock agents) ----
-echo "==> [4/7] /speccraft:spec:review (mock agents)"
+echo "==> [4/8] /speccraft:spec:review (mock agents)"
 run_claude "/speccraft:spec:review --agents codex,opencode" 04-review.log
 exists "$SPEC_DIR/review.md"
 
 # ---- 5. /speccraft:spec:plan ----
-echo "==> [5/7] /speccraft:spec:plan"
+echo "==> [5/8] /speccraft:spec:plan"
 run_claude "/speccraft:spec:plan --skip-review" 05-plan.log
 exists "$SPEC_DIR/plan.md"
 exists "$SPEC_DIR/tasks.md"
 status_is "$SPEC_DIR/spec.md" "planned"
 
 # ---- 6. TDD invariant: write test first, then prod ----
-echo "==> [6/7] TDD invariant"
+echo "==> [6/8] TDD invariant"
 
 # This should be ALLOWED (test edit first).
 run_claude "Edit main_test.go to add a TestFarewell that asserts farewell() returns \"goodbye\". Just write the test, don't implement farewell yet." 06a-tdd-test.log
@@ -159,7 +159,7 @@ go test ./... >> "$LOG_DIR/06c-go-test.log" 2>&1 || fail "go test failed after i
 pass "go test passes"
 
 # ---- 7. /speccraft:spec:close ----
-echo "==> [7/7] /speccraft:spec:close"
+echo "==> [7/8] /speccraft:spec:close"
 run_claude "/speccraft:spec:close. Approve all proposed memory updates." 07-close.log
 exists "$SPEC_DIR/changelog.md"
 status_is "$SPEC_DIR/spec.md" "closed"
@@ -169,6 +169,17 @@ contains ".speccraft/history.md" "farewell"
 ACTIVE="$(jq -r '.active_spec // "null"' .speccraft/state.json)"
 [ "$ACTIVE" = "null" ] || fail "active_spec not cleared after close: $ACTIVE"
 pass "active_spec cleared"
+
+# ---- 8. Rust dispatch (spec 0005) ----
+# Exercise the Rust e2e fixtures in their own subshells. They are
+# CWD-independent and self-contained (they build speccraft-guard +
+# speccraft-state, install a cargo shim, and run hermetic assertions).
+echo "==> [8/8] Rust dispatch (spec 0005)"
+RUST_E2E_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+( bash "$RUST_E2E_DIR/rust_inline_cycle.sh" ) || fail "rust_inline_cycle.sh failed"
+pass "rust_inline_cycle.sh"
+( bash "$RUST_E2E_DIR/rust_integration_cycle.sh" ) || fail "rust_integration_cycle.sh failed"
+pass "rust_integration_cycle.sh"
 
 echo
 echo "==> ALL E2E ASSERTIONS PASSED"
