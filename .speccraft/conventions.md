@@ -16,6 +16,23 @@
 - All filesystem writes to `.speccraft/` go through the `speccraft-state` binary — hooks do not edit `state.json` directly.
 - Hooks emit Claude Code hook-protocol JSON on stdout and exit non-zero on guardrail violations.
 
+### E2E language-fixture pattern (`tests/e2e/<lang>_cycle.sh`)
+
+Introduced by spec 0005 (Rust) and codified by spec 0007 (Python). Every supported language has a self-contained Bash fixture script in `tests/e2e/` that drives `speccraft-guard` against a representative project layout through the Claude Code PreToolUse hook flow.
+
+- **File location and naming.** `tests/e2e/<lang>_cycle.sh` (e.g. `rust_inline_cycle.sh`, `rust_integration_cycle.sh`, `python_cycle.sh`). Marked executable. `#!/usr/bin/env bash` + `set -euo pipefail` per the general Bash convention above.
+- **Hermetic work dir.** Create `WORK="$(mktemp -d -t <lang>-cycle.XXXXXX)"` and register `trap cleanup EXIT` with a `KEEP_E2E=1` escape hatch. Build any binaries the fixture needs (`speccraft-guard`, `speccraft-state`) into `$WORK`, not into the source tree.
+- **Hook protocol.** Drive `speccraft-guard pre-tool-use` via JSON on stdin matching the Claude Code hook envelope (`tool_name`, `tool_input.file_path`, `cwd`). Factor a `hook_input(path)` helper to keep assertion blocks short.
+- **Exit-code convention.** `fail()` exits 2 (assertion failure), distinct from setup failures (exit 1) and the script's own success (exit 0). Matches `tests/e2e/run.sh`'s expectations.
+- **Progress output.** Use a `note()` helper for intra-scenario progress lines (indented two spaces) and a top-level `echo "==> ..."` for scenario headers, mirroring `rust_inline_cycle.sh` and `python_cycle.sh`.
+- **Invocation from `run.sh`.** Each fixture is invoked from `tests/e2e/run.sh` in a hermetic subshell — `( bash "$RUST_E2E_DIR/<lang>_cycle.sh" ) || fail "<lang>_cycle.sh failed"` — so fixture-local `cd` and env mutations cannot leak into later steps. The step counter (`[N/M]`) is updated in the same edit that adds a new fixture.
+
+### Reset state between scenarios
+
+Introduced by spec 0007.
+
+- When a single fixture script exercises multiple acceptance criteria that share the same project directory, the script must reset session state between scenarios so earlier mutations to `state.json` (e.g. `EditedTestFiles`) do not silently mask later reject assertions. The canonical form is a `reset_state()` (or `reset_session()`) helper that rewrites `.speccraft/state.json` from a literal JSON template with empty `edited_test_files` / `edited_prod_files`. See `python_cycle.sh::reset_state` and the equivalent in the Rust fixtures for reference implementations.
+
 ## Markdown frontmatter
 
 - **Slash commands (`commands/**.md`):** YAML frontmatter with at minimum `description:`. Fully qualified command names live in the filename path (e.g. `commands/spec/new.md` becomes `/speccraft:spec:new`).

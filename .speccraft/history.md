@@ -2,6 +2,17 @@
 
 Append-only. Newest first.
 
+## 2026-05-29 — Python e2e fixture (spec 0007)
+
+**Spec:** specs/0007-python-e2e-fixture/
+**Decision:** Add an end-to-end fixture for Python (`tests/e2e/python_cycle.sh`) modeled structurally on `rust_inline_cycle.sh` and wire it into `tests/e2e/run.sh` as step `[9/9]`. The fixture exercises the sibling-test resolver (spec 0002) and the separate-tree resolver (spec 0003) through the full PreToolUse hook flow, asserting both rejection messages and acceptance-after-`track-edit`. No Go code changed.
+**Why:** Until this spec, Python TDD support had unit coverage in `tools/internal/speccraft/files_test.go` but no end-to-end test that drove `speccraft-guard` against a real Python project layout. The asymmetry surfaced during spec 0005's CI hardening when wiring the Rust e2e step into `run.sh` — Go has e2e via the throwaway Go module in step 1, Rust now has it in step 8, and Python had none. This spec is the smallest possible follow-up that restores parity across all three supported languages.
+**Consequence:**
+- Every supported language (Go, Python, Rust) now has an end-to-end fixture in `tests/e2e/`. Future language additions are expected to ship with their own `<lang>_cycle.sh` modeled on the same template (codified in `.speccraft/conventions.md`).
+- The fixture surfaced a real subtle bug in the spec body: AC #3 originally colocated `bar.py` with the AC #2 sibling pair, but tier-1 of `SiblingTestFiles` is a directory glob and would have hidden the tier-2 behavior. Implementation moved `bar.py` to `src/pkg/` and `orphan.py` to `src/loners/`. Documented in the spec's changelog as a deviation. Reinforces the convention that each AC scenario in a multi-scenario fixture should isolate its directory layout.
+- Planning was performed with `/speccraft:spec:plan --skip-review` against a `status: draft` spec at user direction. Cross-model review was bypassed; spec+plan are a paired artifact for PR review. Future reviewers should be aware when reading 0007 that the normal review gate did not run.
+- T10 (CI green) is deferred. Two pre-existing infrastructure failures upstream of step `[9/9]` (devcontainer `EACCES` on `~/.claude/session-env` during `/speccraft:spec:review`; `"Credit balance is too low"` during `/speccraft:spec:plan`) prevent the new step from being reached in CI. A follow-up spec (`0008`, CI hardening) will be filed immediately after this closure to fix the upstream issues and retroactively verify T10.
+
 ## 2026-05-29 — Rust language support (spec 0005)
 
 **Spec:** specs/0005-rust-language-support/

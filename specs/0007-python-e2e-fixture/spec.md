@@ -1,8 +1,9 @@
 ---
 id: "0007"
 title: "Python e2e fixture"
-status: in-progress
+status: closed
 created: 2026-05-29
+closed: 2026-05-29
 authors: [claude]
 packages: ["tests/e2e"]
 related-specs: ["0002", "0003"]

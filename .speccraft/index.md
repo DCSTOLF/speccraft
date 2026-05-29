@@ -35,10 +35,10 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-`specs/0007-python-e2e-fixture/` (draft)
+`specs/0008-ci-hardening/` (draft)
 
 ## Recent decisions (last 3)
 
+- 2026-05-29 — Python e2e fixture (spec 0007): symmetric-coverage gap closed; e2e-language-fixture pattern codified in conventions; T10 CI-verification deferred to spec 0008
 - 2026-05-29 — Rust language support (spec 0005): runner-invocation primitive + dispatch-by-language pattern + `reserves-specs` convention
 - 2026-05-22 — Command-name migration to `/speccraft:spec:*` fully-qualified
-- 2026-05-15 — Python TDD support landed (specs 0002, 0003)
