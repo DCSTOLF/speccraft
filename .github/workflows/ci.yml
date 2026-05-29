@@ -77,3 +77,22 @@ jobs:
           devcontainer exec --workspace-folder . \
             --remote-env ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
             bash tests/e2e/run.sh
+
+  e2e-language-only:
+    # Spec 0008 AC #3 + AC #4: fast-signal language-dispatch e2e that
+    # never invokes claude -p. Runs on every push AND pull_request (NOT
+    # gated to push-to-main like e2e-devcontainer). Does NOT pass
+    # ANTHROPIC_API_KEY; the --language-only flag on run.sh short-
+    # circuits the claude lifecycle and only runs the per-language
+    # fixture scripts.
+    name: E2E language-only (devcontainer, no API)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install devcontainer CLI
+        run: npm install -g @devcontainers/cli
+      - name: Run language-only e2e fixtures
+        run: |
+          devcontainer up --workspace-folder .
+          devcontainer exec --workspace-folder . \
+            bash tests/e2e/run.sh --language-only

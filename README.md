@@ -22,6 +22,7 @@ speccraft is a Claude Code plugin that turns code changes into deliberate, revie
 - [Recommended companions](#recommended-companions)
 - [TDD enforcement](#tdd-enforcement-how-it-works)
 - [Rust](#rust)
+- [CI](#ci)
 - [Configuration](#configuration)
 - [Requirements](#requirements)
 - [Troubleshooting](#troubleshooting)
@@ -614,6 +615,34 @@ No telemetry. The only network call is the one-time binary download from GitHub 
 - Marketplace publishing
 
 See [SPEC.md](./speccraft-v1-spec.md) for the full v1 spec and detailed roadmap (§20).
+
+---
+
+## CI
+
+speccraft's GitHub Actions workflow (`.github/workflows/ci.yml`) splits e2e coverage into two jobs with very different cost profiles:
+
+- **`e2e-language-only`** — runs on **every push and pull request**. Builds the devcontainer and invokes `bash tests/e2e/run.sh --language-only` inside it. Exercises the per-language fixture scripts (`rust_inline_cycle.sh`, `rust_integration_cycle.sh`, `python_cycle.sh`) without ever invoking `claude -p`. **Does NOT require `ANTHROPIC_API_KEY`.** Fast, hermetic, free — the primary signal that the Rust and Python dispatch code in `speccraft-guard` is correct after every change.
+
+- **`e2e-devcontainer`** — runs **only on push to `main`**. Exercises the full spec lifecycle by calling `claude -p` for `/speccraft:init`, `/speccraft:spec:new`, `/speccraft:spec:review`, `/speccraft:spec:plan`, the TDD invariant cycle, and `/speccraft:spec:close`. **Requires `ANTHROPIC_API_KEY`**, costs real credits per run, and is gated to `main` to bound spend.
+
+If you want the fast signal during development, the equivalent local invocation is:
+
+```bash
+bash tests/e2e/run.sh --language-only
+```
+
+It needs cargo on PATH but nothing else.
+
+### `ENVIRONMENT_FAILURE:` annotations
+
+When the `e2e-devcontainer` job fails because `claude -p` hit an environmental problem (not a real assertion failure), the job log includes a literal `ENVIRONMENT_FAILURE: <category>` line on stderr. Categories:
+
+- **`ENVIRONMENT_FAILURE: credit_exhausted`** — the API quota is out. Refill credits or wait for the monthly reset.
+- **`ENVIRONMENT_FAILURE: auth`** — HTTP 401/403, missing/empty `ANTHROPIC_API_KEY`, or a known auth-error substring in the response. Check the repo secret.
+- **`ENVIRONMENT_FAILURE: transient_api`** — HTTP 5xx / 429, network/timeout/connection-refused. Re-run the job.
+
+If a `claude -p` failure matches none of these patterns, no annotation is emitted and the job exits non-zero like any other assertion failure — that means it's a real bug. The exit code stays non-zero in every case; the annotation is observability, not error-swallowing.
 
 ---
 

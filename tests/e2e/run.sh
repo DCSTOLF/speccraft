@@ -17,6 +17,27 @@
 #   3  claude -p failed
 set -euo pipefail
 
+# ---- flag parse (spec 0008 AC #2) ----
+# `--language-only` skips the entire claude -p driven lifecycle and runs
+# only the per-language fixture scripts (Rust + Python). Used by the
+# e2e-language-only CI job which has no API credits and no
+# ANTHROPIC_API_KEY. Single contract — one entrypoint, one flag.
+LANGUAGE_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --language-only) LANGUAGE_ONLY=1 ;;
+    --help|-h)
+      echo "usage: $0 [--language-only]"
+      echo "  --language-only   skip the claude -p lifecycle; run only language fixtures (spec 0008)"
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+
 # >>> cargo-preamble (spec 0005 AC #9 — fail fast on missing Rust toolchain)
 # The e2e harness exercises Rust fixtures (inline + integration cycles per
 # AC #6); without cargo on PATH the assertions would misreport. Surface a
@@ -52,6 +73,21 @@ echo "==> Test root: $TEST_ROOT"
 echo "==> Plugin:    $PLUGIN_DIR"
 echo "==> Logs:      $LOG_DIR"
 
+# ---- language-fixture runner (shared by lifecycle and --language-only) ----
+# Spec 0008 AC #2 + AC #6: invokes the three language fixture scripts in
+# hermetic subshells. Each fixture is self-contained (builds its own
+# binaries into mktemp -d) and exits non-zero on assertion failure.
+run_language_fixtures() {
+  local e2e_dir
+  e2e_dir="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+  ( bash "$e2e_dir/rust_inline_cycle.sh" )      || fail "rust_inline_cycle.sh failed"
+  pass "rust_inline_cycle.sh"
+  ( bash "$e2e_dir/rust_integration_cycle.sh" ) || fail "rust_integration_cycle.sh failed"
+  pass "rust_integration_cycle.sh"
+  ( bash "$e2e_dir/python_cycle.sh" )           || fail "python_cycle.sh failed"
+  pass "python_cycle.sh"
+}
+
 # ---- assertion helpers ----
 LAST_LOG=""
 fail() {
@@ -75,6 +111,51 @@ status_is() {
   pass "status=$want in $f"
 }
 
+classify_claude_failure() {
+  # Spec 0008 AC #5: read combined claude -p output on stdin and emit
+  # an "ENVIRONMENT_FAILURE: <category>" tag iff the output matches one
+  # of the enumerated environmental failure modes. Empty string emitted
+  # for unmatched failures (left to surface as ordinary assertion
+  # failures). Categories are checked in priority order:
+  #   credit_exhausted > auth > transient_api
+  # so the most-specific signal wins when a log happens to contain
+  # multiple matches.
+  local content
+  content="$(cat)"
+
+  # credit_exhausted: literal Anthropic API error string.
+  if printf '%s' "$content" | grep -qF -- 'Credit balance is too low'; then
+    echo "ENVIRONMENT_FAILURE: credit_exhausted"
+    return 0
+  fi
+
+  # auth: HTTP 401/403, missing/empty ANTHROPIC_API_KEY, or known
+  # auth-error substrings (case-insensitive).
+  if [ -z "${ANTHROPIC_API_KEY:-}" ] \
+     || printf '%s' "$content" | grep -qE 'HTTP/[0-9.]+[[:space:]]+(401|403)\b' \
+     || printf '%s' "$content" | grep -qE '\b(401|403)[[:space:]]+(Unauthorized|Forbidden)\b' \
+     || printf '%s' "$content" | grep -qE 'status:[[:space:]]*(401|403)\b' \
+     || printf '%s' "$content" | grep -qiF 'invalid x-api-key' \
+     || printf '%s' "$content" | grep -qiF 'authentication failed' \
+     || printf '%s' "$content" | grep -qiF 'unauthorized'; then
+    echo "ENVIRONMENT_FAILURE: auth"
+    return 0
+  fi
+
+  # transient_api: HTTP 5xx, HTTP 429, or transient-error substrings.
+  if printf '%s' "$content" | grep -qE 'HTTP/[0-9.]+[[:space:]]+(5[0-9]{2}|429)\b' \
+     || printf '%s' "$content" | grep -qE 'status:[[:space:]]*(5[0-9]{2}|429)\b' \
+     || printf '%s' "$content" | grep -qiF 'network' \
+     || printf '%s' "$content" | grep -qiF 'timeout' \
+     || printf '%s' "$content" | grep -qiF 'connection refused'; then
+    echo "ENVIRONMENT_FAILURE: transient_api"
+    return 0
+  fi
+
+  # Unmatched — stays an unadorned assertion failure.
+  return 0
+}
+
 run_claude() {
   local prompt="$1" log="$2"
   LAST_LOG="$log"
@@ -84,8 +165,31 @@ run_claude() {
     --output-format text \
     --plugin-dir "$PLUGIN_DIR" \
     "$prompt" > "$LOG_DIR/$log" 2>&1 \
-  || { echo "claude -p failed; log:"; cat "$LOG_DIR/$log" >&2; exit 3; }
+  || {
+    echo "claude -p failed; log:"
+    cat "$LOG_DIR/$log" >&2
+    # Spec 0008 AC #5: tag enumerated environmental failures so CI logs
+    # can distinguish env problems from real assertion failures.
+    local tag
+    tag="$(classify_claude_failure < "$LOG_DIR/$log")"
+    if [ -n "$tag" ]; then
+      echo "$tag" >&2
+    fi
+    exit 3
+  }
 }
+
+# ---- --language-only short-circuit (spec 0008 AC #2) ----
+# Skip the entire claude -p lifecycle. Run only the language fixtures
+# and exit. The fixtures are self-contained; they don't need claude,
+# ANTHROPIC_API_KEY, or the throwaway Go module.
+if [ "$LANGUAGE_ONLY" = "1" ]; then
+  echo "==> --language-only mode: skipping lifecycle, running language fixtures"
+  run_language_fixtures
+  echo
+  echo "==> LANGUAGE-ONLY E2E PASSED"
+  exit 0
+fi
 
 # ---- 1. Set up a throwaway Go module ----
 echo "==> [1/9] Creating throwaway Go module"
@@ -170,21 +274,13 @@ ACTIVE="$(jq -r '.active_spec // "null"' .speccraft/state.json)"
 [ "$ACTIVE" = "null" ] || fail "active_spec not cleared after close: $ACTIVE"
 pass "active_spec cleared"
 
-# ---- 8. Rust dispatch (spec 0005) ----
-# Exercise the Rust e2e fixtures in their own subshells. They are
-# CWD-independent and self-contained (they build speccraft-guard +
-# speccraft-state, install a cargo shim, and run hermetic assertions).
+# ---- 8/9. Language dispatch (specs 0005 Rust + 0007 Python) ----
+# Shared with the --language-only short-circuit above. Each fixture is
+# CWD-independent and self-contained (builds binaries into mktemp -d,
+# installs shims, runs hermetic assertions).
 echo "==> [8/9] Rust dispatch (spec 0005)"
-RUST_E2E_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
-( bash "$RUST_E2E_DIR/rust_inline_cycle.sh" ) || fail "rust_inline_cycle.sh failed"
-pass "rust_inline_cycle.sh"
-( bash "$RUST_E2E_DIR/rust_integration_cycle.sh" ) || fail "rust_integration_cycle.sh failed"
-pass "rust_integration_cycle.sh"
-
-# ---- 9. Python dispatch (spec 0007) ----
 echo "==> [9/9] Python dispatch (spec 0007)"
-( bash "$RUST_E2E_DIR/python_cycle.sh" ) || fail "python_cycle.sh failed"
-pass "python_cycle.sh"
+run_language_fixtures
 
 echo
 echo "==> ALL E2E ASSERTIONS PASSED"
