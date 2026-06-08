@@ -19,14 +19,13 @@ Steps:
    - <ISO date> — override: <reason>
    ```
 
-3. Set a session flag that allows the next single production-file edit
-   without the sibling-test check. This is implemented by adding a temporary
-   entry to `.speccraft/state.json`:
-   ```json
-   "override_pending": true
+3. Set the session flag that allows the next single production-file edit
+   without the sibling-test check:
+   ```bash
+   speccraft-state set override_pending true
    ```
-   Note: `speccraft-guard` checks this flag; `post-tool-use.sh` clears it
-   after the first production edit.
+   `speccraft-guard` checks this flag via `ConsumeOverride` and clears it
+   atomically on the first guarded production-file edit.
 
 4. Confirm to the user: "Override granted. The next production file edit
    will bypass the TDD invariant. Reason logged in tasks.md."
