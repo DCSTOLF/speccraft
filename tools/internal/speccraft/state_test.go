@@ -1,6 +1,7 @@
 package speccraft_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,6 +175,134 @@ func TestSession_RustFields_EmptyByDefault(t *testing.T) {
 	}
 	if s.Session.RustGateFingerprint != "" {
 		t.Errorf("RustGateFingerprint = %q, want empty", s.Session.RustGateFingerprint)
+	}
+}
+
+func TestConsumeOverride_FlagSet_ReturnsTrueAndClears(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := speccraft.SetField(tmp, "override_pending", "true"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := speccraft.ConsumeOverride(tmp)
+	if err != nil {
+		t.Fatalf("first ConsumeOverride: %v", err)
+	}
+	if !got {
+		t.Error("first ConsumeOverride = false, want true")
+	}
+	got, err = speccraft.ConsumeOverride(tmp)
+	if err != nil {
+		t.Fatalf("second ConsumeOverride: %v", err)
+	}
+	if got {
+		t.Error("second ConsumeOverride = true, want false (flag must be single-use)")
+	}
+	// Verify omitempty: key must be absent from disk after consume.
+	raw, err := os.ReadFile(filepath.Join(tmp, ".speccraft", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("override_pending")) {
+		t.Errorf("state.json still contains override_pending key after consume: %s", raw)
+	}
+}
+
+func TestConsumeOverride_FlagUnset_ReturnsFalse(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := speccraft.ConsumeOverride(tmp)
+	if err != nil {
+		t.Fatalf("ConsumeOverride on fresh state: %v", err)
+	}
+	if got {
+		t.Error("ConsumeOverride on unset flag = true, want false")
+	}
+}
+
+func TestConsumeOverride_AbsentStateFile_ReturnsFalse(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// No state.json written — mirrors loadStateLocked no-file behaviour.
+	got, err := speccraft.ConsumeOverride(tmp)
+	if err != nil {
+		t.Fatalf("ConsumeOverride with absent state.json: %v", err)
+	}
+	if got {
+		t.Error("ConsumeOverride with absent state file = true, want false")
+	}
+}
+
+func TestSetField_OverridePending_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := speccraft.SetField(tmp, "override_pending", "true"); err != nil {
+		t.Fatal(err)
+	}
+	s, err := speccraft.LoadState(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Session.OverridePending {
+		t.Error("OverridePending = false after SetField true, want true")
+	}
+	if err := speccraft.SetField(tmp, "override_pending", "false"); err != nil {
+		t.Fatal(err)
+	}
+	s, err = speccraft.LoadState(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Session.OverridePending {
+		t.Error("OverridePending = true after SetField false, want false")
+	}
+}
+
+func TestGetField_OverridePending(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(root string)
+		want  string
+	}{
+		{
+			name:  "set true",
+			setup: func(root string) { speccraft.SetField(root, "override_pending", "true") },
+			want:  "true",
+		},
+		{
+			name:  "set false",
+			setup: func(root string) { speccraft.SetField(root, "override_pending", "false") },
+			want:  "false",
+		},
+		{
+			name:  "unset",
+			setup: func(root string) {},
+			want:  "false",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(tmp)
+			got, err := speccraft.GetField(tmp, "override_pending")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("GetField(override_pending) = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

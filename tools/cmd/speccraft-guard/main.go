@@ -350,6 +350,10 @@ func goPythonProdGuard(absPath, root string, cfg speccraft.SpeccraftConfig) erro
 				"editing production code.", state.ActiveSpec, status)
 	}
 
+	if ok, err := speccraft.ConsumeOverride(root); err == nil && ok {
+		return nil
+	}
+
 	siblings, _ := speccraft.SiblingTestFiles(absPath, root, cfg.TDD.TestRoots)
 	dir := filepath.Dir(absPath)
 	editedTests := state.Session.EditedTestFiles

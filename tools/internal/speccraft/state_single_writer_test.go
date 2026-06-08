@@ -33,6 +33,7 @@ func TestRustState_NoExternalWriters_Grep(t *testing.T) {
 	patterns := []*regexp.Regexp{
 		regexp.MustCompile(`\.RustTestBaseline\s*=[^=]`),
 		regexp.MustCompile(`\.RustGateFingerprint\s*=[^=]`),
+		regexp.MustCompile(`\.OverridePending\s*=[^=]`),
 	}
 
 	allowedFiles := map[string]bool{

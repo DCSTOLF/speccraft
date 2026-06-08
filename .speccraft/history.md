@@ -2,6 +2,17 @@
 
 Append-only. Newest first.
 
+## 2026-06-08 — fix override no-op (spec 0009)
+
+**Spec:** specs/0009-override/
+**Decision:** The Go/Python production-edit guard now consults a persisted, single-shot `OverridePending` flag on `Session` (in `.speccraft/state.json`). The flag is consumed atomically by a new `ConsumeOverride(root) (bool, error)` API that reads-and-clears under a single `mu.Lock()` via `loadStateLocked` / `saveStateLocked`. The flag is owned exclusively by `speccraft-state` (enforced by the single-writer grep test).
+**Why:** The previous override mechanism was a no-op for the guard — toggling it had no effect on the production-edit-without-sibling-test rule, so users had no working escape hatch. The fix needed to be (a) single-shot so an override can't silently persist, (b) crash-safe so a half-applied override can't leave the repo in a permissive state, and (c) consistent with the existing single-writer invariant for state fields.
+**Consequence:**
+- Override is now genuinely single-shot and atomic: a single edit is allowed, the next is blocked again.
+- Pattern established for "consume-on-use" state fields: lock once, load-locked, mutate, save-locked, return. Future single-shot flags should follow `ConsumeOverride` rather than the read-then-separately-write pattern.
+- `commands/spec/override.md` documentation is stale (still says edit `state.json` directly) — known gap, deferred.
+- The single-writer allow-list is no longer Rust-specific; any new field added to `Session` must be added to `state_single_writer_test.go`'s grep patterns.
+
 ## 2026-05-29 — CI hardening (spec 0008)
 
 **Spec:** specs/0008-ci-hardening/

@@ -2,6 +2,7 @@ package speccraft
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,6 +38,11 @@ type Session struct {
 	// capture time" — both have RustTestBaseline=[], only the former
 	// should re-trigger initial-capture.
 	RustBaselineCaptured bool `json:"rust_baseline_captured,omitempty"`
+
+	// OverridePending grants a one-time bypass of the TDD sibling-test
+	// invariant. ConsumeOverride atomically reads and clears it so the
+	// bypass fires exactly once per /speccraft:spec:override invocation.
+	OverridePending bool `json:"override_pending,omitempty"`
 }
 
 var mu sync.Mutex
@@ -99,6 +105,11 @@ func GetField(root, field string) (string, error) {
 		return s.ActiveSpec, nil
 	case "version":
 		return "1", nil
+	case "override_pending":
+		if s.Session.OverridePending {
+			return "true", nil
+		}
+		return "false", nil
 	default:
 		return "", nil
 	}
@@ -115,8 +126,31 @@ func SetField(root, field, value string) error {
 	switch field {
 	case "active_spec":
 		s.ActiveSpec = value
+	case "override_pending":
+		s.Session.OverridePending = (value == "true")
 	}
 	return saveStateLocked(root, s)
+}
+
+// ConsumeOverride atomically reads and clears the OverridePending flag.
+// Returns true exactly once if the flag was set, then clears it on disk so
+// the bypass fires for a single guarded edit. Uses a single mu.Lock()
+// acquisition to avoid racing with concurrent TrackEdit calls.
+func ConsumeOverride(root string) (bool, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	s, err := loadStateLocked(root)
+	if err != nil {
+		return false, fmt.Errorf("consume override: %w", err)
+	}
+	was := s.Session.OverridePending
+	if was {
+		s.Session.OverridePending = false
+		if err := saveStateLocked(root, s); err != nil {
+			return false, fmt.Errorf("consume override: %w", err)
+		}
+	}
+	return was, nil
 }
 
 // GetRustBaseline returns the Rust test baseline list. Empty slice if unset.

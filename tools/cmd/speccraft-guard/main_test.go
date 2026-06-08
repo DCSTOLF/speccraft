@@ -512,6 +512,91 @@ mod tests { fn x() {} }
 	}
 }
 
+func TestGoPythonProdGuard_OverridePending_AllowsAndConsumes(t *testing.T) {
+	root := makeTestRepo(t, "0009-test", "in-progress")
+	if err := speccraft.SetField(root, "override_pending", "true"); err != nil {
+		t.Fatal(err)
+	}
+	prodFile := filepath.Join(root, "pkg", "main.go")
+	if err := os.MkdirAll(filepath.Dir(prodFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(prodFile, []byte("package pkg\n"), 0o644)
+
+	if err := goPythonProdGuard(prodFile, root, speccraft.SpeccraftConfig{}); err != nil {
+		t.Fatalf("expected nil with override pending, got: %v", err)
+	}
+	s, err := speccraft.LoadState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Session.OverridePending {
+		t.Error("OverridePending still true after guard consumed it; flag must be single-use")
+	}
+}
+
+func TestGoPythonProdGuard_OverridePending_SecondEditRejected(t *testing.T) {
+	root := makeTestRepo(t, "0009-test", "in-progress")
+	if err := speccraft.SetField(root, "override_pending", "true"); err != nil {
+		t.Fatal(err)
+	}
+	prodFile := filepath.Join(root, "pkg", "main.go")
+	os.MkdirAll(filepath.Dir(prodFile), 0o755)
+	os.WriteFile(prodFile, []byte("package pkg\n"), 0o644)
+
+	cfg := speccraft.SpeccraftConfig{}
+	if err := goPythonProdGuard(prodFile, root, cfg); err != nil {
+		t.Fatalf("first call expected nil (override), got: %v", err)
+	}
+	// Second call: flag consumed, no sibling test edited → TDD invariant fires.
+	if err := goPythonProdGuard(prodFile, root, cfg); err == nil {
+		t.Error("second call expected TDD invariant error, got nil")
+	}
+}
+
+func TestGoPythonProdGuard_OverrideUnset_BehavesAsToday(t *testing.T) {
+	root := makeTestRepo(t, "0009-test", "in-progress")
+	prodFile := filepath.Join(root, "pkg", "main.go")
+	os.MkdirAll(filepath.Dir(prodFile), 0o755)
+	os.WriteFile(prodFile, []byte("package pkg\n"), 0o644)
+
+	err := goPythonProdGuard(prodFile, root, speccraft.SpeccraftConfig{})
+	if err == nil {
+		t.Error("expected TDD invariant error when override not set and no sibling edited")
+	}
+	if err != nil && !strings.Contains(err.Error(), "TDD invariant") {
+		t.Errorf("expected TDD invariant error, got: %v", err)
+	}
+}
+
+func TestGoPythonProdGuard_OverrideDoesNotConsumeOnPrecondFail(t *testing.T) {
+	// active_spec="" AND override_pending=true → "No active spec" error,
+	// flag must NOT be consumed.
+	root := makeTestRepo(t, "", "")
+	if err := speccraft.SetField(root, "override_pending", "true"); err != nil {
+		t.Fatal(err)
+	}
+	prodFile := filepath.Join(root, "pkg", "main.go")
+	os.MkdirAll(filepath.Dir(prodFile), 0o755)
+	os.WriteFile(prodFile, []byte("package pkg\n"), 0o644)
+
+	err := goPythonProdGuard(prodFile, root, speccraft.SpeccraftConfig{})
+	if err == nil {
+		t.Fatal("expected 'No active spec' error")
+	}
+	if !strings.Contains(err.Error(), "No active spec") {
+		t.Errorf("expected 'No active spec' error, got: %v", err)
+	}
+	// Flag must still be set — not consumed on a pre-condition failure path.
+	s, loadErr := speccraft.LoadState(root)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !s.Session.OverridePending {
+		t.Error("OverridePending was consumed before pre-conditions passed; must be preserved for retry")
+	}
+}
+
 func TestPreToolUse_RustSecondInvocation_AfterCapture_RunnerIsConsulted(t *testing.T) {
 	root := makeRustSingleCrateRepo(t)
 	src := `#[cfg(test)]
