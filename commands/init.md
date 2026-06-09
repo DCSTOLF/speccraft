@@ -109,5 +109,5 @@ Steps:
     ```
 
     If the user mentions they want call-graph or symbol-search capabilities,
-    suggest installing CodeGraphContext as an MCP server alongside speccraft
-    (see README "Recommended companions").
+    suggest installing a code-intelligence MCP server (such as CodeGraphContext)
+    alongside speccraft.

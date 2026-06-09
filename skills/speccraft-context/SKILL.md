@@ -22,15 +22,13 @@ you when and how to pull deeper files.
 
 ## Codebase-wide structural queries
 
-For "where is X called?", "what does file Y export?", or "which tests cover this code?" —
-speccraft does NOT carry a built-in code graph in v1. Use whatever the user has configured:
-
-- If [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) is connected
-  as an MCP server, prefer its tools for structural queries — they're pre-indexed and far
-  cheaper than re-scanning the source.
-- Otherwise, fall back to `rg` / `grep` for symbol search and `git grep` for diff-aware
-  queries. Acknowledge the cost: structural questions on a large repo may want a
-  CodeGraphContext install.
+"Where is X called?", "what does file Y export?", "which tests cover this code?" —
+structural queries are a real need, but speccraft does not own how to answer them.
+Speccraft defers to whatever code-intelligence tool the user has installed. Routing
+(which tool to call, when to inline a query vs. quarantine it in a subagent, when
+to fall back to grep) is owned by that tool's own configuration — typically
+registered in the user's global CLAUDE.md or in the MCP server's own instructions.
+Do not duplicate or override those rules here.
 
 speccraft itself only knows about session edits (via `state.json`) and the literal
 contents of `.speccraft/`.

@@ -8,7 +8,7 @@
 4. `internal/store/` — persistence
 5. `internal/httpclient/` — outbound HTTP
 
-Layer N may depend only on layers with higher numbers. (Advisory in v1; enforced via CodeGraphContext if configured.)
+Layer N may depend only on layers with higher numbers. (Advisory in v1.)
 
 ## Key decisions
 

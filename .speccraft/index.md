@@ -35,7 +35,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-none
+specs/0011-code-intel/ (status: in-progress)
 
 ## Recent decisions (last 3)
 
