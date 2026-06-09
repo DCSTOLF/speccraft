@@ -2,6 +2,12 @@
 
 Append-only. Newest first.
 
+## 2026-06-09 — JavaScript and TypeScript support (spec 0010)
+**Spec:** specs/0010-javascript-typescript-support/
+**Decision:** Add JS/TS as a first-class language in `speccraft-guard` via pure file classification plus session-state sibling lookup. No Node/npm/Jest/Vitest is invoked. Test recognition uses 16 suffix variants (`.test`/`.spec` × `.js/.ts/.jsx/.tsx/.mjs/.cjs/.mts/.cts`) plus the `__tests__/` immediate-directory convention. Production recognition uses the same extension set minus declaration files and test files. Both classifiers apply a segment-exact exclusion for `node_modules` and `dist`. Before adding `jsTsDispatch`, the shared red-phase preamble in `goPythonProdGuard` was lifted into a tri-state `prodGuardPrologue` helper returning `prologueAllow` / `prologueBlock` / `prologueContinue`.
+**Why:** JS/TS is the largest active language ecosystem and a foreseeable adoption blocker. Keeping the guard runtime-free preserves the "no real runner in the hook" invariant established in 0002/0005 and avoids dragging a Node toolchain into every speccraft install. Extracting the prologue first kept the new dispatcher honest about gate symmetry with Go/Python and prevented subtle drift between languages.
+**Consequence:** Adding the next language (e.g., Ruby, C#) is now a smaller change: implement `<lang>Dispatch` reusing `prodGuardPrologue`, add a case in `dispatchByLanguage`, extend `IsTestFile`, ship a `tests/e2e/<lang>_cycle.sh` fixture, and bump the run.sh step counter. Four rounds of spec review were needed to reach this shape — reviewers pushed back on real-Jest invocation, runtime sibling resolution, and test/production extension asymmetry, all of which would have broken the existing language model. `--language-only` CI now runs 10 language fixtures.
+
 ## 2026-06-08 — fix override no-op (spec 0009)
 
 **Spec:** specs/0009-override/

@@ -597,6 +597,186 @@ func TestGoPythonProdGuard_OverrideDoesNotConsumeOnPrecondFail(t *testing.T) {
 	}
 }
 
+// --- Step 13: prodGuardPrologue tests ---
+
+func TestProdGuardPrologue_ReturnsActiveSpecError(t *testing.T) {
+	root := makeTestRepo(t, "", "")
+	prodFile := filepath.Join(root, "pkg", "main.go")
+	os.MkdirAll(filepath.Dir(prodFile), 0o755)
+	os.WriteFile(prodFile, []byte("package pkg\n"), 0o644)
+
+	dec, err := prodGuardPrologue(prodFile, root)
+	if dec != prologueBlock {
+		t.Errorf("expected prologueBlock, got %v", dec)
+	}
+	if err == nil || !strings.Contains(err.Error(), "No active spec") {
+		t.Errorf("expected 'No active spec' error, got: %v", err)
+	}
+}
+
+func TestProdGuardPrologue_ReturnsStatusError(t *testing.T) {
+	root := makeTestRepo(t, "0010-test", "draft")
+	prodFile := filepath.Join(root, "pkg", "main.go")
+	os.MkdirAll(filepath.Dir(prodFile), 0o755)
+	os.WriteFile(prodFile, []byte("package pkg\n"), 0o644)
+
+	dec, err := prodGuardPrologue(prodFile, root)
+	if dec != prologueBlock {
+		t.Errorf("expected prologueBlock, got %v", dec)
+	}
+	if err == nil || !strings.Contains(err.Error(), "in status") {
+		t.Errorf("expected 'in status' error, got: %v", err)
+	}
+}
+
+func TestProdGuardPrologue_ConsumesOverrideReturnsAllow(t *testing.T) {
+	root := makeTestRepo(t, "0010-test", "in-progress")
+	if err := speccraft.SetField(root, "override_pending", "true"); err != nil {
+		t.Fatal(err)
+	}
+	prodFile := filepath.Join(root, "pkg", "main.go")
+	os.MkdirAll(filepath.Dir(prodFile), 0o755)
+	os.WriteFile(prodFile, []byte("package pkg\n"), 0o644)
+
+	dec, err := prodGuardPrologue(prodFile, root)
+	if dec != prologueAllow {
+		t.Errorf("expected prologueAllow, got %v", dec)
+	}
+	if err != nil {
+		t.Errorf("expected nil error, got: %v", err)
+	}
+	s, _ := speccraft.LoadState(root)
+	if s.Session.OverridePending {
+		t.Error("OverridePending must be consumed")
+	}
+}
+
+func TestProdGuardPrologue_PassThroughReturnsContinue(t *testing.T) {
+	root := makeTestRepo(t, "0010-test", "in-progress")
+	prodFile := filepath.Join(root, "pkg", "main.go")
+	os.MkdirAll(filepath.Dir(prodFile), 0o755)
+	os.WriteFile(prodFile, []byte("package pkg\n"), 0o644)
+
+	dec, err := prodGuardPrologue(prodFile, root)
+	if dec != prologueContinue {
+		t.Errorf("expected prologueContinue, got %v", dec)
+	}
+	if err != nil {
+		t.Errorf("expected nil error, got: %v", err)
+	}
+}
+
+// --- Step 15: jsTsDispatch tests ---
+
+func TestJsTsDispatch_RejectsWhenNoSiblingTestRegistered(t *testing.T) {
+	root := makeTestRepo(t, "0010-test", "in-progress")
+	srcDir := filepath.Join(root, "src")
+	os.MkdirAll(srcDir, 0o755)
+	prodFile := filepath.Join(srcDir, "foo.ts")
+	os.WriteFile(prodFile, []byte("export const x = 1;\n"), 0o644)
+
+	input := HookInput{
+		ToolInput: ToolInput{FilePath: prodFile},
+		CWD:       root,
+	}
+	err := processToolUse(input, deps{})
+	if err == nil {
+		t.Fatal("expected rejection when no sibling test registered")
+	}
+	if !strings.Contains(err.Error(), "no sibling test registered for") {
+		t.Errorf("error should mention 'no sibling test registered for': %v", err)
+	}
+}
+
+func TestJsTsDispatch_AcceptsWhenSiblingSuffixTestRegistered(t *testing.T) {
+	root := makeTestRepo(t, "0010-test", "in-progress")
+	srcDir := filepath.Join(root, "src")
+	os.MkdirAll(srcDir, 0o755)
+	prodFile := filepath.Join(srcDir, "foo.ts")
+	testFile := filepath.Join(srcDir, "foo.test.ts")
+	os.WriteFile(prodFile, []byte("export const x = 1;\n"), 0o644)
+	os.WriteFile(testFile, []byte("test('x', () => {});\n"), 0o644)
+
+	// Register the test file in session state.
+	statePath := filepath.Join(root, ".speccraft", "state.json")
+	state := `{"version":1,"active_spec":"0010-test","session":{"id":"","edited_test_files":["` +
+		filepath.ToSlash(testFile) + `"],"edited_prod_files":[]}}`
+	os.WriteFile(statePath, []byte(state), 0o644)
+
+	input := HookInput{
+		ToolInput: ToolInput{FilePath: prodFile},
+		CWD:       root,
+	}
+	if err := processToolUse(input, deps{}); err != nil {
+		t.Fatalf("expected nil after sibling test registered, got: %v", err)
+	}
+}
+
+func TestJsTsDispatch_AcceptsWhenSiblingTestsDirRegistered(t *testing.T) {
+	root := makeTestRepo(t, "0010-test", "in-progress")
+	srcDir := filepath.Join(root, "src")
+	testsDir := filepath.Join(srcDir, "__tests__")
+	os.MkdirAll(testsDir, 0o755)
+	prodFile := filepath.Join(srcDir, "handler.ts")
+	testFile := filepath.Join(testsDir, "handler.test.ts")
+	os.WriteFile(prodFile, []byte("export {};\n"), 0o644)
+	os.WriteFile(testFile, []byte("test('h', () => {});\n"), 0o644)
+
+	statePath := filepath.Join(root, ".speccraft", "state.json")
+	state := `{"version":1,"active_spec":"0010-test","session":{"id":"","edited_test_files":["` +
+		filepath.ToSlash(testFile) + `"],"edited_prod_files":[]}}`
+	os.WriteFile(statePath, []byte(state), 0o644)
+
+	input := HookInput{
+		ToolInput: ToolInput{FilePath: prodFile},
+		CWD:       root,
+	}
+	if err := processToolUse(input, deps{}); err != nil {
+		t.Fatalf("expected nil after __tests__ sibling registered, got: %v", err)
+	}
+}
+
+func TestJsTsDispatch_OnDiskTestNotInSessionDoesNotSatisfy(t *testing.T) {
+	root := makeTestRepo(t, "0010-test", "in-progress")
+	srcDir := filepath.Join(root, "src")
+	os.MkdirAll(srcDir, 0o755)
+	prodFile := filepath.Join(srcDir, "foo.ts")
+	testFile := filepath.Join(srcDir, "foo.test.ts")
+	// Create test file on disk but do NOT register in session state.
+	os.WriteFile(prodFile, []byte("export const x = 1;\n"), 0o644)
+	os.WriteFile(testFile, []byte("test('x', () => {});\n"), 0o644)
+	// state.json has empty edited_test_files (default from makeTestRepo)
+
+	input := HookInput{
+		ToolInput: ToolInput{FilePath: prodFile},
+		CWD:       root,
+	}
+	err := processToolUse(input, deps{})
+	if err == nil {
+		t.Fatal("expected rejection: on-disk test must not satisfy session-only check")
+	}
+}
+
+func TestJsTsDispatch_ReusesPrologueGates(t *testing.T) {
+	root := makeTestRepo(t, "", "")
+	srcDir := filepath.Join(root, "src")
+	os.MkdirAll(srcDir, 0o755)
+	prodFile := filepath.Join(srcDir, "foo.ts")
+	os.WriteFile(prodFile, []byte("export const x = 1;\n"), 0o644)
+
+	input := HookInput{
+		ToolInput: ToolInput{FilePath: prodFile},
+		CWD:       root,
+	}
+	err := processToolUse(input, deps{})
+	if err == nil {
+		t.Fatal("expected 'No active spec' error for JS/TS file")
+	}
+	if !strings.Contains(err.Error(), "No active spec") {
+		t.Errorf("expected 'No active spec' from shared prologue, got: %v", err)
+	}
+}
+
 func TestPreToolUse_RustSecondInvocation_AfterCapture_RunnerIsConsulted(t *testing.T) {
 	root := makeRustSingleCrateRepo(t)
 	src := `#[cfg(test)]

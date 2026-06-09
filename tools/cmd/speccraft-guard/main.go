@@ -132,10 +132,12 @@ func dispatchByLanguage(input HookInput, absPath, root string, cfg speccraft.Spe
 	case speccraft.IsRustFile(absPath):
 		return rustDispatch(input, absPath, root, cfg, d)
 	case speccraft.IsTestFile(absPath):
-		// Go/Python test files — always allowed.
+		// Test files (Go, Python, JS/TS) — always allowed.
 		return nil
 	case speccraft.IsProductionGoFile(absPath), speccraft.IsProductionPythonFile(absPath):
 		return goPythonProdGuard(absPath, root, cfg)
+	case speccraft.IsProductionJSTSFile(absPath):
+		return jsTsDispatch(absPath, root)
 	default:
 		// Unknown file type — allow.
 		return nil
@@ -328,15 +330,28 @@ func stringSet(s []string) map[string]struct{} {
 	return out
 }
 
-// goPythonProdGuard preserves the original Go/Python production-file flow.
-func goPythonProdGuard(absPath, root string, cfg speccraft.SpeccraftConfig) error {
+// prologueDecision is the tri-state result from prodGuardPrologue.
+type prologueDecision int
+
+const (
+	prologueContinue prologueDecision = iota // all gates passed; caller must do its own sibling check
+	prologueAllow                            // override consumed; caller should allow immediately
+	prologueBlock                            // a gate failed; caller should return the error
+)
+
+// prodGuardPrologue enforces the three shared gates (active-spec, status,
+// ConsumeOverride) that apply equally to Go/Python and JS/TS production
+// file writes. It returns (prologueAllow, nil) when an override is consumed,
+// (prologueContinue, nil) when all gates pass, and (prologueBlock, err) when
+// a gate fails.
+func prodGuardPrologue(absPath, root string) (prologueDecision, error) {
 	state, err := speccraft.LoadState(root)
 	if err != nil {
-		return nil
+		return prologueBlock, nil
 	}
 
 	if state.ActiveSpec == "" || state.ActiveSpec == "null" {
-		return fmt.Errorf(
+		return prologueBlock, fmt.Errorf(
 			"No active spec. Edits to production code are blocked.\n"+
 				"Use /spec:new \"<title>\" to start a spec, or set status: in-progress\n"+
 				"on an existing spec.\n\n"+
@@ -345,15 +360,29 @@ func goPythonProdGuard(absPath, root string, cfg speccraft.SpeccraftConfig) erro
 
 	specFile := filepath.Join(root, "specs", state.ActiveSpec, "spec.md")
 	if status := readFrontmatterField(specFile, "status"); status != "in-progress" && status != "" {
-		return fmt.Errorf(
+		return prologueBlock, fmt.Errorf(
 			"Active spec %q is in status %q. Move to in-progress before\n"+
 				"editing production code.", state.ActiveSpec, status)
 	}
 
 	if ok, err := speccraft.ConsumeOverride(root); err == nil && ok {
+		return prologueAllow, nil
+	}
+
+	return prologueContinue, nil
+}
+
+// goPythonProdGuard preserves the original Go/Python production-file flow.
+func goPythonProdGuard(absPath, root string, cfg speccraft.SpeccraftConfig) error {
+	dec, err := prodGuardPrologue(absPath, root)
+	switch dec {
+	case prologueBlock:
+		return err
+	case prologueAllow:
 		return nil
 	}
 
+	state, _ := speccraft.LoadState(root)
 	siblings, _ := speccraft.SiblingTestFiles(absPath, root, cfg.TDD.TestRoots)
 	dir := filepath.Dir(absPath)
 	editedTests := state.Session.EditedTestFiles
@@ -375,6 +404,63 @@ func goPythonProdGuard(absPath, root string, cfg speccraft.SpeccraftConfig) erro
 			dir, siblingList)
 	}
 	return nil
+}
+
+// jsTsDispatch implements the JS/TS production-file guard flow. It enforces
+// the same prologue gates as goPythonProdGuard, then checks that at least one
+// candidate sibling test path appears in session.EditedTestFiles (session-state
+// only — on-disk test files do not satisfy the invariant).
+func jsTsDispatch(absPath, root string) error {
+	dec, err := prodGuardPrologue(absPath, root)
+	switch dec {
+	case prologueBlock:
+		return err
+	case prologueAllow:
+		return nil
+	}
+
+	state, _ := speccraft.LoadState(root)
+	editedTests := state.Session.EditedTestFiles
+
+	dir := filepath.Dir(absPath)
+	base := filepath.Base(absPath)
+	// Strip last extension to get stem (e.g. "foo.ts" → "foo").
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+
+	exts := []string{"js", "ts", "jsx", "tsx", "mjs", "cjs", "mts", "cts"}
+	var candidates []string
+	for _, ext := range exts {
+		// Same-dir suffix candidates
+		candidates = append(candidates,
+			filepath.Clean(filepath.Join(dir, stem+".test."+ext)),
+			filepath.Clean(filepath.Join(dir, stem+".spec."+ext)),
+		)
+		// __tests__/ candidates: .test.<ext>, .spec.<ext>, and bare .<ext>
+		candidates = append(candidates,
+			filepath.Clean(filepath.Join(dir, "__tests__", stem+".test."+ext)),
+			filepath.Clean(filepath.Join(dir, "__tests__", stem+".spec."+ext)),
+			filepath.Clean(filepath.Join(dir, "__tests__", stem+"."+ext)),
+		)
+	}
+
+	for _, candidate := range candidates {
+		for _, edited := range editedTests {
+			if filepath.Clean(edited) == candidate {
+				return nil
+			}
+		}
+	}
+
+	rel, err2 := filepath.Rel(root, absPath)
+	if err2 != nil {
+		rel = absPath
+	}
+	return fmt.Errorf(
+		"TDD invariant: no sibling test registered for %s this session.\n\n"+
+			"Edit a test file matching one of the patterns first (RED), then edit\n"+
+			"the production file.\n\n"+
+			"Use /spec:override \"<reason>\" for a one-time bypass.",
+		rel)
 }
 
 // hasSiblingTestEdited checks if any sibling test was in the session's edited list.

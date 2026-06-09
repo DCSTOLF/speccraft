@@ -39,6 +39,6 @@ none
 
 ## Recent decisions (last 3)
 
+- 2026-06-09 — JavaScript and TypeScript support (spec 0010): `IsJSTSTestFile` + `IsProductionJSTSFile` classifiers; `jsTsDispatch` with session-state-only sibling resolver; `prodGuardPrologue` tri-state helper extracted for gate symmetry; `javascript_cycle.sh` e2e fixture wired as step `[10/10]`
 - 2026-06-08 — fix override no-op (spec 0009): `ConsumeOverride` API wired into `goPythonProdGuard`; single-shot atomic read-and-clear under `mu.Lock()`; single-writer allow-list extended to all `Session` fields; consume-on-use pattern codified in conventions
 - 2026-05-29 — CI hardening (spec 0008): two-job split (cheap language-only vs expensive lifecycle), `ENVIRONMENT_FAILURE:` annotation model, close-commit invariant convention; pre-close gate satisfied by run 26658905606 which also retroactively satisfied spec 0007 T10
-- 2026-05-29 — Python e2e fixture (spec 0007): symmetric-coverage gap closed; e2e-language-fixture pattern codified in conventions; T10 CI-verification deferred to spec 0008

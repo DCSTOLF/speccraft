@@ -6,12 +6,13 @@ import (
 	"strings"
 )
 
-// IsTestFile returns true for Go or Python test files.
+// IsTestFile returns true for Go, Python, or JS/TS test files.
 func IsTestFile(path string) bool {
 	base := filepath.Base(path)
 	return strings.HasSuffix(base, "_test.go") ||
 		strings.HasSuffix(base, "_test.py") ||
-		(strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py"))
+		(strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py")) ||
+		IsJSTSTestFile(path)
 }
 
 // IsProductionGoFile returns true for Go source files that are not tests.
@@ -23,6 +24,87 @@ func IsProductionGoFile(path string) bool {
 // IsProductionPythonFile returns true for Python source files that are not tests.
 func IsProductionPythonFile(path string) bool {
 	return strings.HasSuffix(path, ".py") && !IsTestFile(path)
+}
+
+// jsTSExts is the set of JS/TS file extensions (without leading dot).
+var jsTSExts = []string{"js", "ts", "jsx", "tsx", "mjs", "cjs", "mts", "cts"}
+
+// isExcludedJSTSPath returns true when the path contains node_modules or dist
+// as an exact slash-separated path segment (filepath.Clean semantics).
+func isExcludedJSTSPath(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	for _, seg := range strings.Split(clean, "/") {
+		if seg == "node_modules" || seg == "dist" {
+			return true
+		}
+	}
+	return false
+}
+
+// isDeclarationFile returns true for .d.ts, .d.mts, and .d.cts files.
+func isDeclarationFile(base string) bool {
+	return strings.HasSuffix(base, ".d.ts") ||
+		strings.HasSuffix(base, ".d.mts") ||
+		strings.HasSuffix(base, ".d.cts")
+}
+
+// IsJSTSTestFile returns true for JavaScript/TypeScript test files:
+// - suffix patterns: *.test.<ext> or *.spec.<ext> for the 8 JS/TS extensions
+// - __tests__/ path-segment convention for any of the 8 extensions
+// Excludes node_modules/, dist/, and declaration files (.d.ts/.d.mts/.d.cts).
+func IsJSTSTestFile(path string) bool {
+	if isExcludedJSTSPath(path) {
+		return false
+	}
+	base := filepath.Base(path)
+	if isDeclarationFile(base) {
+		return false
+	}
+	// Suffix patterns: *.test.<ext> and *.spec.<ext>
+	for _, ext := range jsTSExts {
+		if strings.HasSuffix(base, ".test."+ext) || strings.HasSuffix(base, ".spec."+ext) {
+			return true
+		}
+	}
+	// __tests__/ directory convention: exact path segment + JS/TS extension
+	clean := filepath.ToSlash(filepath.Clean(path))
+	segs := strings.Split(clean, "/")
+	hasTestsDir := false
+	for _, seg := range segs[:len(segs)-1] { // exclude the filename itself
+		if seg == "__tests__" {
+			hasTestsDir = true
+			break
+		}
+	}
+	if hasTestsDir {
+		for _, ext := range jsTSExts {
+			if strings.HasSuffix(base, "."+ext) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// IsProductionJSTSFile returns true for JS/TS production source files:
+// not excluded, not a test file, not a declaration file, with a JS/TS extension.
+func IsProductionJSTSFile(path string) bool {
+	if isExcludedJSTSPath(path) {
+		return false
+	}
+	if IsJSTSTestFile(path) {
+		return false
+	}
+	base := filepath.Base(path)
+	if isDeclarationFile(base) {
+		return false
+	}
+	for _, ext := range jsTSExts {
+		if strings.HasSuffix(base, "."+ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsRustFile returns true for any `.rs` source file. Rust does not have a

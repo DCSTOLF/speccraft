@@ -129,6 +129,16 @@ Introduced by spec 0005.
 - **Production wiring goes through `productionDeps()`.** The testability seam in `processToolUse(input, deps)` accepts injected fakes for `exec` and `runnerFor`. The production caller must use `productionDeps()` to wire the real `exec.Command` and `runner.AdapterFor` — constructing `deps{}` inline silently disables the real runner and gate, a bug we hit and fixed during spec 0005 implementation.
 - **Runner-primitive adapter contract.** Per-language test runners implement `runner.Runner` (`Run(ctx, Request) (Result, error)`). Argv construction, output parsing, and outcome classification live entirely inside the adapter. No language-specific code in `tools/cmd/speccraft-guard`.
 
+### Production-guard prologue is a shared tri-state helper
+
+Introduced by spec 0010. When adding a new language dispatcher to `speccraft-guard`, route the red-phase preamble through `prodGuardPrologue` rather than re-implementing the active-spec / override / state-load checks inline. The helper returns one of three `prologueDecision` values:
+
+- `prologueAllow` — the write is permitted unconditionally (override consumed); the dispatcher must return immediately.
+- `prologueBlock` — the write is denied; the dispatcher must return the prologue's blocking error.
+- `prologueContinue` — all common gates passed; the dispatcher must run its language-specific sibling-test check.
+
+**Rationale:** Before `jsTsDispatch` was added, the red-phase preamble lived inline inside `goPythonProdGuard`. Copying it would have created two independent paths through override consumption and state loading — guaranteed drift the next time override or active-spec semantics changed. See `prodGuardPrologue` in `tools/cmd/speccraft-guard/main.go` as the canonical implementation.
+
 ## Templates (`templates/speccraft/`)
 
 - Must remain stack-agnostic. No language- or framework-specific examples in default templates.

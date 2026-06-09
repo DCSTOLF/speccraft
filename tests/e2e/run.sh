@@ -92,6 +92,8 @@ run_language_fixtures() {
   pass "rust_integration_cycle.sh"
   ( bash "$E2E_DIR/python_cycle.sh" )           || fail "python_cycle.sh failed"
   pass "python_cycle.sh"
+  ( bash "$E2E_DIR/javascript_cycle.sh" )       || fail "javascript_cycle.sh failed"
+  pass "javascript_cycle.sh"
 }
 
 # ---- assertion helpers ----
@@ -280,12 +282,13 @@ ACTIVE="$(jq -r '.active_spec // "null"' .speccraft/state.json)"
 [ "$ACTIVE" = "null" ] || fail "active_spec not cleared after close: $ACTIVE"
 pass "active_spec cleared"
 
-# ---- 8/9. Language dispatch (specs 0005 Rust + 0007 Python) ----
+# ---- 8/10. Language dispatch (specs 0005 Rust + 0007 Python + 0010 JS/TS) ----
 # Shared with the --language-only short-circuit above. Each fixture is
 # CWD-independent and self-contained (builds binaries into mktemp -d,
 # installs shims, runs hermetic assertions).
-echo "==> [8/9] Rust dispatch (spec 0005)"
-echo "==> [9/9] Python dispatch (spec 0007)"
+echo "==> [8/10] Rust dispatch (spec 0005)"
+echo "==> [9/10] Python dispatch (spec 0007)"
+echo "==> [10/10] JS/TS dispatch (spec 0010)"
 run_language_fixtures
 
 echo
