@@ -1,7 +1,7 @@
 ---
 id: "0011"
 title: "Defer code-intel routing to user globals"
-status: in-progress
+status: closed
 created: 2026-06-09
 authors: [claude]
 packages: ["skills/speccraft-context", "commands", "templates/speccraft"]

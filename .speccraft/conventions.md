@@ -33,6 +33,19 @@ Introduced by spec 0007.
 
 - When a single fixture script exercises multiple acceptance criteria that share the same project directory, the script must reset session state between scenarios so earlier mutations to `state.json` (e.g. `EditedTestFiles`) do not silently mask later reject assertions. The canonical form is a `reset_state()` (or `reset_session()`) helper that rewrites `.speccraft/state.json` from a literal JSON template with empty `edited_test_files` / `edited_prod_files`. See `python_cycle.sh::reset_state` and the equivalent in the Rust fixtures for reference implementations.
 
+### Grep-assertion oracle for doc-only specs
+
+Introduced by spec 0011.
+
+When a spec is documentation- or template-only — no Go code, no hook, no runner, no e2e fixture to write — the RED→GREEN cycle uses a committed `verify.sh` grep-assertion script in the spec directory, not a behavioral test.
+
+- **Location.** `specs/<id>-<slug>/verify.sh`, marked executable, `#!/usr/bin/env bash` + `set -euo pipefail` per the general Bash convention. Resolves repo root from `${BASH_SOURCE[0]}` and `cd`s there so greps see consistent paths regardless of caller CWD.
+- **Shape.** Each acceptance criterion becomes a labelled `grep` invocation that either passes or fails; the script accumulates a `fails` counter and exits non-zero on any failure. Pair every "absence" check (`grep ... must return zero`) with a "presence" check (`grep ... must return at least one`) so that satisfying the absence by deleting the whole section is rejected as well.
+- **Lifecycle.** Failing against current `main` is the RED state; the edits required to make every check pass are the GREEN state; the script stays in the spec directory after close as the documented AC oracle. Doc-only specs do not wire `verify.sh` into CI — the changes are one-shot and the grep cost is low enough for reviewer inspection.
+- **When to use this vs. a behavioral test.** If the package under change contains only Markdown / TOML / templates and an inventory of existing `*_test.go` / `*_test.sh` returns nothing, prefer `verify.sh`. As soon as Go code, a hook, or a runner is in scope, fall back to the normal `_test.go` / `tests/e2e/<lang>_cycle.sh` patterns; `verify.sh` is a complement to, not a replacement for, behavioral tests.
+
+Sibling to the existing E2E language-fixture pattern: the language fixtures are the oracle for behavioral specs; `verify.sh` is the oracle for documentation specs.
+
 ## CI
 
 Introduced by spec 0008.
@@ -143,3 +156,18 @@ Introduced by spec 0010. When adding a new language dispatcher to `speccraft-gua
 
 - Must remain stack-agnostic. No language- or framework-specific examples in default templates.
 - Mirror the schema of the live `.speccraft/` files at the repo root, but with placeholder content.
+
+## External-tool boundaries
+
+Introduced by spec 0011.
+
+When an external tool (MCP server, LSP, code-intel indexer, structural linter, etc.) writes routing rules into the user's environment — typically via global CLAUDE.md installed by the tool's own setup command, or via the MCP server's own instructions surfaced to the model — speccraft must defer to those rules rather than maintaining a parallel copy.
+
+Concretely:
+
+- **No tool-specific routing in skills, commands, agents, or templates.** Skill files (`skills/*/SKILL.md`), command bodies (`commands/**/*.md`), subagent definitions (`agents/*.md`), and templates (`templates/speccraft/**`) must not tell the model which external tool to call, in what order, or under what conditions. That authority belongs to the tool itself.
+- **Examples are allowed; recommendations are not.** A single mention framed as "such as <Tool>", "for example, <Tool>", or "e.g., <Tool>" is fine — it helps the user discover the ecosystem. Phrasing that reads as a speccraft recommendation ("prefer X", "use X", "X is the recommended way to ...") is not.
+- **Install-suggestion prose is the one acceptable touch-point.** `/speccraft:init` may conditionally suggest installing a category of external tool when the user mentions a matching need (e.g. call-graph or symbol-search capabilities). Conditional discovery prose is value added; unconditional routing prose is duplication.
+- **Speccraft owns what speccraft writes.** Spec lifecycle, TDD gate, `state.json`, project memory under `.speccraft/`, and the templates copied into host repos are speccraft's authority. Anything else (code-intel routing, formatting rules, language-server invocation, test-runner selection beyond what `speccraft-guard` requires) is the host environment's authority.
+
+Rationale: the alternative is silent drift. The external tool's own guidance evolves on its own release cadence; speccraft's stale copy then conflicts with the live rule, and the model wastes attention resolving the conflict. The 2026-06-09 cgc + global CLAUDE.md collision that triggered spec 0011 is the concrete instance.

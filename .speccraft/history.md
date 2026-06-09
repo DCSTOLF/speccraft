@@ -2,6 +2,44 @@
 
 Append-only. Newest first.
 
+## 2026-06-09 — Defer code-intel routing to user globals (spec 0011)
+
+**Spec:** specs/0011-code-intel/
+**Decision:** Speccraft does not duplicate routing authority for external
+code-intelligence tools it does not own. The `speccraft-context` skill,
+the `init` command, and the `architecture.md` template no longer name
+CodeGraphContext (or any other code-intel tool) as the way to answer
+structural queries; instead they defer to whatever the user's installed
+tool has registered in the environment, typically via global CLAUDE.md
+or the MCP server's own instructions. One example mention of
+CodeGraphContext survives in the conditional install-suggestion in
+`commands/init.md`, framed as "such as CodeGraphContext" — examples
+allowed, brand endorsements not.
+**Why:** Triggered by a real `/speccraft:spec:new` session on 2026-06-09
+where speccraft's skill ("prefer codegraph MCP tools") and the user's
+global CLAUDE.md (written by `codegraphcontext mcp setup`, encoding the
+heavy/lightweight tool distinction and Explore-subagent quarantine
+rule) gave conflicting routing guidance for the same tool family. The
+model resolved the conflict in favor of the more specific global rule,
+but the conflict itself was wasted attention and would silently drift
+further as cgc's rules evolved. Speccraft owns spec lifecycle, TDD
+gate, and project memory — it does not own how to call other people's
+MCP servers.
+**Consequence:**
+- New principle codified in conventions.md under "External-tool
+  boundaries": when an external tool writes routing rules into the
+  user's environment, speccraft defers rather than maintaining a
+  parallel copy.
+- Doc-only specs now have a documented oracle pattern: a committed
+  `verify.sh` grep-assertion script that fails RED on current main and
+  passes GREEN after the edits. Sibling to the E2E language-fixture
+  pattern; codified in conventions.md.
+- README.md and `speccraft-v1-spec.md` retain stale CodeGraphContext
+  copy (out of scope here); follow-up cleanup pass is queued.
+- `specs/0001-speccraft-v1/spec.md` also retains the original
+  CodeGraphContext integration claim. Spec is closed and immutable;
+  residual reference is accepted as historical record.
+
 ## 2026-06-09 — JavaScript and TypeScript support (spec 0010)
 **Spec:** specs/0010-javascript-typescript-support/
 **Decision:** Add JS/TS as a first-class language in `speccraft-guard` via pure file classification plus session-state sibling lookup. No Node/npm/Jest/Vitest is invoked. Test recognition uses 16 suffix variants (`.test`/`.spec` × `.js/.ts/.jsx/.tsx/.mjs/.cjs/.mts/.cts`) plus the `__tests__/` immediate-directory convention. Production recognition uses the same extension set minus declaration files and test files. Both classifiers apply a segment-exact exclusion for `node_modules` and `dist`. Before adding `jsTsDispatch`, the shared red-phase preamble in `goPythonProdGuard` was lifted into a tri-state `prodGuardPrologue` helper returning `prologueAllow` / `prologueBlock` / `prologueContinue`.
