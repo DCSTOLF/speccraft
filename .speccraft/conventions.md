@@ -126,6 +126,27 @@ reserves-specs: ["0006"]
 - Spec IDs are zero-padded four-digit (`0001`, `0002`, …) and never reused.
 - Closed specs (`status: closed`) are immutable. Corrections go in a follow-up spec.
 
+### Mid-implementation amendment
+
+Introduced by spec 0013.
+
+When CI surfaces a defect between the implementation push and the close commit, and the defect is bounded and shares the active spec's theme, the issue MAY be folded into the active spec rather than filed as a follow-up. All three conditions must hold:
+
+- **Strictly bounded edit.** Typically a single file, always a small additive change. Not a redesign.
+- **CI stays red until it lands.** The issue blocks the spec's own close gate or a recently-closed predecessor's close gate. If main CI is green without the fix, file a follow-up spec instead.
+- **Theme overlap.** The fix relates to the active spec's subject matter or to a predecessor spec the active spec is cleaning up after. Unrelated drive-by fixes go to their own spec.
+
+When all three hold, fold the work in by:
+
+1. Appending a dated `## Amendment (YYYY-MM-DD) — <one-line summary>` section to `spec.md` describing the trigger, the fix, and the rationale for folding-in rather than spinning off.
+2. Adding the new task(s) to `tasks.md`. Out-of-order task numbering is acceptable when the amendment lands between already-checked tasks (e.g. T6 inserted after T4 but before the verification-gate T5 in spec 0013).
+3. Adding any new acceptance criteria to `spec.md` numbered continuously with the existing ACs.
+4. The `changelog.md` written at close calls out the amendment as an explicit deviation under "What shipped vs spec".
+
+Spec 0013's T6 (the `.github/workflows/ci.yml` `hooks:` job fix) is the canonical example: the CI miss surfaced after the T1–T5 push, fix was one file, main CI was red until it landed, and the theme ("post-0012 cleanup") aligned. Filing a separate spec would have meant carrying a red main CI through a second spec-new / spec-plan cycle for a one-line workflow edit.
+
+Counter-case: if a CI run surfaces a defect in a part of the codebase the active spec doesn't touch, file a follow-up spec even if the fix is bounded. The amendment path is for on-theme, on-author follow-ups, not arbitrary drive-bys.
+
 ### Close-commit invariant
 
 Introduced by spec 0008 (codex R3 finding).

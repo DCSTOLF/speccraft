@@ -1,7 +1,7 @@
 ---
 id: "0013"
 title: "Remove dead ActiveSpec == \"null\" checks"
-status: in-progress
+status: closed
 created: 2026-06-10
 authors: [claude]
 packages: ["tools/cmd/speccraft-guard", "tools/internal/speccraft"]

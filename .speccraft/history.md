@@ -2,6 +2,61 @@
 
 Append-only. Newest first.
 
+## 2026-06-10 — Post-0012 dead-code cleanup + amendment precedent (spec 0013)
+
+**Spec:** specs/0013-remove-dead-active-spec-null-checks/
+**Decision:** Post-0012 cleanup completed: the two defensive
+`ActiveSpec == "null"` reads at
+`tools/internal/speccraft/root.go:45` and
+`tools/cmd/speccraft-guard/main.go:353` were removed under
+sibling-test pins (one classical RED→GREEN, one
+assertion-pinning refactor). The `omitempty` + clear-semantics
+work from spec 0012 made both clauses unreachable; this spec
+flips the in-process behavior so future readers see one truth
+("`null` is an ordinary string id; the cleared shape is key
+absent") instead of two false-positive fallbacks. A
+mid-implementation amendment (T6) added a Go setup +
+helper-binary build step to the CI `hooks:` job; without it,
+spec 0012's new `pre-tool-use-state-guard.bats` reject cases
+were silently no-op'ing because `speccraft-state` was not on
+`$PATH` in CI.
+**Why:** The dead clauses themselves were harmless but corrosive
+— leaving them invited future readers to invent nonexistent
+semantics for the literal string `"null"`. The CI miss was the
+real teaching moment: spec 0012 closed against a green
+`e2e-devcontainer` run that never actually exercised the new
+bats guard, because the bats job lacked the binaries the hook
+depends on. CI run 27275588005 (on commit 9c1330d) is the first
+run in which both spec 0012's AC5 close gate and spec 0013's
+AC5 close gate were truly satisfied.
+**Consequence:**
+- Mid-implementation amendment precedent codified in
+  `conventions.md` § Spec lifecycle. When CI surfaces a bounded
+  issue between push and close that shares the active spec's
+  theme and (a) is a strictly one-file edit, (b) keeps main CI
+  red until it lands, and (c) does not require any AC change
+  other than additive, the issue MAY be folded into the active
+  spec as a new task + new AC + a dated `## Amendment` section
+  in `spec.md`, rather than filed as a follow-up spec.
+- Close-gate-pending workaround formalised. When a spec closes
+  with a `<!-- TODO: <github-actions-run-url> -->` marker in its
+  changelog (close gate not yet green at close time), and a
+  subsequent spec's CI run satisfies the gate, the URL is
+  recorded in the **subsequent** spec's changelog with an
+  explicit cross-reference to the predecessor. The predecessor's
+  TODO marker is left in place per the "No post-close edits"
+  rule. A post-close backfill exception was evaluated this
+  close batch and explicitly rejected in favor of strict
+  immutability.
+- The two defensive `== "null"` clauses flagged in 0012's ADR
+  are gone. No further dead-code follow-up is queued from the
+  0012 era.
+- T6 reinforces an existing convention rather than creating a
+  new one: the spec-0008 CI job-split convention already implies
+  "build what each job needs" — the bats job was missing the
+  binaries the hook depends on at runtime. No fresh CI
+  convention is proposed.
+
 ## 2026-06-10 — Runtime single-writer enforcement for .speccraft/state.json (spec 0012)
 
 **Spec:** specs/0012-clear-active-spec-correctly-on-close/
