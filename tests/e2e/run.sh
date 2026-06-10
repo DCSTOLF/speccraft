@@ -22,6 +22,13 @@ set -euo pipefail
 # can't rely on $BASH_SOURCE staying meaningful after `cd "$TEST_ROOT"`.
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Shared assertion helpers (spec 0014). Sourced before any `cd` so the
+# absolute $E2E_DIR resolves correctly. Both run.sh and sibling fixtures
+# (e.g. contains_adr_assertion_test.sh) source the same lib.sh, keeping
+# their assertion predicates provably identical.
+# shellcheck source=lib.sh
+source "$E2E_DIR/lib.sh"
+
 # ---- flag parse (spec 0008 AC #2) ----
 # `--language-only` skips the entire claude -p driven lifecycle and runs
 # only the per-language fixture scripts (Rust + Python). Used by the
@@ -96,28 +103,23 @@ run_language_fixtures() {
   pass "javascript_cycle.sh"
 }
 
+# run_helper_unit_tests (spec 0014) — sibling to run_language_fixtures.
+# Runs unit tests for the assertion helpers in lib.sh. Called first in
+# the language-only dispatch path so a helper regression fails fast
+# before any language cycle runs.
+run_helper_unit_tests() {
+  ( bash "$E2E_DIR/contains_adr_assertion_test.sh" ) \
+    || fail "contains_adr_assertion_test.sh failed"
+  pass "contains_adr_assertion_test.sh"
+}
+
 # ---- assertion helpers ----
+# fail/pass/exists/contains/contains_regex/status_is live in lib.sh
+# (sourced at top, spec 0014). LAST_LOG is declared here at module
+# scope because run_claude writes it and lib.sh's fail() reads it
+# (via ${LAST_LOG:-} default-empty expansion when called from sibling
+# fixtures that don't set it).
 LAST_LOG=""
-fail() {
-  echo "FAIL: $*" >&2
-  if [ -n "$LAST_LOG" ] && [ -f "$LOG_DIR/$LAST_LOG" ]; then
-    echo "--- last claude log ($LAST_LOG) ---" >&2
-    cat "$LOG_DIR/$LAST_LOG" >&2
-    echo "--- end log ---" >&2
-  fi
-  exit 2
-}
-pass()   { echo "PASS: $*"; }
-exists() { [ -e "$1" ] || fail "expected to exist: $1"; pass "exists $1"; }
-contains() {
-  grep -qF "$2" "$1" || fail "expected '$2' in $1"
-  pass "contains $1: $2"
-}
-status_is() {
-  local f="$1" want="$2"
-  grep -q "^status: $want" "$f" || fail "expected status:$want in $f"
-  pass "status=$want in $f"
-}
 
 classify_claude_failure() {
   # Spec 0008 AC #5: read combined claude -p output on stdin and emit
@@ -193,6 +195,7 @@ run_claude() {
 # ANTHROPIC_API_KEY, or the throwaway Go module.
 if [ "$LANGUAGE_ONLY" = "1" ]; then
   echo "==> --language-only mode: skipping lifecycle, running language fixtures"
+  run_helper_unit_tests
   run_language_fixtures
   echo
   echo "==> LANGUAGE-ONLY E2E PASSED"
@@ -275,20 +278,27 @@ echo "==> [7/9] /speccraft:spec:close"
 run_claude "/speccraft:spec:close. Approve all proposed memory updates." 07-close.log
 exists "$SPEC_DIR/changelog.md"
 status_is "$SPEC_DIR/spec.md" "closed"
-contains ".speccraft/history.md" "farewell"
+contains_regex ".speccraft/history.md" "^## 20[0-9]{2}-[0-9]{2}-[0-9]{2}"
 
 # state.json should have cleared active_spec
 ACTIVE="$(jq -r '.active_spec // "null"' .speccraft/state.json)"
 [ "$ACTIVE" = "null" ] || fail "active_spec not cleared after close: $ACTIVE"
 pass "active_spec cleared"
 
-# ---- 8/10. Language dispatch (specs 0005 Rust + 0007 Python + 0010 JS/TS) ----
+# ---- 8/11. Helper unit tests (spec 0014) ----
+# Runs the lib.sh helper assertions first so a helper regression
+# (e.g. contains_regex losing its regex semantics) fails fast before
+# the language fixtures consume the rest of the budget.
+echo "==> [8/11] Helper unit tests (spec 0014)"
+run_helper_unit_tests
+
+# ---- 9/11. Language dispatch (specs 0005 Rust + 0007 Python + 0010 JS/TS) ----
 # Shared with the --language-only short-circuit above. Each fixture is
 # CWD-independent and self-contained (builds binaries into mktemp -d,
 # installs shims, runs hermetic assertions).
-echo "==> [8/10] Rust dispatch (spec 0005)"
-echo "==> [9/10] Python dispatch (spec 0007)"
-echo "==> [10/10] JS/TS dispatch (spec 0010)"
+echo "==> [9/11] Rust dispatch (spec 0005)"
+echo "==> [10/11] Python dispatch (spec 0007)"
+echo "==> [11/11] JS/TS dispatch (spec 0010)"
 run_language_fixtures
 
 echo

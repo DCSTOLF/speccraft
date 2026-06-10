@@ -35,7 +35,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-none
+specs/0014-tighten-e2e-history-assertion/ (status: in-progress)
 
 ## Recent decisions (last 3)
 
