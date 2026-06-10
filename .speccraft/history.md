@@ -2,6 +2,52 @@
 
 Append-only. Newest first.
 
+## 2026-06-10 — Runtime single-writer enforcement for .speccraft/state.json (spec 0012)
+
+**Spec:** specs/0012-clear-active-spec-correctly-on-close/
+**Decision:** Single-writer rules for files speccraft owns are now enforced
+at two layers — source-level grep (existing `state_single_writer_test.go`)
+plus a runtime PreToolUse hook check that rejects any
+`Edit`/`Write`/`MultiEdit`/`NotebookEdit` whose `file_path` canonicalises
+to `<root>/.speccraft/state.json`. Source-level enforcement alone is
+insufficient because a `claude -p` lifecycle session can write through a
+tool call the grep test never sees. Adjacent: `State.ActiveSpec` carries
+`,omitempty` so the cleared shape on disk is "key absent" rather than a
+sentinel string, and a new `speccraft-state init` subcommand replaces the
+old Write-the-canonical-JSON path in `commands/init.md` so the new hook
+cannot break first-run `/speccraft:init`.
+**Why:** Triggered by CI run 27178536892 on 2026-06-09. The
+`e2e-devcontainer` job's step `[7/9] /speccraft:spec:close` failed the
+assertion `jq -r '.active_spec // "null"' state.json` because a tooling
+bug (`speccraft-state set active_spec null` wrote the literal string
+`"null"`) induced a model workaround — a direct `Edit` of `state.json`
+to clean up the artifact. The source-layer grep test caught no
+source-tree regression; the violation lived in a runtime tool call.
+Source + runtime enforcement together close that gap.
+**Consequence:**
+- New `speccraft-state init` subcommand is now the only sanctioned
+  creation path for `.speccraft/state.json`. Idempotent: silently no-ops
+  if the file already exists, so `/speccraft:init` re-runs cannot nuke
+  session state. Both behaviors pinned by
+  `tools/cmd/speccraft-state/main_test.go`.
+- `hooks/pre-tool-use.sh` gates on the full set of Claude Code write
+  tools via a `GATED_TOOLS` enumeration; `hooks/hooks.json` matchers
+  must be extended in lockstep when a new write-tool name is added.
+  Codified as a convention so the next write-tool name is a paired
+  one-line change, not a hidden gap. Six new bats cases under
+  `tests/hooks/pre-tool-use-state-guard.bats` cover the reject path
+  for each gated tool plus an allow case for sibling memory files.
+- `State.ActiveSpec` is now serialised with `,omitempty`. Two
+  defensive reads for the literal `"null"` string at
+  `tools/cmd/speccraft-guard/main.go:353` and
+  `tools/internal/speccraft/root.go:45` became dead code; left in
+  place under the TDD-hook constraint and queued for a follow-up spec.
+- §What item 4's test-naming clarification landed concurrently: both
+  `Test<UpperCamel>` and `Test_<Subject>_<Scenario>` are documented as
+  acceptable in `.speccraft/conventions.md`. The enforce regex
+  `^func Test[A-Z]` is unchanged — tightening would force a global
+  rename, which is out of scope.
+
 ## 2026-06-09 — Defer code-intel routing to user globals (spec 0011)
 
 **Spec:** specs/0011-code-intel/

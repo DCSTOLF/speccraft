@@ -1,7 +1,7 @@
 ---
 id: "0012"
 title: "Clear active_spec correctly on close"
-status: in-progress
+status: closed
 created: 2026-06-09
 authors: [claude]
 packages: ["tools/cmd/speccraft-state", "tools/internal/speccraft", "commands/spec", "hooks"]

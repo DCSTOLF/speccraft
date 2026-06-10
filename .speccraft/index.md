@@ -35,10 +35,10 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-specs/0012-clear-active-spec-correctly-on-close/ (status: in-progress)
+none
 
 ## Recent decisions (last 3)
 
+- 2026-06-10 — Runtime single-writer enforcement for state.json (spec 0012): `,omitempty` on `State.ActiveSpec` + `SetField` null/"" clear semantics; new `speccraft-state init` subcommand replaces literal-JSON Write in `commands/init.md`; `hooks/pre-tool-use.sh` gates `Edit|Write|MultiEdit|NotebookEdit` against `.speccraft/state.json` via `realpath -m` canonicalisation; three new conventions ("Single-writer enforcement is layered" + "`omitempty` for cleared-string state fields" + "PreToolUse hook tool enumeration"); 6 new bats cases under `tests/hooks/pre-tool-use-state-guard.bats`
 - 2026-06-09 — Defer code-intel routing to user globals (spec 0011): SKILL.md/init.md/templates/architecture.md scrubbed of CodeGraphContext routing (one example mention retained as "such as CodeGraphContext"); new "External-tool boundaries" + "Grep-assertion oracle for doc-only specs" conventions; `verify.sh` grep-oracle pattern codified as sibling to E2E language-fixture pattern
 - 2026-06-09 — JavaScript and TypeScript support (spec 0010): `IsJSTSTestFile` + `IsProductionJSTSFile` classifiers; `jsTsDispatch` with session-state-only sibling resolver; `prodGuardPrologue` tri-state helper extracted for gate symmetry; `javascript_cycle.sh` e2e fixture wired as step `[10/10]`
-- 2026-06-08 — fix override no-op (spec 0009): `ConsumeOverride` API wired into `goPythonProdGuard`; single-shot atomic read-and-clear under `mu.Lock()`; single-writer allow-list extended to all `Session` fields; consume-on-use pattern codified in conventions

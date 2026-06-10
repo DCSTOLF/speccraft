@@ -6,6 +6,7 @@
 - One binary per subdirectory of `tools/cmd/`. Each has its own `main.go`; no shared `main` package.
 - Shared logic lives in `tools/internal/speccraft/` (general) or `tools/internal/delegate/` (aux-agent dispatch). `tools/internal/` packages must not import `tools/cmd/`.
 - Errors: wrap with `fmt.Errorf("...: %w", err)`. Sentinel errors live in the package that returns them.
+- **`omitempty` for cleared-string state fields (introduced by spec 0012).** When a string field on a JSON-serialised struct represents the disjoint shapes "unset" OR "set to a concrete value," the JSON tag must carry `,omitempty` so the cleared shape on disk is an absent key, not an empty string or a sentinel string like `"null"`. Combined with a clear-semantics special-case in the setter (treat argv `"null"` or `""` as "clear"), this produces a disk shape that satisfies `jq -r '.<field> // "null"' state.json` returning the literal string `null` — the assertion shape `tests/e2e/run.sh` uses for the lifecycle close gate. Sentinel-string fallbacks are forbidden; they break the jq-default convention silently. See `State.ActiveSpec` in `tools/internal/speccraft/state.go` as the canonical implementation.
 - Logging from `tools/internal/`: return errors, do not print. CLI output (human-readable status, JSON results) belongs in `tools/cmd/*/main.go`. (Advisory — the drift tool can't distinguish real `fmt.Print*` calls from test fixtures that embed the string, so this is checked at code review rather than enforced via regex.)
 - Tests: `_test.go` files colocated with the code under test; table-driven for >2 cases; function names start with `Test`. <!-- enforce: regex pattern="^func Test[A-Z]" scope="tools/**/*_test.go" -->
 - Test-function naming (introduced by spec 0012): both `Test<UpperCamel>` (e.g. `TestStateRoundTrip`, `TestFarewell`) and `Test_<Subject>_<Scenario>` (e.g. `Test_SetField_ActiveSpec_NullArg_ClearsToJSONNull`) are acceptable. Prefer the underscore form for scenario-specific tests where the name encodes a concrete input → expected output, since it makes the failure line self-documenting. Prefer the camelCase form for broad round-trip / smoke tests where there is no single scenario to name. The `^func Test[A-Z]` enforce-regex above accepts both and stays as is — tightening it would force a rename of every existing camelCase test in the repo, which is out of scope.
@@ -16,6 +17,17 @@
 - Use absolute paths derived from `${BASH_SOURCE[0]}`; never assume CWD.
 - All filesystem writes to `.speccraft/` go through the `speccraft-state` binary — hooks do not edit `state.json` directly.
 - Hooks emit Claude Code hook-protocol JSON on stdout and exit non-zero on guardrail violations.
+
+### PreToolUse hook tool enumeration
+
+Introduced by spec 0012.
+
+When a hook in `hooks/` gates behavior on the Claude Code tool name (e.g. `tool_name` from the PreToolUse envelope), the gated set is declared in **one** shell variable inside the hook script (current canonical form: `GATED_TOOLS="Edit Write MultiEdit NotebookEdit"` in `hooks/pre-tool-use.sh`). Two paired-update rules:
+
+- **`hooks/hooks.json` matcher must be extended in lockstep.** The matcher regex in `hooks.json` controls which tool names Claude Code routes to the hook in the first place. A tool name listed in `GATED_TOOLS` but missing from the matcher is unreachable — the hook never sees it and the guardrail silently doesn't fire. Verify by reading both files together when changing either. Pair the `PreToolUse` and `PostToolUse` matchers too if the tool name needs to surface in both phases.
+- **One-line change.** Adding a future write-tool name (e.g. a hypothetical `BulkEdit`) is a one-line change in two places: append to `GATED_TOOLS` in the hook source, extend the pipe-separated matcher regex in `hooks.json`. Anything more is a smell — refactor before extending.
+
+Coverage assertion: `tests/hooks/pre-tool-use-state-guard.bats` exercises one case per gated tool name so a missing matcher extension fails at test time, not silently at runtime.
 
 ### E2E language-fixture pattern (`tests/e2e/<lang>_cycle.sh`)
 
@@ -131,6 +143,11 @@ Introduced by spec 0005. Conventions for any future Rust-touching code in this r
 
 - **Canonical Rust test ID form.** `<file-stem>::<module-path>::<fn>` for inline tests (e.g. `foo::tests::it_works`) and `<file-stem>::<fn>` for integration tests (e.g. `bar::alpha`). The `<crate-name>::` prefix is stripped by both runner adapters and is never part of the canonical ID. Static discovery (`DiscoverRustTests`) and runner records (parsed by `runner/cargo_parse.go` and `runner/nextest_parse.go`) emit the same form so set-difference is well-defined. New code dealing with Rust test names must use this form end-to-end.
 - **Single-writer rule for `Session` state fields.** All fields on `Session` in `.speccraft/state.json` (e.g. `active_spec`, `rust_test_baseline`, `rust_gate_fingerprint`, `override_pending`) are written **only** by `tools/cmd/speccraft-state/main.go` and the helpers in `tools/internal/speccraft/state.go`. A grep-based regression test (`tools/internal/speccraft/state_single_writer_test.go`) enforces this. Adding any new `Session` field requires extending the grep allow-list in that test — this is not Rust-specific.
+- **Single-writer enforcement is layered (introduced by spec 0012).** The single-writer rule above is enforced at two layers, not one:
+  - **Source-level:** the grep-based regression test `tools/internal/speccraft/state_single_writer_test.go` blocks any new compiled-in code path that writes `.speccraft/state.json` outside `speccraft-state` / `state.go`.
+  - **Runtime:** the PreToolUse hook in `hooks/pre-tool-use.sh` rejects any `Edit`/`Write`/`MultiEdit`/`NotebookEdit` whose `file_path` canonicalises to `<root>/.speccraft/state.json`, catching the case a `claude -p` lifecycle session would otherwise use to bypass the source-level test by hand-editing at runtime.
+
+  Both layers are load-bearing: source-level catches accidental code paths a code review missed; runtime catches in-session model workarounds the source tree never sees. Adding a future single-writer file under `.speccraft/` requires extending both — add the path to the grep allow-list **and** add the runtime branch in `pre-tool-use.sh`.
 - **Consume-on-use pattern for single-shot flags.** Single-shot state flags (e.g. `override_pending`) must be consumed atomically: acquire `mu.Lock()` once, call `loadStateLocked`, read the value, clear it, call `saveStateLocked`, then unlock. See `ConsumeOverride` in `state.go` as the canonical implementation. Do not read with one lock acquisition and clear with another — that pattern is racy and leaves a window where a crash can preserve a flag that was logically consumed.
 - **Rust static recognition split.** Tokenization (string/comment/raw-string awareness) lives in `tools/internal/speccraft/rusttok/`. Domain-specific recognition (canonical IDs, inline `#[cfg(test)] mod` blocks, stem-mapping, crate-walk discovery, baseline lifecycle) lives in `tools/internal/speccraft/rust_*.go`. Keep the boundary: any new tokenizer-level edge case (e.g. new string-literal form) goes in `rusttok/`; any new test-recognition rule goes in `rust_*.go`.
 - **Documented limitations.** §L2 (macro `fn` phantom-ID extraction) is a known false-positive that the runner backstop catches. Do not "fix" it by adding ad-hoc macro detection in the tokenizer — that path leads to a half-parser. The proper fix is `syn`/`tree-sitter-rust`, deferred until incidence warrants it.
