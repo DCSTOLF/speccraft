@@ -50,10 +50,17 @@ Steps:
 7. Append `.speccraft/state.json` to `<repo>/.gitignore` (creating if absent).
    Only append if the line isn't already present.
 
-8. Initialize `<repo>/.speccraft/state.json`:
-   ```json
-   {"version":1,"active_spec":null,"session":{"id":"","edited_test_files":[],"edited_prod_files":[]}}
+8. Initialize `<repo>/.speccraft/state.json` via the sanctioned binary —
+   do **not** Write/Edit this file directly, the spec-0012 PreToolUse
+   hook blocks it:
+   ```bash
+   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" init
    ```
+   `speccraft-state init` is idempotent: it writes the canonical empty
+   shape (`{"version":1,"session":{"id":"","edited_test_files":[],"edited_prod_files":[]}}`)
+   on first call and is a no-op if `.speccraft/state.json` already
+   exists, so re-running `/speccraft:init` cannot silently nuke session
+   state.
 
 8a. **Detect Python test roots.** Check whether `tests/` or `test/` exists at the
     repo root (in that order). If found, ask the user:

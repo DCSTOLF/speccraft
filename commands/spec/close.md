@@ -45,6 +45,14 @@ Steps:
    "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_spec null
    ```
 
+   **Do not edit `.speccraft/state.json` directly under any circumstance**
+   — even to "fix" a value the binary just produced. The only sanctioned
+   writer is `speccraft-state`; the spec-0012 PreToolUse hook will
+   reject any Edit/Write/MultiEdit/NotebookEdit targeting that file. If
+   `set active_spec null` appears to leave a wrong value, that is a
+   `speccraft-state` bug and the right response is to file a follow-up
+   spec, not to hand-edit around it.
+
 7. Update `.speccraft/index.md`:
    - "Active spec" section → "none"
    - "Recent decisions" section → last 3 entries from history.md

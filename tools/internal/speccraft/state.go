@@ -9,9 +9,15 @@ import (
 )
 
 // State is the contents of .speccraft/state.json.
+//
+// ActiveSpec carries ,omitempty so that clearing the field on close
+// (SetField with value "null" or "") produces a state.json that satisfies
+// the e2e assertion at tests/e2e/run.sh:281-282 — i.e. `jq -r '.active_spec
+// // "null"' state.json` outputs the literal string "null" because the key
+// is absent. See spec 0012 AC1/AC2.
 type State struct {
 	Version    int     `json:"version"`
-	ActiveSpec string  `json:"active_spec"`
+	ActiveSpec string  `json:"active_spec,omitempty"`
 	Session    Session `json:"session"`
 }
 
@@ -125,9 +131,48 @@ func SetField(root, field, value string) error {
 	}
 	switch field {
 	case "active_spec":
+		// Treat the literal arg "null" and "" as a clear, so that
+		// `speccraft-state set active_spec null` (as instructed by
+		// commands/spec/close.md) writes a state.json the e2e
+		// assertion at tests/e2e/run.sh:281-282 accepts as cleared.
+		// Combined with the ,omitempty tag on ActiveSpec, an empty
+		// value drops the key from the serialised JSON entirely.
+		// See spec 0012 AC1/AC2.
+		if value == "null" {
+			value = ""
+		}
 		s.ActiveSpec = value
 	case "override_pending":
 		s.Session.OverridePending = (value == "true")
+	}
+	return saveStateLocked(root, s)
+}
+
+// InitState writes the canonical empty state.json shape if no state file
+// exists yet, and is a no-op if one is already present. Idempotent so that
+// re-running /speccraft:init never silently nukes session state. Spec 0012
+// AC4 §What item 3: this is the sanctioned creation path that
+// commands/init.md was migrated to, since the new PreToolUse hook blocks
+// any direct Edit/Write/MultiEdit/NotebookEdit on .speccraft/state.json.
+//
+// EditedTestFiles and EditedProdFiles are initialised as empty, non-nil
+// slices so that json.MarshalIndent produces "[]" rather than "null",
+// matching the literal shape commands/init.md used to inline.
+func InitState(root string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	path := StateFile(root)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	s := State{
+		Version: 1,
+		Session: Session{
+			EditedTestFiles: []string{},
+			EditedProdFiles: []string{},
+		},
 	}
 	return saveStateLocked(root, s)
 }
@@ -284,7 +329,7 @@ func TasksDonePct(root string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if s.ActiveSpec == "" || s.ActiveSpec == "null" {
+	if s.ActiveSpec == "" {
 		return 0, nil
 	}
 	tasksFile := filepath.Join(root, "specs", s.ActiveSpec, "tasks.md")

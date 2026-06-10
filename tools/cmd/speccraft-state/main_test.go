@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,5 +167,80 @@ func TestStateCmd_RustBaselineRecapture_EmptyCrate_ClearsBaseline(t *testing.T) 
 	_, getOut, _ := runCmd(t, repo, "get", "rust_test_baseline")
 	if got := strings.TrimSpace(getOut); got != "[]" {
 		t.Errorf("baseline = %q, want %q", got, "[]")
+	}
+}
+
+// TestStateCmd_Init_CreatesCanonicalEmptyShape pins the post-init state.json
+// shape, replacing the literal JSON snippet that commands/init.md used to ask
+// the model to Write directly. The hook guardrail introduced by spec 0012
+// will block that Write; this subcommand is the sanctioned replacement.
+func TestStateCmd_Init_CreatesCanonicalEmptyShape(t *testing.T) {
+	repo := makeRepo(t)
+	// state.json absent at this point.
+
+	code, _, stderr := runCmd(t, repo, "init")
+	if code != 0 {
+		t.Fatalf("init exit = %d; stderr=%s", code, stderr)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(repo, ".speccraft", "state.json"))
+	if err != nil {
+		t.Fatalf("state.json not created: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v\nraw=%s", err, raw)
+	}
+	if v, ok := got["version"].(float64); !ok || v != 1 {
+		t.Errorf("version = %v, want 1", got["version"])
+	}
+	// active_spec must be absent (omitempty) or JSON null.
+	if v, ok := got["active_spec"]; ok && v != nil {
+		t.Errorf("active_spec = %v, want absent or null", v)
+	}
+	session, ok := got["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("session missing or not object: %v\nraw=%s", got["session"], raw)
+	}
+	if v, ok := session["id"].(string); !ok || v != "" {
+		t.Errorf("session.id = %v, want \"\"", session["id"])
+	}
+	// edited_test_files and edited_prod_files must be present as empty arrays
+	// (not JSON null), matching the literal currently in commands/init.md.
+	if v, ok := session["edited_test_files"].([]any); !ok || len(v) != 0 {
+		t.Errorf("session.edited_test_files = %v (%T), want []",
+			session["edited_test_files"], session["edited_test_files"])
+	}
+	if v, ok := session["edited_prod_files"].([]any); !ok || len(v) != 0 {
+		t.Errorf("session.edited_prod_files = %v (%T), want []",
+			session["edited_prod_files"], session["edited_prod_files"])
+	}
+}
+
+// TestStateCmd_Init_Idempotent_PreservesExistingState pins that re-running
+// `speccraft-state init` against an existing state.json is a no-op: an
+// /speccraft:init re-run cannot silently nuke session state.
+func TestStateCmd_Init_Idempotent_PreservesExistingState(t *testing.T) {
+	repo := makeRepo(t)
+	// Seed with a real spec id so we can tell the difference between
+	// "init re-ran cleanly" and "init clobbered everything".
+	if code, _, stderr := runCmd(t, repo, "set", "active_spec", "0099-foo"); code != 0 {
+		t.Fatalf("seed active_spec: exit=%d, stderr=%s", code, stderr)
+	}
+	pre, err := os.ReadFile(filepath.Join(repo, ".speccraft", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, stderr := runCmd(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit=%d, stderr=%s", code, stderr)
+	}
+
+	post, err := os.ReadFile(filepath.Join(repo, ".speccraft", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(pre, post) {
+		t.Errorf("init mutated existing state.json\npre=%s\npost=%s", pre, post)
 	}
 }

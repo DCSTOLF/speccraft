@@ -37,6 +37,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, root)
 		return 0
 
+	case "init":
+		// Sanctioned creation path for .speccraft/state.json (spec 0012).
+		// Idempotent: if state.json already exists, succeed silently.
+		// Resolves repo root by walking up from CWD to a directory
+		// containing .speccraft/.
+		root, err := speccraft.FindRoot("")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := speccraft.InitState(root); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+
 	case "get":
 		if len(args) < 2 {
 			fmt.Fprintln(stderr, "usage: speccraft-state get <field>")
@@ -222,6 +238,7 @@ func usage(w io.Writer) {
 
 Usage:
   speccraft-state find-root              Find repo root (dir with .speccraft/)
+  speccraft-state init                   Create empty state.json if absent (idempotent)
   speccraft-state get <field>            Read a field from state.json
   speccraft-state set <field> <value>    Write a field to state.json
   speccraft-state rust-baseline append <json-array>
