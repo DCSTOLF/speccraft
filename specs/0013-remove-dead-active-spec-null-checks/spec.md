@@ -149,6 +149,44 @@ the right behavior change because:
   one-line removal each. If either function needs a larger redesign,
   file a separate spec.
 
+## Amendment (2026-06-10) — CI bats-job binary build (folded in)
+
+After pushing T1–T5 (commit 23d81e3), CI run 27274882006 surfaced a
+spec-0012 CI miss unrelated to 0013's dead-code work: the `Hook tests
+(bats)` job at `.github/workflows/ci.yml:49-62` runs `bats
+tests/hooks/` without first building `bin/speccraft-state` or
+`bin/speccraft-guard`. The new `pre-tool-use-state-guard.bats` from
+spec 0012 depends on `speccraft-state find-root` being on `$PATH` —
+the hook's first line is
+`ROOT="$(speccraft-state find-root 2>/dev/null || true)"; [ -z "$ROOT" ] && exit 0`,
+so a missing binary silently no-ops the hook and all five reject-cases
+fail with `status=0` instead of `status=2`. Locally the tests passed
+because T5 rebuilt `bin/` from source.
+
+The fix is bounded: add `actions/setup-go@v5` and a one-line `go build`
+of both `speccraft-state` and `speccraft-guard` to the bats job
+before `Run hook tests`. Folded into 0013 rather than filed as 0014
+because (a) it's a strictly one-file workflow edit, (b) main CI stays
+red until it lands, and (c) it shares the "post-0012 cleanup" theme
+of the rest of this spec.
+
+### Additional change
+
+5. **`.github/workflows/ci.yml`** — extend the `hooks:` job
+   (lines 49-62) to install Go 1.26.3 via `actions/setup-go@v5`
+   (mirroring the `unit-linux` job pattern at lines 27-31) and build
+   the two helper binaries (`speccraft-state`, `speccraft-guard`)
+   into `bin/` from `tools/` before running `bats tests/hooks/`. No
+   change to the bats invocation itself.
+
+### Additional acceptance criterion
+
+5. The CI `Hook tests (bats)` job on the next push to `main` exits 0,
+   with `tests/hooks/pre-tool-use-state-guard.bats` reporting 6/6 OK
+   plus `tests/hooks/session-start.bats` reporting 3/3 OK. Verifiable
+   by the GHA run URL recorded in this spec's `changelog.md`
+   alongside the 0012 close-gate URL.
+
 ## Open questions
 
 _none_

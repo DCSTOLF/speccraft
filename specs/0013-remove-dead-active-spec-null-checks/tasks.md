@@ -25,6 +25,7 @@ spec: "0013"
   (line 353). Run `go test ./cmd/speccraft-guard/` from `tools/`;
   T3 test still passes plus all existing tests stay green.
   Satisfies AC1 (site 2).
+- [x] T6 — Extend `.github/workflows/ci.yml` `hooks:` job: add `actions/setup-go@v5` (Go 1.26.3, matching `unit-linux`) and a build step that produces `bin/speccraft-state` + `bin/speccraft-guard` from `tools/` before `Run hook tests`. Closes the CI miss surfaced by run 27274882006 after the T1–T5 push (Amendment 2026-06-10). Satisfies AC5.
 - [x] T5 — Verification + binary rebuild: run `go test ./...`
   from `tools/`, run `bats tests/hooks/` from repo root, run the
   AC1 grep oracle

@@ -51,8 +51,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: tools/go.sum
       - name: Install bats
         run: sudo apt-get install -y bats
+      # spec 0012's pre-tool-use-state-guard.bats invokes the
+      # hook script, which calls `speccraft-state find-root` and
+      # delegates to `speccraft-guard`. Without these binaries on
+      # PATH, the hook silently no-ops (exits 0) and the reject
+      # cases fail spuriously. Build them into the repo's bin/ so
+      # the bats setup's `export PATH="$PLUGIN_DIR/bin:$PATH"`
+      # picks them up.
+      - name: Build helper binaries
+        working-directory: tools
+        run: |
+          go build -o ../bin/speccraft-state ./cmd/speccraft-state
+          go build -o ../bin/speccraft-guard ./cmd/speccraft-guard
       - name: Run hook tests
         run: |
           if [ -d tests/hooks ] && ls tests/hooks/*.bats 2>/dev/null; then
