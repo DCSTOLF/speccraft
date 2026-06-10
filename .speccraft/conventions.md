@@ -46,6 +46,35 @@ Introduced by spec 0007.
 
 - When a single fixture script exercises multiple acceptance criteria that share the same project directory, the script must reset session state between scenarios so earlier mutations to `state.json` (e.g. `EditedTestFiles`) do not silently mask later reject assertions. The canonical form is a `reset_state()` (or `reset_session()`) helper that rewrites `.speccraft/state.json` from a literal JSON template with empty `edited_test_files` / `edited_prod_files`. See `python_cycle.sh::reset_state` and the equivalent in the Rust fixtures for reference implementations.
 
+### E2E assertion predicates: structural over content
+
+Introduced by spec 0014.
+
+When an e2e assertion verifies that a model-driven step happened — memory-keeper applied an ADR, spec-author wrote a plan, the planner emitted a `## Risk` section, the close hook updated the changelog, etc. — the predicate must target a STRUCTURAL signal the agent's contract guarantees, not a CONTENT signal the agent's free-text choice happens to produce.
+
+- **Structural signal examples (good).** A dated ADR-header line shape (`^## 20[0-9]{2}-[0-9]{2}-[0-9]{2}`), a YAML frontmatter key being present, a status field having a specific enumerated value, a JSON field being absent vs `null`, a file existing. These are pinned by the agent's prompt/template, not by the model's word choice.
+- **Content signal examples (bad).** A specific feature-named keyword (the spec title's main noun, a function name from the test fixture), a specific ADR title phrasing, the literal word the user happened to type in the spec's "Why" section. These are the model's free-text choice and will be wrong on the random-seed days the model picks a different phrasing.
+- **Why this rule matters.** Three consecutive CI attempts on commit `ed3fe24` (spec 0014's pre-fix baseline) failed identically because the `tests/e2e/run.sh:278` assertion grepped `history.md` for the literal word `farewell` — which lives in the test-spec title and only ends up in `history.md` if memory-keeper happens to pick a feature-named ADR title. On the failing attempts, memory-keeper picked design-rationale titles like *"Defer stdout-capture testing for main()"* that never mention the feature. The previous "green" run on `9c1330d` was the same flake getting lucky.
+- **Wrong layer to fix.** Tightening the agent's prompt to make titles feature-deterministic is much larger and indirect — it changes the agent's surface semantics for every spec. Tightening the assertion is bounded and correct: the e2e contract is verifying *that memory-keeper's output was applied*, and the deterministic signal for that is the dated ADR header memory-keeper's documented format guarantees, not the title content the model chose.
+- **When in doubt.** If you cannot point to a literal in the agent's prompt, template, or output-format documentation that pins the string you want to grep for, the string is a content signal, not a structural one. Pick a different predicate.
+
+### Shared assertion helpers via `tests/e2e/lib.sh` ("exact predicate" invariant)
+
+Introduced by spec 0014.
+
+When a sibling fixture under `tests/e2e/` needs to exercise the *same predicate* `tests/e2e/run.sh` uses (e.g. to pin the predicate's shape against synthetic inputs without running the full lifecycle), the assertion helpers MUST be extracted to `tests/e2e/lib.sh` and both `run.sh` and the fixture MUST `source` it. The two non-acceptable alternatives:
+
+- **Naive `source tests/e2e/run.sh`.** `run.sh` executes at body level — sourcing it runs the entire harness, including the throwaway-repo creation and the `claude -p` invocations.
+- **Duplicating helper definitions in the fixture.** Invites drift the moment one site's helper changes semantics; the fixture's "exact predicate" invariant collapses silently.
+
+The `lib.sh` extraction is the only path that keeps the predicate provably identical without restructuring `run.sh`.
+
+- **Shape.** `tests/e2e/lib.sh` carries `#!/usr/bin/env bash` + `set -euo pipefail` per the general Bash convention (defensive — the file is sourced, but the shebang documents intent and the strict-mode flags become active in the sourcing shell if not already set). Helpers are pure functions: `fail`, `pass`, `exists`, `contains` (fixed-string, `grep -qF`), `contains_regex` (extended regex, `grep -qE`), `status_is`. New helpers added there, not in `run.sh`.
+- **`fail()` must be `set -u`-safe when called from fixture context.** `run.sh`'s `fail()` reads `$LAST_LOG` / `$LOG_DIR` to dump the most recent `claude -p` log; fixtures don't set those. The shared `fail()` guards its log-cat block with `${VAR:-}` default-empty expansion on every variable reference so calling it from a fixture context is safe under `set -u`.
+- **Sibling, not flag.** When a new assertion shape is needed, add a sibling helper (e.g. `contains_regex` next to `contains`) rather than overloading an existing helper with a mode flag. Call sites declare predicate type explicitly at the call site; existing callers' semantics are not touched.
+- **Sibling fixtures source `lib.sh` directly.** Compute `LIB_DIR` from `${BASH_SOURCE[0]}` per the existing Bash convention and `source "$LIB_DIR/lib.sh"`. Wire the fixture into a sibling `run_helper_unit_tests()` (not `run_language_fixtures()` — that name describes language-cycle fixtures specifically). Helper-first ordering in dispatch is preferred: a helper regression should fail before the language cycles or `claude -p` steps consume budget.
+- **Canonical reference.** `tests/e2e/lib.sh` + `tests/e2e/contains_adr_assertion_test.sh` (spec 0014). Both files document the load-bearing constraints inline.
+
 ### Grep-assertion oracle for doc-only specs
 
 Introduced by spec 0011.

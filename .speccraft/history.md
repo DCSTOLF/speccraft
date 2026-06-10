@@ -2,6 +2,69 @@
 
 Append-only. Newest first.
 
+## 2026-06-10 — E2E contracts encode structural predicates, not model-chosen content (spec 0014)
+
+**Spec:** specs/0014-tighten-e2e-history-assertion/
+**Decision:** When an e2e assertion verifies that a model-driven
+step happened (memory-keeper applied an ADR, spec-author wrote a
+plan, planner emitted a `## Risk` section, etc.), the predicate
+must target a STRUCTURAL signal the agent's contract guarantees,
+not a CONTENT signal the agent's free-text choice happens to
+produce. Concretely: `tests/e2e/run.sh`'s `[7/9]
+/speccraft:spec:close` assertion at line 278 now matches the
+dated ADR-header shape `^## 20[0-9]{2}-[0-9]{2}-[0-9]{2}` (via a
+new `contains_regex` helper, `grep -qE`) rather than the literal
+word `farewell` from the test-spec title. Helpers are extracted
+to a new `tests/e2e/lib.sh` that both `run.sh` and a new fixture
+(`tests/e2e/contains_adr_assertion_test.sh`) source, so the
+predicate is provably identical between production harness and
+fixture.
+**Why:** CI run 27276707529 on commit `ed3fe24` failed identically
+across attempts 2 and 3 (attempt 1 was
+`ENVIRONMENT_FAILURE: credit_exhausted`). Both failed attempts
+produced model-chosen ADR titles like *"Defer stdout-capture
+testing for main()"* — design-rationale phrasings that never
+mention the feature. The previous green run on `9c1330d`
+(27275588005) was the same flake getting lucky; plugin code was
+identical between the two commits, only the model's random seed
+differed. The principle generalises: agent-driven artefacts have
+free-text surfaces the e2e harness cannot pin without making the
+agent's prompt deterministic, which is a much larger surface to
+change than the assertion. Tightening the assertion is the
+correct layer of fix; CI run 27287309940 on the post-spec push
+(`b535629`) is the first run in which the structural assertion
+fires deterministically.
+**Consequence:**
+- New convention: e2e assertions verifying model-driven steps
+  target structural signals (header shape, exit code, field
+  presence) not content signals (specific words, titles, free-
+  text choices). Codified under §Bash → "E2E assertion
+  predicates: structural over content".
+- New convention: shared assertion helpers used by both
+  `tests/e2e/run.sh` and any sibling fixture live in
+  `tests/e2e/lib.sh` (sourced, not duplicated). The "exact
+  predicate" invariant — that a fixture testing the production
+  harness's predicate must use the *same* helper implementation,
+  not a copy — is load-bearing. Naive `source run.sh` from a
+  fixture executes the entire harness; helper duplication
+  invites silent drift between fixture and production. Codified
+  under §Bash → "Shared assertion helpers via tests/e2e/lib.sh".
+- New `contains_regex` helper (in `lib.sh`) is sibling to the
+  existing `contains` (fixed-string `grep -qF`). Pick fixed-
+  string vs regex explicitly at the call site rather than
+  overloading `contains` with a flag.
+- New `run_helper_unit_tests()` in `run.sh` is sibling to
+  `run_language_fixtures()` and runs first in both the
+  `--language-only` short-circuit and the full lifecycle path —
+  helper regressions fail fast before the language cycles or
+  `claude -p` steps run.
+- Step-counter `[N/M]` in `run.sh` bumped from `/10` to `/11`
+  for the lifecycle path. The plan literally specified the new
+  helper-test echo as `[11/11]` placed above the existing
+  `[8/10]` line; the executor's variant placement at `[8/11]`
+  (first, sequential) is cosmetic-only and functionally
+  equivalent.
+
 ## 2026-06-10 — Post-0012 dead-code cleanup + amendment precedent (spec 0013)
 
 **Spec:** specs/0013-remove-dead-active-spec-null-checks/

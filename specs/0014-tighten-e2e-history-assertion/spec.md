@@ -1,7 +1,7 @@
 ---
 id: "0014"
 title: "Tighten e2e history.md assertion to ADR structural match"
-status: in-progress
+status: closed
 created: 2026-06-10
 authors: [claude]
 packages: ["tests/e2e"]
