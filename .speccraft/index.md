@@ -35,7 +35,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-none
+specs/0013-remove-dead-active-spec-null-checks/ (status: in-progress)
 
 ## Recent decisions (last 3)
 

@@ -350,7 +350,7 @@ func prodGuardPrologue(absPath, root string) (prologueDecision, error) {
 		return prologueBlock, nil
 	}
 
-	if state.ActiveSpec == "" || state.ActiveSpec == "null" {
+	if state.ActiveSpec == "" {
 		return prologueBlock, fmt.Errorf(
 			"No active spec. Edits to production code are blocked.\n"+
 				"Use /spec:new \"<title>\" to start a spec, or set status: in-progress\n"+

@@ -836,3 +836,43 @@ mod tests {
 		t.Error("second invocation should consult the runner (red-check), but runner was not called")
 	}
 }
+
+// Test_ProdGuardPrologue_MissingActiveSpecKeyBlocks pins the cleared-shape
+// path through prodGuardPrologue for the omitempty-cleared state.json shape
+// introduced by spec 0012. The active_spec key is absent entirely (distinct
+// from makeTestRepo's "active_spec":null shape) and the guard must still
+// emit prologueBlock + "No active spec" via Go's empty-string zero value
+// for the missing JSON field.
+//
+// This is an assertion-pinning refactor test (spec 0013 plan §Framing,
+// Site B): it passes both before and after the removal of the dead
+// null-equality disjunct at main.go:353. It locks in the cleared-shape
+// path so a future redesign of prodGuardPrologue cannot silently regress
+// it.
+func Test_ProdGuardPrologue_MissingActiveSpecKeyBlocks(t *testing.T) {
+	root := t.TempDir()
+	specDir := filepath.Join(root, ".speccraft")
+	if err := os.MkdirAll(specDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// AC3 fixture-setup (pinned): write the omitempty-cleared shape
+	// verbatim — no active_spec key at all. Distinct from the
+	// makeTestRepo("","") shape which writes "active_spec":null.
+	state := `{"version":1,"session":{"id":"","edited_test_files":[],"edited_prod_files":[]}}`
+	if err := os.WriteFile(filepath.Join(specDir, "state.json"), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	absPath := filepath.Join(root, "pkg", "foo.go")
+
+	dec, err := prodGuardPrologue(absPath, root)
+	if dec != prologueBlock {
+		t.Errorf("dec = %v, want prologueBlock", dec)
+	}
+	if err == nil {
+		t.Fatal("err = nil, want non-nil")
+	}
+	if !strings.Contains(err.Error(), "No active spec") {
+		t.Errorf("err = %q, want substring %q", err.Error(), "No active spec")
+	}
+}

@@ -42,7 +42,7 @@ func SpecsDir(root string) string {
 
 // ActiveSpecDir returns the path to the active spec's directory, or "" if none.
 func ActiveSpecDir(root, activeSpec string) string {
-	if activeSpec == "" || activeSpec == "null" {
+	if activeSpec == "" {
 		return ""
 	}
 	return filepath.Join(root, "specs", activeSpec)
