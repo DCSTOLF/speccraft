@@ -41,6 +41,9 @@ for arg in "$@"; do
     --help|-h)
       echo "usage: $0 [--language-only]"
       echo "  --language-only   skip the claude -p lifecycle; run only language fixtures (spec 0008)"
+      echo "env:"
+      echo "  CLAUDE_MODEL      model passed to 'claude -p' (default: claude-sonnet-4-6; spec 0017)"
+      echo "  CLAUDE_BIN        path to the claude binary (default: claude)"
       exit 0
       ;;
     *)
@@ -171,6 +174,7 @@ run_claude() {
   LAST_LOG="$log"
   echo "    > $prompt"
   "$CLAUDE_BIN" -p \
+    --model "${CLAUDE_MODEL:-claude-sonnet-4-6}" \
     --permission-mode bypassPermissions \
     --output-format text \
     --plugin-dir "$PLUGIN_DIR" \

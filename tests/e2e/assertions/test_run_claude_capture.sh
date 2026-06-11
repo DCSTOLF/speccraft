@@ -50,4 +50,12 @@ if ! echo "$BODY" | grep -qE 'exit[[:space:]]+3'; then
 fi
 note "failure path: announces 'claude -p failed' + exits 3"
 
-echo "OK: run_claude capture shape pinned (combined stdout+stderr, exit 3 on fail)"
+# 4. Explicit model selection: `--model "${CLAUDE_MODEL:-claude-sonnet-4-6}"`
+# (spec 0017 AC1). The `${VAR:-default}` form covers AC2 (override) and AC3
+# (default) by Bash parameter-expansion semantics — no behavioral test needed.
+if ! echo "$BODY" | grep -qE -- '--model[[:space:]]+"\$\{CLAUDE_MODEL:-claude-sonnet-4-6\}"'; then
+  fail "run_claude does not pass --model \"\${CLAUDE_MODEL:-claude-sonnet-4-6}\" (spec 0017 AC1)"
+fi
+note "model selection: --model \"\${CLAUDE_MODEL:-claude-sonnet-4-6}\" (overridable, defaults to Sonnet)"
+
+echo "OK: run_claude capture shape pinned (combined stdout+stderr, exit 3 on fail, explicit model)"
