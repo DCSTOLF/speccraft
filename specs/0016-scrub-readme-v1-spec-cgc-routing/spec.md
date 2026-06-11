@@ -1,7 +1,7 @@
 ---
 id: "0016"
 title: "Scrub README + v1-spec CodeGraphContext routing prose"
-status: in-progress
+status: closed
 created: 2026-06-11
 authors: [claude]
 packages: []

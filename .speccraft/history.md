@@ -2,6 +2,92 @@
 
 Append-only. Newest first.
 
+## 2026-06-11 — Scrub README + v1-spec CodeGraphContext routing prose (spec 0016)
+
+**Spec:** specs/0016-scrub-readme-v1-spec-cgc-routing/
+**Decision:** Doc-only scrub applying spec 0011's
+"External-tool boundaries" principle to the two human-facing
+prose surfaces spec 0011 explicitly deferred: `README.md`
+(3 edit sites at lines 355, 365, 383) and `speccraft-v1-spec.md`
+(5 edit sites at lines 33, 697, 1132, 1369, 1792). Eight
+prescriptive routing phrases — "prefer X", "should install X",
+"X is the recommended way" — replaced with neutral factual
+descriptions and example framing ("such as CodeGraphContext").
+The neutral anchors `Recommended companions` (README section
+header) and `**Recommended companion:**` (v1-spec §13 bolded
+label, line 1369) were preserved as the surviving discovery
+prose. A new `specs/0016-scrub-readme-v1-spec-cgc-routing/verify.sh`
+(108 lines, 12 labelled `grep -F` checks: 5+1 README, 5+1
+v1-spec) is the AC oracle — every check is file-scoped to
+`README.md` or `speccraft-v1-spec.md` by name (AC3); repo-wide
+`grep -r` is forbidden because the absence-target strings
+literally appear inside this spec's own `spec.md`. A defensive
+paraphrase pin (check #5, `prefer CodeGraphContext for structural
+queries`) is trivially green in this cycle — its job is to fail
+RED if a future rewrite reintroduces a near-variant of the
+banned wording.
+**Why:** Spec 0011 codified the External-tool boundaries
+principle in `templates/speccraft/conventions.md` and scrubbed
+the three model-loaded surfaces it identified
+(`skills/speccraft-context/SKILL.md`, `commands/init.md`,
+`templates/speccraft/architecture.md`) but explicitly deferred
+the two human-facing prose surfaces. The deferred work was
+queued as a follow-up across specs 0011 → 0013 → 0014 → 0015;
+this spec closes that gap before the stale prose drifts further
+or new contributors absorb it as the convention. The
+prescriptive prose at README:365 (`It's the recommended way to
+answer`) was an exact match for the conventions.md banned
+phrasing pattern — the most acute violation among the eight,
+caught by claude-p in round 1 and pinned as AC1 absence check
+#3. Two-round review caught real gaps round 1 missed: round 1
+returned `changes-requested` from both reviewers; the author
+applied five edits between rounds (AC1 expanded from 2→5 README
+pins, AC2 expanded from 2→5 v1-spec pins, AC2 presence anchor
+added, AC3 file-scoped grep rule added, an Out-of-scope
+contradiction resolved). Round 2 both `approve-with-comments`,
+quorum met. claude-p's round-2 catch — that the spec body
+itself misattributed the `**Recommended companion:**` bolded
+label to §20.1 when it actually lives at §13 line 1369 — was
+fixed pre-commit, before flipping `status: reviewed`. The
+README:544 borderline-prescriptive sentence was explicitly
+disclosed in §Out-of-scope and intentionally left in place
+under the AC1 narrowing — future-reader signal, not a missed
+scrub.
+**Consequence:**
+- Spec 0011's queued "README + `speccraft-v1-spec.md`
+  CodeGraphContext cleanup" follow-up is **resolved** by this
+  spec. Combined with spec 0015 resolving the
+  `/speccraft:spec:revise` follow-up, every queued item from
+  spec 0011's §Out-of-scope is now closed except the
+  closed-spec residual in `specs/0001-speccraft-v1/spec.md`,
+  which spec 0011's history.md entry already accepted as
+  historical record.
+- The "Grep-assertion oracle for doc-only specs" convention
+  from spec 0011 has now been used a second time (after spec
+  0011 itself). The pattern generalised cleanly — file-scoped
+  greps, labelled checks, paired absence/presence per file, a
+  defensive paraphrase pin for forward-protection — without
+  needing refinement. No new convention codified; the existing
+  rule in `.speccraft/conventions.md` is canonical.
+- The codex round-2 implementation note (label presence checks
+  as explicitly as absence checks so failure messages
+  distinguish over-deletion from missed scrub) was folded into
+  `verify.sh` directly via labels like `[presence: README
+  "Recommended companions" section header]`. Future doc-only
+  specs that copy this `verify.sh` as a template will inherit
+  the labelling discipline implicitly.
+- No architecture change. README.md and `speccraft-v1-spec.md`
+  are top-level repo prose, not part of any execution surface
+  in `.speccraft/architecture.md` §Layering. The eight edits
+  preserved descriptive content (factual MCP-server capability
+  descriptions, factual roadmap mentions) and only removed
+  prescriptive verb/phrasing — `verify.sh` checks plus the T4
+  semantic-drift refactor pass guard against half-sentence
+  artefacts.
+- AC4 closed-spec immutability held: `git diff cf0d094..HEAD --
+  specs/0001-speccraft-v1/spec.md` is empty, confirming the
+  spec-immutability rule from spec 0011's close was respected.
+
 ## 2026-06-11 — /speccraft:spec:revise + commands/<group>/<name>.lib.sh colocation (spec 0015)
 
 **Spec:** specs/0015-spec-revise-command/
