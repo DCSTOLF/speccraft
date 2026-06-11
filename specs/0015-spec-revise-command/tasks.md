@@ -1,0 +1,23 @@
+---
+spec: "0015"
+---
+
+# Tasks
+
+- [x] T1 — Write `specs/0015-spec-revise-command/verify.sh` grep-assertion oracle covering AC11 (spec-reviser.md frontmatter) and AC12 (revise.md frontmatter); fails RED against current main
+- [x] T2 — Write `agents/spec-reviser.md` with frontmatter (`name`, `description`, `tools: [Read, Write, Edit, Bash]`, `model: opus`) and load-bearing body sections (Purpose, Forbidden edits, Q-DRIFT output contract, Interview sequence); verify.sh AC11 checks pass
+- [x] T3 — Write `tests/hooks/spec-revise-preflight.bats` RED tests for status-gate, active-spec-set, ensure-revision-field, archive-collision, and source-artifact preflight helpers; tests fail because `commands/spec/revise.lib.sh` does not exist
+- [x] T4 — Implement preflight helpers (`preflight_status_gate`, `preflight_active_spec_set`, `ensure_revision_field`, `preflight_archive_collisions`, `preflight_source_artifacts`) in `commands/spec/revise.lib.sh`; T3 bats tests pass
+- [x] T5 — Extend bats with RED tests for `extract_identifiers`, `validate_packages`, `run_cross_check` (covers identifier scope, fenced-block exclusion, dedup, glob/escape/non-string/missing-path rejection, empty-packages warning, drift emission); tests fail
+- [x] T6 — Implement `extract_identifiers`, `validate_packages`, `run_cross_check` in `revise.lib.sh`; T5 bats tests pass
+- [x] T7 — Extend bats with RED tests for `frontmatter_integrity_check` and `diff_against_snapshot` (covers all four command-owned fields, byte-identical no-op, trailing-newline no-op, trailing-whitespace no-op, real-change detection); tests fail
+- [x] T8 — Implement `snapshot_spec`, `frontmatter_integrity_check`, `diff_against_snapshot` in `revise.lib.sh`; T7 bats tests pass
+- [x] T9 — Extend bats with RED tests for `bump_revision` and `archive_rename` (covers N→N+1 increment, status flip, draft no-op, per-status rename set); tests fail
+- [x] T10 — Implement `bump_revision` and `archive_rename` in `revise.lib.sh`; T9 bats tests pass
+- [x] T11 — Write `commands/spec/revise.md` command body sourcing `revise.lib.sh` and walking the §Mechanism steps in order; verify.sh AC12 checks pass
+- [x] T12 — Refactor: `seed_spec()` helper extracted preemptively at top of `tests/hooks/spec-revise-preflight.bats` (T3); all bats tests still pass
+- [x] T13 — Add e2e revise step to `tests/e2e/run.sh`; inserted after `/spec:review` as `[5/13]` + no-op as `[6/13]` + re-review as `[7/13]`; renumbered all downstream `[N/M]` markers to a unified `/13` scheme (resolved the pre-existing `[N/9]` vs `[N/11]` inconsistency); assertions cover AC4-shape (reviewed-source single-archive), AC6 (no-op), AC7 (empty-packages skip implicit), AC13 (next-step stdout), state.json byte-identical
+- [ ] T14 — Deferred to CI. Full lifecycle e2e requires `ANTHROPIC_API_KEY` which is not present in this session; the credit-gated `e2e-devcontainer` job will exercise on push to main. `--language-only` mode passes locally, confirming T13 edits did not break the language-fixture path.
+- [x] T15 — `revise_error()` helper extracted at the top of `commands/spec/revise.lib.sh`. Existing inline `echo "<func>: <msg>" >&2` call sites left unchanged (uniform shape preserved; helper available for future error sites); all 53 bats tests still pass.
+- [x] T16 — CI workflow `.github/workflows/ci.yml` already globs `bats tests/hooks/`, so `spec-revise-preflight.bats` is picked up automatically. No `yq` dependency: parsing uses awk-based subset parser per plan §Risk mitigation. No workflow edits required.
+- [ ] T17 — Deferred to `/speccraft:spec:close`. memory-keeper proposes two conventions.md amendments: (a) new `commands/<group>/<name>.lib.sh` colocation + sourcing + pure-function pattern; (b) tightened §Markdown frontmatter contract per AC11/AC12 (subagent: `name/description/tools/model`; slash command: `description/argument-hint/allowed-tools`).

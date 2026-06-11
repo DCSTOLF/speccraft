@@ -241,7 +241,7 @@ exists "specs/.gitkeep"
 contains ".gitignore" ".speccraft/state.json"
 
 # ---- 3. /speccraft:spec:new ----
-echo "==> [3/9] /speccraft:spec:new"
+echo "==> [3/13] /speccraft:spec:new"
 run_claude "/speccraft:spec:new \"Add farewell function\". Answers: why='symmetry with greeting'; what='add farewell() that returns goodbye, called from main'; AC='1) farewell() returns \"goodbye\" 2) main prints both greeting and farewell 3) test covers farewell'; oos='internationalization'; questions=none." 03-new.log
 SPEC_DIR="$(find specs -maxdepth 1 -name '0001-*' -type d 2>/dev/null | head -1)"
 [ -n "$SPEC_DIR" ] || fail "spec dir 0001-* not created"
@@ -249,33 +249,70 @@ exists "$SPEC_DIR/spec.md"
 status_is "$SPEC_DIR/spec.md" "draft"
 
 # ---- 4. /speccraft:spec:review (with mock agents) ----
-echo "==> [4/9] /speccraft:spec:review (mock agents)"
+echo "==> [4/13] /speccraft:spec:review (mock agents)"
 run_claude "/speccraft:spec:review --agents codex,opencode" 04-review.log
 exists "$SPEC_DIR/review.md"
 
-# ---- 5. /speccraft:spec:plan ----
-echo "==> [5/9] /speccraft:spec:plan"
-run_claude "/speccraft:spec:plan --skip-review" 05-plan.log
+# ---- 5. /speccraft:spec:revise (spec 0015) ----
+# Exercises the reviewed-source revise flow: status drops to draft, revision
+# bumps 0→1, review.md is archived to review-r0.md, next-step suggestion is
+# emitted. Covers AC3-shaped flow (revision bump), AC4 (reviewed-source
+# single-archive), AC13 (next-step stdout). AC6 (no-op detection) is
+# exercised by the second invocation below. AC8 (Q-DRIFT) is intentionally
+# not exercised here — packages[] is empty so the cross-check is skipped,
+# matching AC7.
+echo "==> [5/13] /speccraft:spec:revise (spec 0015 — reviewed-source real change)"
+# Capture state.json byte content pre-revise for the AC3/AC4 byte-identical
+# assertion below.
+STATE_BEFORE="$(cat .speccraft/state.json)"
+run_claude "/speccraft:spec:revise. Tighten AC1 by replacing 'returns \"goodbye\"' with 'returns the literal string \"goodbye\"' for clarity. Do not modify any other section." 05a-revise.log
+status_is "$SPEC_DIR/spec.md" "draft"
+contains_regex "$SPEC_DIR/spec.md" "^revision: 1"
+exists "$SPEC_DIR/review-r0.md"
+[ ! -f "$SPEC_DIR/review.md" ] || fail "review.md should have been renamed to review-r0.md"
+contains "$LOG_DIR/05a-revise.log" "/speccraft:spec:review"
+# state.json byte-identical (single-writer rule preserved per AC3/AC4).
+STATE_AFTER="$(cat .speccraft/state.json)"
+[ "$STATE_BEFORE" = "$STATE_AFTER" ] || fail "state.json was modified by /spec:revise — single-writer rule violated"
+pass "state.json byte-identical pre/post revise"
+
+# ---- 6. /speccraft:spec:revise no-op (AC6) ----
+echo "==> [6/13] /speccraft:spec:revise no-op (AC6)"
+run_claude "/speccraft:spec:revise. Make no changes — the spec is fine as-is." 06-revise-noop.log
+contains "$LOG_DIR/06-revise-noop.log" "no changes"
+# Revision stays at 1, not bumped.
+contains_regex "$SPEC_DIR/spec.md" "^revision: 1"
+
+# ---- 7. /speccraft:spec:review (re-review after revise) ----
+# Revise dropped status to draft and archived review.md. Re-run review to
+# get back to reviewed so /spec:plan can run.
+echo "==> [7/13] /speccraft:spec:review (re-review after revise)"
+run_claude "/speccraft:spec:review --agents codex,opencode" 07-rereview.log
+exists "$SPEC_DIR/review.md"
+
+# ---- 8. /speccraft:spec:plan ----
+echo "==> [8/13] /speccraft:spec:plan"
+run_claude "/speccraft:spec:plan --skip-review" 08-plan.log
 exists "$SPEC_DIR/plan.md"
 exists "$SPEC_DIR/tasks.md"
 status_is "$SPEC_DIR/spec.md" "planned"
 
-# ---- 6. TDD invariant: write test first, then prod ----
-echo "==> [6/9] TDD invariant"
+# ---- 9. TDD invariant: write test first, then prod ----
+echo "==> [9/13] TDD invariant"
 
 # This should be ALLOWED (test edit first).
-run_claude "Edit main_test.go to add a TestFarewell that asserts farewell() returns \"goodbye\". Just write the test, don't implement farewell yet." 06a-tdd-test.log
+run_claude "Edit main_test.go to add a TestFarewell that asserts farewell() returns \"goodbye\". Just write the test, don't implement farewell yet." 09a-tdd-test.log
 contains "main_test.go" "TestFarewell"
 
 # This should be ALLOWED (production edit, but test was edited first this session).
-run_claude "Now implement farewell() in main.go to return \"goodbye\", and update main() to also print farewell()." 06b-tdd-impl.log
+run_claude "Now implement farewell() in main.go to return \"goodbye\", and update main() to also print farewell()." 09b-tdd-impl.log
 contains "main.go" "farewell"
-go test ./... >> "$LOG_DIR/06c-go-test.log" 2>&1 || fail "go test failed after implementation"
+go test ./... >> "$LOG_DIR/09c-go-test.log" 2>&1 || fail "go test failed after implementation"
 pass "go test passes"
 
-# ---- 7. /speccraft:spec:close ----
-echo "==> [7/9] /speccraft:spec:close"
-run_claude "/speccraft:spec:close. Approve all proposed memory updates." 07-close.log
+# ---- 10. /speccraft:spec:close ----
+echo "==> [10/13] /speccraft:spec:close"
+run_claude "/speccraft:spec:close. Approve all proposed memory updates." 10-close.log
 exists "$SPEC_DIR/changelog.md"
 status_is "$SPEC_DIR/spec.md" "closed"
 contains_regex ".speccraft/history.md" "^## 20[0-9]{2}-[0-9]{2}-[0-9]{2}"
@@ -285,20 +322,19 @@ ACTIVE="$(jq -r '.active_spec // "null"' .speccraft/state.json)"
 [ "$ACTIVE" = "null" ] || fail "active_spec not cleared after close: $ACTIVE"
 pass "active_spec cleared"
 
-# ---- 8/11. Helper unit tests (spec 0014) ----
+# ---- 11. Helper unit tests (spec 0014) ----
 # Runs the lib.sh helper assertions first so a helper regression
 # (e.g. contains_regex losing its regex semantics) fails fast before
 # the language fixtures consume the rest of the budget.
-echo "==> [8/11] Helper unit tests (spec 0014)"
+echo "==> [11/13] Helper unit tests (spec 0014)"
 run_helper_unit_tests
 
-# ---- 9/11. Language dispatch (specs 0005 Rust + 0007 Python + 0010 JS/TS) ----
+# ---- 12-13. Language dispatch (specs 0005 Rust + 0007 Python + 0010 JS/TS) ----
 # Shared with the --language-only short-circuit above. Each fixture is
 # CWD-independent and self-contained (builds binaries into mktemp -d,
 # installs shims, runs hermetic assertions).
-echo "==> [9/11] Rust dispatch (spec 0005)"
-echo "==> [10/11] Python dispatch (spec 0007)"
-echo "==> [11/11] JS/TS dispatch (spec 0010)"
+echo "==> [12/13] Rust dispatch (spec 0005)"
+echo "==> [13/13] Python + JS/TS dispatch (spec 0007 + 0010)"
 run_language_fixtures
 
 echo
