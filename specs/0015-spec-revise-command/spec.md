@@ -149,9 +149,15 @@ Specifically:
       c. Set `status: draft` in frontmatter (no-op when source was already
          draft).
       d. Print next-step suggestion: `/speccraft:spec:review`.
-- **`.speccraft/state.json` is not modified by revise.** No active_spec
-  change, no new fields, no session edits. Preserves the single-writer
-  discipline established by spec 0012; speccraft-state is not invoked.
+- **`.speccraft/state.json` single-writer discipline preserved.** The revise
+  command body does not directly write `.speccraft/state.json` — only the
+  established single writer (`speccraft-state`, invoked from the
+  PostToolUse hook) writes it. `active_spec` is **not modified** by revise.
+  Session edit-tracking fields (`session.edited_*_files`) MAY change as a
+  side effect of the spec-reviser agent invoking the Edit tool on spec.md
+  — this is normal PostToolUse hook behaviour and is unrelated to revise's
+  own contract. See the 2026-06-11 amendment below for the historical
+  AC3/AC4 over-specification this clarifies.
 
 ## Acceptance criteria
 
@@ -167,12 +173,15 @@ Specifically:
    field), where the spec-reviser writes a real edit to spec.md body, results
    in: spec.md frontmatter `revision: 1` and `status: draft` (unchanged); no
    archive files created; no `review.md`/`plan.md`/`tasks.md` exist before
-   or after; `.speccraft/state.json` byte-identical pre- and post-run.
+   or after; `.speccraft/state.json` `active_spec` field unchanged
+   pre- and post-run (other session-tracking fields MAY change as a normal
+   PostToolUse-hook side effect — see the 2026-06-11 amendment).
 4. Running revise against a `reviewed` spec with `revision: 0` (or missing
    field), where the spec-reviser writes a real edit, results in: spec.md
    frontmatter `revision: 1` and `status: draft`; `review.md` renamed to
    `review-r0.md`; no `plan.md` or `tasks.md` archives created; index.md
-   unchanged; `.speccraft/state.json` byte-identical pre- and post-run.
+   unchanged; `.speccraft/state.json` `active_spec` field unchanged
+   pre- and post-run.
 5. Running revise against a `planned` spec with `revision: 2`, where the
    spec-reviser writes a real edit, results in: spec.md frontmatter
    `revision: 3` and `status: draft`; `review.md` renamed to `review-r2.md`;
@@ -248,3 +257,49 @@ Specifically:
 ## Open questions
 
 _none_
+
+## Amendment (2026-06-11) — AC3/AC4 state.json predicate corrected
+
+**Trigger.** CI run [27314550595](https://github.com/DCSTOLF/speccraft/actions/runs/27314550595)'s
+`e2e-devcontainer` job failed at `tests/e2e/run.sh` step `[5/13]
+/speccraft:spec:revise`. The new assertion
+`[ "$STATE_BEFORE" = "$STATE_AFTER" ]` (full-file byte-compare of
+`.speccraft/state.json`) was tripped by the PostToolUse hook's normal
+`speccraft-state track-edit` call when the spec-reviser agent issued
+`Edit spec.md` during revise. The model log confirmed the revise contract
+otherwise behaved correctly (status flipped, archive renamed, revision
+bumped, next-step suggestion printed).
+
+**Fix.** AC3 and AC4 originally asserted
+"`.speccraft/state.json` byte-identical pre- and post-run." That predicate
+was over-specified: the actual contract revise needs to preserve is
+**single-writer discipline + active_spec stability**, not whole-file byte
+equality. PostToolUse-hook session tracking is orthogonal and correct
+behaviour. The amendment rewords AC3 and AC4 to assert that `active_spec`
+is unchanged, and updates `tests/e2e/run.sh`'s assertion to a `jq`-based
+compare of the `.active_spec` field only.
+
+**Rationale for folding in vs spinning off.** All three mid-amendment
+criteria from spec 0013 §"Mid-implementation amendment" hold: strictly
+bounded edit (two AC rewordings + one assertion change in `run.sh`); main
+CI is red until it lands (this spec's own close gate); theme overlap
+(this IS spec 0015). The alternative — filing spec 0016 to fix spec
+0015's own ACs — would carry red main CI through a second new+plan+impl
+cycle for a one-line assertion change.
+
+**Scope deltas.**
+- spec.md §What state.json bullet rewritten.
+- spec.md AC3 wording: byte-identical → `active_spec` field unchanged.
+- spec.md AC4 wording: same.
+- AC9 wording unchanged (preflight-collision path exits before any Edit
+  call, so byte-identical there remains accurate).
+- `tests/e2e/run.sh` step `[5/13]` assertion changed from full-file
+  byte-compare to `jq -r '.active_spec'` compare.
+- New tasks.md entry T18 captures the amendment.
+- bats tests untouched — they exercise helper functions directly without
+  the PostToolUse hook, so they never saw the false-positive shape.
+
+**Convention precedent.** Spec 0013's T6 (CI workflow hooks: job fix
+post-T1-T5 push) is the canonical example. This amendment matches that
+shape — a bounded post-push fix folded into the active spec rather than
+spun out.

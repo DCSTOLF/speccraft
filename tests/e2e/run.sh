@@ -262,19 +262,22 @@ exists "$SPEC_DIR/review.md"
 # not exercised here — packages[] is empty so the cross-check is skipped,
 # matching AC7.
 echo "==> [5/13] /speccraft:spec:revise (spec 0015 — reviewed-source real change)"
-# Capture state.json byte content pre-revise for the AC3/AC4 byte-identical
-# assertion below.
-STATE_BEFORE="$(cat .speccraft/state.json)"
+# Capture .active_spec pre-revise. Per the spec-0015 2026-06-11 amendment,
+# revise's state.json contract is "single-writer rule preserved + active_spec
+# stable", not byte-identical whole-file equality — PostToolUse-hook session
+# tracking (edited_prod_files) is a normal side effect of the spec-reviser
+# agent issuing Edit on spec.md.
+ACTIVE_BEFORE="$(jq -r '.active_spec' .speccraft/state.json)"
 run_claude "/speccraft:spec:revise. Tighten AC1 by replacing 'returns \"goodbye\"' with 'returns the literal string \"goodbye\"' for clarity. Do not modify any other section." 05a-revise.log
 status_is "$SPEC_DIR/spec.md" "draft"
 contains_regex "$SPEC_DIR/spec.md" "^revision: 1"
 exists "$SPEC_DIR/review-r0.md"
 [ ! -f "$SPEC_DIR/review.md" ] || fail "review.md should have been renamed to review-r0.md"
 contains "$LOG_DIR/05a-revise.log" "/speccraft:spec:review"
-# state.json byte-identical (single-writer rule preserved per AC3/AC4).
-STATE_AFTER="$(cat .speccraft/state.json)"
-[ "$STATE_BEFORE" = "$STATE_AFTER" ] || fail "state.json was modified by /spec:revise — single-writer rule violated"
-pass "state.json byte-identical pre/post revise"
+# active_spec unchanged across revise (per AC3/AC4 corrected predicate).
+ACTIVE_AFTER="$(jq -r '.active_spec' .speccraft/state.json)"
+[ "$ACTIVE_BEFORE" = "$ACTIVE_AFTER" ] || fail "active_spec changed across /spec:revise (was '$ACTIVE_BEFORE', now '$ACTIVE_AFTER') — single-writer rule violated"
+pass "active_spec unchanged across revise (was '$ACTIVE_BEFORE')"
 
 # ---- 6. /speccraft:spec:revise no-op (AC6) ----
 echo "==> [6/13] /speccraft:spec:revise no-op (AC6)"
