@@ -6,7 +6,7 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
 
 1. `.claude-plugin/plugin.json` + root `marketplace.json` — packaging entry exposed via the `dcstolf-tools` marketplace.
 2. `hooks/` — Bash hook scripts (`session-start.sh`, `prompt-submit.sh`, `pre-tool-use.sh`, `post-tool-use.sh`, `stop.sh`) registered through `hooks/hooks.json`. Hooks are the only layer that runs without explicit user invocation.
-3. `commands/` — Markdown slash commands. Top-level: `init.md`, `sync.md`. Spec lifecycle: `commands/spec/{new,plan,implement,review,review-code,delegate,close,override}.md`.
+3. `commands/` — Markdown slash commands. Top-level: `init.md`, `sync.md`. Spec lifecycle: `commands/spec/{new,plan,implement,review,review-code,delegate,close,override,revise}.md`. A command may colocate a sourceable Bash helper alongside its `.md` body using the `commands/<group>/<name>.lib.sh` pattern (introduced by spec 0015; first instance: `commands/spec/revise.lib.sh`). The `.md` body sources the lib at runtime; the bats suite under `tests/hooks/<name>.bats` sources the same file at test time. Helpers MUST be pure functions (no top-level side effects). This pattern is sibling to the `tools/cmd/speccraft-*` Go binary layer (item 6) but distinct: `.lib.sh` runs in-process inside the command's shell, not as a separately invoked binary.
 4. `agents/` — Markdown subagent definitions: `spec-author`, `tdd-planner`, `spec-critic`, `cross-reviewer`, `aux-delegator`, `memory-keeper`.
 5. `skills/<name>/SKILL.md` — model-loaded skills: `speccraft-context`, `spec-format`, `aux-agents`.
 6. `tools/cmd/speccraft-{state,guard,drift}` — Go entrypoints, one binary each, that hooks and commands shell out to.

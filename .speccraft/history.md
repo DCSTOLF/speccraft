@@ -2,6 +2,93 @@
 
 Append-only. Newest first.
 
+## 2026-06-11 — /speccraft:spec:revise + commands/<group>/<name>.lib.sh colocation (spec 0015)
+
+**Spec:** specs/0015-spec-revise-command/
+**Decision:** Add `/speccraft:spec:revise` as a first-class sibling
+under `commands/spec/` for pre-implementation spec revision.
+Mechanism: a new `agents/spec-reviser.md` subagent
+(tools `[Read, Write, Edit, Bash]` — no `Agent`, per spec 0011)
+re-runs a Socratic interview against the existing spec body, while
+the command body owns all command-only frontmatter mutations
+(`revision:`, `status:`, `id:`, `created:`). The command's
+preflight + cross-check + diff + archive logic is extracted into
+**`commands/spec/revise.lib.sh`** — the first sourceable Bash
+helper under `commands/spec/`, sourced both by the `.md` body at
+runtime and by `tests/hooks/spec-revise-preflight.bats` at test
+time. Drift items surfaced by the optional `packages[]` cross-check
+are emitted by the subagent with the load-bearing `^Q-DRIFT:`
+prefix anchored at column 0 — pinned in the agent prompt body so
+the e2e grep is a structural anchor, not a content guess
+(per spec 0014). After the agent runs, the command re-checks the
+four command-owned frontmatter fields against a pre-agent snapshot
+(`frontmatter_integrity_check`) and refuses the run if the agent
+ignored the forbidden-edits contract. T18 mid-implementation
+amendment (2026-06-11) reworded AC3/AC4 from "state.json
+byte-identical" to "`active_spec` field unchanged" — the original
+predicate was over-specified, since the PostToolUse hook
+correctly updates `session.edited_prod_files` when the agent
+issues `Edit spec.md`.
+**Why:** Pre-implementation revision had been an unowned gap
+since the 2026-06-09 `/speccraft:spec:new` session that
+improvised the flow — the issue was deferred across specs 0011,
+0013, 0014 as queued follow-up. The two existing repair paths
+were inadequate: hand-editing spec.md + re-running `/spec:review`
+left no audit trail, and the spec-0013 "mid-implementation
+amendment" convention applies only to `in-progress` specs.
+Pre-implementation revision needed the same Socratic rigor as
+`/spec:new` plus a structural audit trail (revision counter,
+archived `review-r<N>.md` / `plan-r<N>.md` / `tasks-r<N>.md`).
+Extracting the Bash mechanism into `revise.lib.sh` was the only
+test-layer choice that kept AC1/AC2/AC9/AC10 (preflight error
+paths, no model in the loop) out of the credit-gated lifecycle
+job — they live in bats at zero credit cost, while AC3–AC8/AC13
+(agent-dependent) live in `tests/e2e/run.sh` `[5/13]`–`[7/13]`.
+T18's AC3/AC4 rework was triggered by the false positive on CI
+run 27314550595's first attempt (commit `0c063ed`): the byte-
+compare assertion treated normal hook session-tracking as a
+contract violation. The contract revise actually needs is
+single-writer discipline + `active_spec` stability, not whole-file
+byte equality.
+**Consequence:**
+- New convention codified under §Bash → "Sourceable command
+  helpers: `commands/<group>/<name>.lib.sh` colocation". Helper
+  Bash backing a slash command lives next to the `.md` body;
+  sourced by both runtime and tests; pure functions only (no
+  top-level side effects) so bats can source the file without
+  triggering work. Canonical reference is
+  `commands/spec/revise.lib.sh` + `tests/hooks/spec-revise-preflight.bats`.
+  This pattern is sibling to the `tools/cmd/speccraft-*` Go binary
+  pattern, distinct in that `.lib.sh` runs in-process inside the
+  command's shell rather than as a separately invoked binary.
+- §"Markdown frontmatter" contract tightened to match the
+  de-facto convention already observed across the codebase:
+  subagent contract is `name/description/tools/model` (6/6 files
+  under `agents/` already carry `model:`); slash command contract
+  is `description/argument-hint/allowed-tools` (8/8 files under
+  `commands/spec/` already carry all three). The pre-tightening
+  conventions.md text understated what speccraft itself had been
+  shipping since spec 0005.
+- §Layering bullet 3 in architecture.md updated to call out the
+  new sourceable-helper colocation pattern under `commands/`.
+- Spec 0011's queued `/speccraft:spec:revise` follow-up is
+  resolved by this spec. The remaining queued follow-ups (README
+  + `speccraft-v1-spec.md` CodeGraphContext cleanup) are carried
+  forward — neither was touched here.
+- Mid-implementation amendment convention (spec 0013) reused
+  cleanly: T18 added a dated `## Amendment (2026-06-11)` section
+  to spec.md, a T18 entry to tasks.md, and reworded AC3/AC4 in
+  place. The three conditions held (bounded edit, CI-blocking,
+  theme overlap). This is the second use of the pattern after
+  spec 0013's own T6.
+- New e2e step trio `[5/13]` / `[6/13]` / `[7/13]` introduced in
+  `tests/e2e/run.sh`; downstream `[N/M]` markers renumbered to a
+  unified `/13` scheme, resolving the pre-existing `[N/9]` vs
+  `[N/11]` inconsistency carried over from spec 0014.
+- CI close gate: run 27314550595 on commit `0c824f9` green
+  across all jobs, including the new `[5-7/13]` revise lifecycle
+  and the 53 new bats tests under `spec-revise-preflight.bats`.
+
 ## 2026-06-10 — E2E contracts encode structural predicates, not model-chosen content (spec 0014)
 
 **Spec:** specs/0014-tighten-e2e-history-assertion/

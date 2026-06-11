@@ -75,6 +75,21 @@ The `lib.sh` extraction is the only path that keeps the predicate provably ident
 - **Sibling fixtures source `lib.sh` directly.** Compute `LIB_DIR` from `${BASH_SOURCE[0]}` per the existing Bash convention and `source "$LIB_DIR/lib.sh"`. Wire the fixture into a sibling `run_helper_unit_tests()` (not `run_language_fixtures()` — that name describes language-cycle fixtures specifically). Helper-first ordering in dispatch is preferred: a helper regression should fail before the language cycles or `claude -p` steps consume budget.
 - **Canonical reference.** `tests/e2e/lib.sh` + `tests/e2e/contains_adr_assertion_test.sh` (spec 0014). Both files document the load-bearing constraints inline.
 
+### Sourceable command helpers: `commands/<group>/<name>.lib.sh` colocation
+
+Introduced by spec 0015.
+
+When a slash command under `commands/<group>/<name>.md` needs Bash logic complex enough to deserve unit tests — preflight gates, file-shape parsing, snapshot/diff, multi-step state transitions — extract the helpers into a sibling `commands/<group>/<name>.lib.sh` colocated with the `.md` body. The `.md` command sources the lib at runtime; the bats suite under `tests/hooks/<name>.bats` sources the same file at test time.
+
+- **Shape.** `#!/usr/bin/env bash` + `set -euo pipefail` per the general Bash convention. Every helper is a pure function — no top-level side effects, no top-level `cd`, no global state mutations at source time. Sourcing the file from bats must be a no-op other than defining functions and any read-only constants. Functions emit human-readable errors on stderr (typically via a central `<name>_error()` envelope) and reserve stdout for structured output (drift items, diff signals, identifier tokens).
+- **Runtime sourcing.** From the `.md` body: `source "$CLAUDE_PLUGIN_ROOT/commands/<group>/<name>.lib.sh"`. The command body then becomes a thin driver that calls named functions in order, each independently testable from bats.
+- **Test sourcing.** From the bats file: `source "$PLUGIN_DIR/commands/<group>/<name>.lib.sh"` in `setup()`. Because every helper is pure, the bats harness exercises each function in isolation with seeded fixtures — preflight error paths, identifier extraction, frontmatter integrity, snapshot diff, archive renames — at zero credit cost. Agent-dependent ACs stay in `tests/e2e/run.sh` (credit-gated); helper-mechanics ACs come back to the cheap bats layer.
+- **Why this rule matters.** Before spec 0015, `commands/spec/*` was Markdown-only — every command's mechanism prose was un-unit-testable shell embedded inside an instructions document. Spec 0015's `revise` introduced 13 distinct preflight + parsing + diff + archive helpers; pushing AC1's three status sub-cases plus AC9/AC10 (preflight error paths) into the credit-gated lifecycle job would have cost a real budget for what is purely deterministic Bash. Extracting to `revise.lib.sh` made 53 bats tests possible at zero credit cost, and the pure-function discipline is what makes those tests trivial to author — `setup()` seeds a fixture, the `@test` body sources the lib and calls one helper, the assertion checks stdout/stderr/exit. No mocks, no harness.
+- **Pairing with the e2e layer.** The bats layer covers helper mechanics; the e2e layer covers the agent-dependent integration. The split is the same as the spec-0014 "structural over content" rule generalised to layer: bats can verify "helper X returns Y for input Z" because that's deterministic; only the e2e layer can verify "the spec-reviser agent emitted `^Q-DRIFT:` on a real-change revise" because that's model-driven. Pick the cheap layer first; only escalate ACs that genuinely need `claude -p`.
+- **Canonical reference.** `commands/spec/revise.lib.sh` (574 lines, 13 helpers + `revise_error()` envelope) + `tests/hooks/spec-revise-preflight.bats` (933 lines, 53 tests covering every helper in isolation). Both files document the pure-function constraint inline; the lib's header comment names the bats file as the test oracle.
+
+Sibling to the existing E2E language-fixture pattern and the verify.sh grep oracle: language fixtures exercise `speccraft-guard` against representative project layouts, `verify.sh` exercises documentation specs, and `commands/<group>/<name>.lib.sh` + bats exercises command-mechanism shell.
+
 ### Grep-assertion oracle for doc-only specs
 
 Introduced by spec 0011.
@@ -130,10 +145,20 @@ Without this, any mock that reads stdin (e.g. `INPUT="$(cat)"`) blocks forever w
 
 ## Markdown frontmatter
 
-- **Slash commands (`commands/**.md`):** YAML frontmatter with at minimum `description:`. Fully qualified command names live in the filename path (e.g. `commands/spec/new.md` becomes `/speccraft:spec:new`).
-- **Subagents (`agents/*.md`):** YAML frontmatter with `name:`, `description:`, and `tools:`.
+- **Slash commands (`commands/**.md`):** YAML frontmatter with `description:`, `argument-hint:`, and `allowed-tools:`. Fully qualified command names live in the filename path (e.g. `commands/spec/new.md` becomes `/speccraft:spec:new`). The `argument-hint:` field may be `""` for commands that take no positional arguments (e.g. `commands/spec/close.md`, `commands/spec/revise.md`); it MUST still be present as a key so the contract is uniform. `allowed-tools:` is a YAML list of the tools the command body uses. See "Markdown frontmatter contract tightening" below.
+- **Subagents (`agents/*.md`):** YAML frontmatter with `name:`, `description:`, `tools:`, and `model:`. The `tools:` list is a YAML list of tool names the agent is permitted to call; `model:` is a non-empty model identifier (e.g. `opus`, `sonnet`). See "Markdown frontmatter contract tightening" below.
 - **Skills (`skills/<name>/SKILL.md`):** YAML frontmatter with `name:` and `description:`.
 - **Specs (`specs/NNNN-<slug>/spec.md`):** YAML frontmatter with `id`, `title`, `status`, `created`. `plan.md` and `tasks.md` mirror `id`. `changelog.md` is appended by `/speccraft:spec:close`.
+
+### Markdown frontmatter contract tightening
+
+Introduced by spec 0015.
+
+The slash-command and subagent frontmatter contracts above are stricter than the pre-spec-0015 conventions, which mandated only `description:` for slash commands and only `name/description/tools` for subagents. The tightening reflects the de-facto convention already shipping in the repo: every file under `agents/*.md` (6/6) carries `model:` and every file under `commands/spec/*.md` (8/8) carries the `description/argument-hint/allowed-tools` triple. The previous understated rule meant new contributors could legitimately read the convention and ship a non-conforming file, then have it work by accident because the surrounding code happened to tolerate the gap.
+
+- **Why this rule matters.** Slash command frontmatter is read by Claude Code's command registration logic; `allowed-tools:` materially constrains which tool calls the command body can make. Subagent frontmatter is read by the orchestrator dispatching the agent; `model:` materially constrains which model handles the invocation. Both fields are load-bearing at runtime, not optional documentation. Documenting them as required matches reality and prevents the next new-command author from skipping `allowed-tools:` and discovering at the wrong time that the runtime is silently permissive about the omission.
+- **Asymmetric tooling enforcement.** This convention is currently advisory — there is no `enforce:` comment + drift scanner check against `agents/*.md` or `commands/**.md` frontmatter shape. The verify.sh oracle pattern (spec 0011) is the cheapest path to enforcement: any new agent or command spec can add `verify.sh` checks for its own frontmatter, as spec 0015's `specs/0015-spec-revise-command/verify.sh` does for `agents/spec-reviser.md` (AC11) and `commands/spec/revise.md` (AC12). A repo-wide enforcement pass is queued as a future spec.
+- **Canonical references.** `agents/spec-reviser.md` (the file this convention tightening was authored alongside) and `commands/spec/revise.md` are the canonical reference files. Pre-existing agents and commands already conform — no migration is required.
 
 ### Optional: `reserves-specs`
 

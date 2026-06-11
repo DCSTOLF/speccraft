@@ -1,7 +1,7 @@
 ---
 id: "0015"
 title: "spec:revise command"
-status: in-progress
+status: closed
 created: 2026-06-10
 authors: [claude]
 packages: ["commands/spec", "agents"]
