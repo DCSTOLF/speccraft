@@ -30,7 +30,7 @@ v1 targets Go repositories. Multi-language and multi-repo are explicitly out of 
 3. **Always-on memory.** `.speccraft/index.md` (~one screen) is injected on every `SessionStart`. Deeper files are pulled in on demand by the auto-invoked skill.
 4. **Cross-model review.** `/spec:review` and `/spec:review-code` route to Codex / OpenCode / Claude `-p` via a configurable adapter. ACP via `acpx` is opt-in.
 5. **Drift detection.** Deterministic post-edit regex checks for `enforce:`-tagged guardrails and conventions surface contradictions immediately. Memory additions batch at `/spec:close`.
-6. **Composable, not monolithic.** Codebase-wide structural queries (call graphs, layer enforcement, "where is X used") are deferred to dedicated tools — see [§20.1](#201-codebasewide-queries) for the recommended integration with CodeGraphContext.
+6. **Composable, not monolithic.** Codebase-wide structural queries (call graphs, layer enforcement, "where is X used") are deferred to dedicated tools (such as CodeGraphContext) — see [§20.1](#201-codebasewide-queries) for an integration sketch.
 7. **Forward-compatible.** Root discovery and a small set of clean extension points keep multi-language, multi-repo, and richer enforcement doors open without v1 cost.
 
 ## 3. Non-goals (v1)
@@ -694,8 +694,8 @@ Steps:
 8. Print a summary and next-step suggestion: `/spec:new "..."`.
 
    If the user mentions they want call-graph or symbol-search capabilities,
-   suggest installing CodeGraphContext as an MCP server alongside speccraft
-   (see README §"Recommended companions").
+   suggest installing a code-intelligence MCP server such as those listed
+   in README §"Recommended companions".
 ```
 
 ### 9.2 `/spec:new`
@@ -1129,8 +1129,8 @@ you when and how to pull deeper files.
 
 For "where is X called?", "what does file Y export?", or "which tests cover this code?" — speccraft does NOT carry a built-in code graph in v1. Use whatever the user has configured:
 
-- If [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) is connected as an MCP server, prefer its tools for structural queries — they're pre-indexed and far cheaper than re-scanning the source.
-- Otherwise, fall back to `rg` / `grep` for symbol search and `git grep` for diff-aware queries. Acknowledge the cost: structural questions on a large repo may want a CodeGraphContext install.
+- If [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) (or an equivalent code-intelligence MCP server) is connected, its tools are available for structural queries — typically pre-indexed and cheaper than re-scanning the source.
+- Otherwise, `rg` / `grep` handle symbol search and `git grep` handles diff-aware queries. Acknowledge the cost: structural questions on a large repo may be expensive without a dedicated code-intelligence backend.
 
 speccraft itself only knows about session edits (via `state.json`) and the literal contents of `.speccraft/`.
 
@@ -1366,7 +1366,7 @@ Earlier drafts of speccraft included a built-in tree-sitter–based code graph s
 - A graph that drifts from the source produces *confidently wrong* answers, and keeping it fresh added meaningful complexity to every hook.
 - A high-quality alternative already exists.
 
-**Recommended companion: [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext)**, an MCP server that gives any MCP-compatible client (including Claude Code) call-graph and symbol-search capabilities across a codebase. Users who want "where is X called?", "what does Y export?", or layer-enforcement rules should install it as an MCP server alongside speccraft. The two are complementary: speccraft owns intent, memory, and TDD discipline; CodeGraphContext owns structural queries.
+**Recommended companion: [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext)**, an MCP server that gives any MCP-compatible client (including Claude Code) call-graph and symbol-search capabilities across a codebase. It answers questions like "where is X called?", "what does Y export?", or layer-enforcement queries. The two are complementary: speccraft owns intent, memory, and TDD discipline; CodeGraphContext owns structural queries.
 
 A future v1.x or v2 may consume CodeGraphContext output to power `enforce: ast`-style rules and `/spec:plan` blast-radius analysis. v1 leaves these features advisory.
 
@@ -1789,7 +1789,7 @@ If the host's Claude Code session is needed for an unrelated task during develop
 
 v1 explicitly defers structural code analysis (call graphs, symbol search, layer enforcement, "where is X used"). The recommended path forward:
 
-- **Today:** users who need these capabilities should install [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) as an MCP server. It plugs into Claude Code (and any MCP-compatible client) without any speccraft-side change. The two tools are complementary: speccraft owns intent/memory/TDD-discipline; CodeGraphContext owns structural queries.
+- **Today:** these capabilities are available via external MCP servers such as [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext), which plugs into Claude Code (and any MCP-compatible client) without any speccraft-side change. The two tools are complementary: speccraft owns intent/memory/TDD-discipline; CodeGraphContext owns structural queries.
 - **v1.x:** add an `enforce: cgc rule="<rule-name>"` directive that calls into CodeGraphContext via MCP for layer enforcement, no-direct-http, and similar structural rules. This requires a stable MCP integration point and a small rule shim in `speccraft-drift`.
 - **v2:** consider whether richer planning (`/spec:plan` blast-radius, `memory-keeper` architectural-drift detection at `/spec:close`) should optionally consume CodeGraphContext output when available.
 

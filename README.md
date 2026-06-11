@@ -352,7 +352,7 @@ Rules in `guardrails.md` and `conventions.md` can be tagged with an `enforce:` d
 
 Rules without an `enforce:` tag — including structural rules like layer dependencies, no-direct-http, and required test coverage — are documentation only in v1. Claude reads them at session start, but the hook doesn't act on them.
 
-If you need *enforced* structural rules today, install [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) (see [Recommended companions](#recommended-companions)) and use its tools to check architectural invariants. A future v1.x will add a bridge directive (`enforce: cgc rule="..."`) that wires CodeGraphContext output back into the speccraft drift hook.
+Structural rule enforcement today lives outside speccraft — see [Recommended companions](#recommended-companions) for tools that handle it (such as CodeGraphContext). A future v1.x will add a bridge directive (`enforce: cgc rule="..."`) that wires CodeGraphContext output back into the speccraft drift hook.
 
 ---
 
@@ -362,7 +362,7 @@ speccraft is intentionally narrow in scope. Two external tools complement it wel
 
 ### CodeGraphContext — code intelligence as MCP
 
-[CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) is an MCP server that gives Claude Code (and any MCP-compatible client) call-graph and symbol-search capabilities across your codebase. It's the recommended way to answer:
+[CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) is an MCP server that gives Claude Code (and any MCP-compatible client) call-graph and symbol-search capabilities across your codebase. It can answer questions like:
 
 - "Where is this function called from?"
 - "What does this file/package export?"
@@ -380,7 +380,7 @@ speccraft v1 deliberately doesn't build this in. Earlier drafts included a JSON 
 | Call-graph / symbol queries | CodeGraphContext |
 | Structural rule enforcement (layering, etc.) | CodeGraphContext (v1.x bridge planned) |
 
-Install CodeGraphContext per its README; once it's a Claude Code MCP server, the speccraft skill will note its presence and prefer it over `grep`/`find` for structural questions.
+Install CodeGraphContext per its README; once registered as a Claude Code MCP server, its tools are available alongside speccraft's.
 
 ### rtk (Rust Token Killer) — tool-call token compression
 
