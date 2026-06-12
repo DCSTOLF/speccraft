@@ -50,12 +50,16 @@ if ! echo "$BODY" | grep -qE 'exit[[:space:]]+3'; then
 fi
 note "failure path: announces 'claude -p failed' + exits 3"
 
-# 4. Explicit model selection: `--model "${CLAUDE_MODEL:-claude-sonnet-4-6}"`
-# (spec 0017 AC1). The `${VAR:-default}` form covers AC2 (override) and AC3
-# (default) by Bash parameter-expansion semantics — no behavioral test needed.
-if ! echo "$BODY" | grep -qE -- '--model[[:space:]]+"\$\{CLAUDE_MODEL:-claude-sonnet-4-6\}"'; then
-  fail "run_claude does not pass --model \"\${CLAUDE_MODEL:-claude-sonnet-4-6}\" (spec 0017 AC1)"
+# 4. Explicit model selection: `--model "${CLAUDE_MODEL:-claude-opus-4-8}"`
+# (spec 0017 AC1, amended 2026-06-12). The default is pinned to Opus 4.8: the
+# 2026-06-12 amendment reverted it from Sonnet 4.6 after Sonnet failed the
+# e2e-devcontainer validation gate (reached for /speccraft:spec:override on the
+# TDD GREEN step instead of implementing). The `${VAR:-default}` form covers AC2
+# (override) and AC3 (default) by Bash parameter-expansion semantics — no
+# behavioral test needed.
+if ! echo "$BODY" | grep -qE -- '--model[[:space:]]+"\$\{CLAUDE_MODEL:-claude-opus-4-8\}"'; then
+  fail "run_claude does not pass --model \"\${CLAUDE_MODEL:-claude-opus-4-8}\" (spec 0017 AC1)"
 fi
-note "model selection: --model \"\${CLAUDE_MODEL:-claude-sonnet-4-6}\" (overridable, defaults to Sonnet)"
+note "model selection: --model \"\${CLAUDE_MODEL:-claude-opus-4-8}\" (overridable, defaults to Opus)"
 
 echo "OK: run_claude capture shape pinned (combined stdout+stderr, exit 3 on fail, explicit model)"
