@@ -11,7 +11,7 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
 5. `skills/<name>/SKILL.md` — model-loaded skills: `speccraft-context`, `spec-format`, `aux-agents`.
 6. `tools/cmd/speccraft-{state,guard,drift}` — Go entrypoints, one binary each, that hooks and commands shell out to.
 7. `tools/internal/speccraft/` — shared Go logic (state, config, files, root discovery, drift scan, Rust static recognition).
-8. `tools/internal/speccraft/runner/` — language-neutral test-runner invocation primitive (Outcome enum, TestRecord, Runner interface, AdapterFor factory, crate fingerprint, pre-edit gate). Per-language adapters live here; Rust is the first concrete implementation (cargo + nextest adapters). Validated against Rust only — retroactive adoption by Go/Python is a non-goal of spec 0005.
+8. `tools/internal/speccraft/runner/` — language-neutral test-runner invocation primitive (Outcome enum, TestRecord, Runner interface, AdapterFor + AdapterForLanguage factories, crate fingerprint, pre-edit gate). Per-language adapters live here; Rust was the first concrete implementation (cargo + nextest). Spec 0018 extended the primitive to Go (`go test`), Python (`pytest`), and JS/TS (one shared `JSTSAdapter` driven by a configured command), so the red→green invariant is a real observed-failure check for all four languages — superseding spec 0005's original Rust-only validation boundary.
 9. `tools/internal/speccraft/rusttok/` — Rust string/comment-aware tokenizer + `fn`-name extractor. Used by the Rust static-classification code in `tools/internal/speccraft/rust_*.go`.
 10. `tools/internal/delegate/` — auxiliary-agent delegation config parsing (`agents.toml`).
 11. `templates/speccraft/` — stack-agnostic Markdown templates copied into host repos by `/speccraft:init`.
@@ -39,7 +39,7 @@ See `history.md` for full ADR-style entries. Headlines:
 - Plugin packaged via the `dcstolf-tools` marketplace, single plugin entry `speccraft`.
 - Python TDD support added without forking the Go helper layout (specs 0002, 0003).
 - Slash-command names fully qualified as `/speccraft:spec:*` to avoid collisions with host-repo commands.
-- Rust language support introduces a shared **test-runner invocation primitive** (`tools/internal/speccraft/runner/`) and a **dispatch-by-language pattern** in `speccraft-guard` (spec 0005). Runner adoption by Go/Python is a non-goal.
+- Rust language support introduces a shared **test-runner invocation primitive** (`tools/internal/speccraft/runner/`) and a **dispatch-by-language pattern** in `speccraft-guard` (spec 0005). Spec 0018 retired that spec's Rust-only scope: the primitive now backs a real red→green check for Go, Python, and JS/TS too (each production edit runs the session's just-added sibling test and requires an observed failure; an unresolved runner fails closed rather than falling back to a touch-check).
 - CI is split into two jobs with different cost and credential profiles: `e2e-language-only` (cheap, hermetic, every push/PR, no API key) and `e2e-devcontainer` (expensive, gated to `push` on `main`, full `claude -p` lifecycle). Lifecycle-job failures classified by `classify_claude_failure` emit `ENVIRONMENT_FAILURE: <category>` lines so log triage distinguishes environmental issues from real defects. (spec 0008)
 
 ## Boundaries

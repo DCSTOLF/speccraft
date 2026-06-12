@@ -34,6 +34,9 @@ func TestRustState_NoExternalWriters_Grep(t *testing.T) {
 		regexp.MustCompile(`\.RustTestBaseline\s*=[^=]`),
 		regexp.MustCompile(`\.RustGateFingerprint\s*=[^=]`),
 		regexp.MustCompile(`\.OverridePending\s*=[^=]`),
+		// Spec 0018: RedCandidates is a Session field and must only be
+		// written by state.go (callers use SetRedCandidates).
+		regexp.MustCompile(`\.RedCandidates\s*=[^=]`),
 	}
 
 	allowedFiles := map[string]bool{

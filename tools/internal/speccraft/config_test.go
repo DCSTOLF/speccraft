@@ -161,3 +161,58 @@ func TestReadConfigStrict_RustRunner_Default_NoError(t *testing.T) {
 		t.Errorf("Rust.Runner = %q, want %q (default)", cfg.TDD.Rust.Runner, "cargo")
 	}
 }
+
+// --- Spec 0018 T8: per-language runner config (Go/Python/JS/TS) ---
+
+func Test_ParseConfig_GoPythonJSTSCommands(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, `[tdd.go]
+command = "go test -count=1"
+
+[tdd.python]
+command = "pytest -q"
+
+[tdd.javascript]
+command = "vitest run"
+
+[tdd.typescript]
+command = "vitest run --ts"
+`)
+	cfg := speccraft.ReadConfig(root)
+	if cfg.TDD.Go.Command != "go test -count=1" {
+		t.Errorf("Go.Command = %q", cfg.TDD.Go.Command)
+	}
+	if cfg.TDD.Python.Command != "pytest -q" {
+		t.Errorf("Python.Command = %q", cfg.TDD.Python.Command)
+	}
+	if cfg.TDD.JavaScript.Command != "vitest run" {
+		t.Errorf("JavaScript.Command = %q", cfg.TDD.JavaScript.Command)
+	}
+	if cfg.TDD.TypeScript.Command != "vitest run --ts" {
+		t.Errorf("TypeScript.Command = %q", cfg.TDD.TypeScript.Command)
+	}
+}
+
+func Test_ApplyDefaults_GoPythonCommands(t *testing.T) {
+	cfg := speccraft.ReadConfig(t.TempDir()) // no config file → defaults
+	if cfg.TDD.Go.Command != "go test" {
+		t.Errorf("default Go.Command = %q, want %q", cfg.TDD.Go.Command, "go test")
+	}
+	if cfg.TDD.Python.Command != "pytest" {
+		t.Errorf("default Python.Command = %q, want %q", cfg.TDD.Python.Command, "pytest")
+	}
+	if cfg.TDD.JavaScript.Command != "" {
+		t.Errorf("default JavaScript.Command = %q, want empty (no safe default)", cfg.TDD.JavaScript.Command)
+	}
+	if cfg.TDD.TypeScript.Command != "" {
+		t.Errorf("default TypeScript.Command = %q, want empty (no safe default)", cfg.TDD.TypeScript.Command)
+	}
+}
+
+func Test_ReadConfigStrict_EmptyJSCommandIsNotError(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, "[tdd.javascript]\ncommand = \"\"\n")
+	if _, err := speccraft.ReadConfigStrict(root); err != nil {
+		t.Errorf("empty JS command must be valid at parse (fail-closed is a runtime concern), got: %v", err)
+	}
+}

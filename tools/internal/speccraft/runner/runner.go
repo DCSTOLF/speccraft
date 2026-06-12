@@ -7,9 +7,24 @@ package runner
 
 import (
 	"context"
+	"strings"
 
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
+
+// splitCommand splits a configured command line into its binary and base args,
+// falling back to the default when the configured command is empty. The
+// per-test targeting flags are appended by each adapter.
+func splitCommand(cmd, fallback string) (string, []string) {
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		fields = strings.Fields(fallback)
+	}
+	if len(fields) == 0 {
+		return "", nil
+	}
+	return fields[0], append([]string{}, fields[1:]...)
+}
 
 // Outcome is the high-level result of a runner invocation. Spec 0005 §What.3.
 type Outcome int
@@ -84,5 +99,32 @@ func AdapterFor(cfg speccraft.SpeccraftConfig) Runner {
 		return &NextestAdapter{}
 	default:
 		return &CargoAdapter{}
+	}
+}
+
+// AdapterForLanguage selects the red-check adapter for a non-Rust language
+// (spec 0018). lang is one of "go", "python", "js", "ts". The returned bool is
+// false when no runner can be resolved — for JS/TS that means an empty
+// configured command — and the guard must fail closed in that case (Decision
+// D2), never fall back to the touch-check. JavaScript and TypeScript share the
+// single JSTSAdapter; only the configured command differs.
+func AdapterForLanguage(lang string, cfg speccraft.SpeccraftConfig) (Runner, bool) {
+	switch lang {
+	case "go":
+		return &GoAdapter{Command: cfg.TDD.Go.Command}, true
+	case "python":
+		return &PytestAdapter{Command: cfg.TDD.Python.Command}, true
+	case "js":
+		if cfg.TDD.JavaScript.Command == "" {
+			return nil, false
+		}
+		return &JSTSAdapter{Command: cfg.TDD.JavaScript.Command}, true
+	case "ts":
+		if cfg.TDD.TypeScript.Command == "" {
+			return nil, false
+		}
+		return &JSTSAdapter{Command: cfg.TDD.TypeScript.Command}, true
+	default:
+		return nil, false
 	}
 }
