@@ -24,12 +24,45 @@ type TDDConfig struct {
 
 	// Rust holds Rust-specific TDD settings parsed from `[tdd.rust]`.
 	Rust RustConfig
+
+	// Go/Python/JavaScript/TypeScript hold the per-language red-check test
+	// command parsed from `[tdd.<lang>]` (spec 0018). Go and Python carry
+	// defaults; JS/TS have no safe default — an empty command means the runner
+	// is unresolved and the guard fails closed (spec 0018, Decision D2).
+	Go         GoConfig
+	Python     PythonConfig
+	JavaScript JSConfig
+	TypeScript TSConfig
 }
 
 // RustConfig holds settings from `[tdd.rust]` in speccraft.toml.
 type RustConfig struct {
 	// Runner selects the test runner: "cargo" (default) or "nextest".
 	Runner string
+}
+
+// GoConfig holds settings from `[tdd.go]`.
+type GoConfig struct {
+	// Command is the test runner command line; defaults to "go test".
+	Command string
+}
+
+// PythonConfig holds settings from `[tdd.python]`.
+type PythonConfig struct {
+	// Command is the test runner command line; defaults to "pytest".
+	Command string
+}
+
+// JSConfig holds settings from `[tdd.javascript]`.
+type JSConfig struct {
+	// Command is the test runner command line; no default (must be configured).
+	Command string
+}
+
+// TSConfig holds settings from `[tdd.typescript]`.
+type TSConfig struct {
+	// Command is the test runner command line; no default (must be configured).
+	Command string
 }
 
 // ReadConfig loads .speccraft/speccraft.toml from the repo root.
@@ -49,6 +82,15 @@ func applyDefaults(cfg *SpeccraftConfig) {
 	if cfg.TDD.Rust.Runner == "" {
 		cfg.TDD.Rust.Runner = "cargo"
 	}
+	if cfg.TDD.Go.Command == "" {
+		cfg.TDD.Go.Command = "go test"
+	}
+	if cfg.TDD.Python.Command == "" {
+		cfg.TDD.Python.Command = "pytest"
+	}
+	// JS/TS intentionally have no default command: an unconfigured JS/TS
+	// runner must fail closed at the guard (spec 0018, Decision D2), not run
+	// some guessed binary.
 }
 
 // allowedRustRunners enumerates the valid `runner` values for `[tdd.rust]`.
@@ -106,6 +148,22 @@ func parseSpeccraftTOML(content string, cfg *SpeccraftConfig) {
 		case "[tdd.rust]":
 			if strings.HasPrefix(line, "runner") {
 				cfg.TDD.Rust.Runner = parseTOMLStringValue(line)
+			}
+		case "[tdd.go]":
+			if strings.HasPrefix(line, "command") {
+				cfg.TDD.Go.Command = parseTOMLStringValue(line)
+			}
+		case "[tdd.python]":
+			if strings.HasPrefix(line, "command") {
+				cfg.TDD.Python.Command = parseTOMLStringValue(line)
+			}
+		case "[tdd.javascript]":
+			if strings.HasPrefix(line, "command") {
+				cfg.TDD.JavaScript.Command = parseTOMLStringValue(line)
+			}
+		case "[tdd.typescript]":
+			if strings.HasPrefix(line, "command") {
+				cfg.TDD.TypeScript.Command = parseTOMLStringValue(line)
 			}
 		}
 	}

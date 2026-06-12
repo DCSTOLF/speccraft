@@ -2,6 +2,73 @@
 
 Append-only. Newest first.
 
+## 2026-06-12 — Pin the e2e harness model explicitly; Sonnet default reverted after it failed the validation gate (spec 0017)
+
+**Spec:** specs/0017-e2e-default-model/
+**Decision:** `run_claude()` in `tests/e2e/run.sh` now passes
+`--model "${CLAUDE_MODEL:-claude-opus-4-8}"` as the first argument after
+`-p`, so every `claude -p` lifecycle call selects an explicit, pinned
+model that is overridable via the `CLAUDE_MODEL` env var. The `--help`
+usage block gained an `env:` section documenting `CLAUDE_MODEL` and
+`CLAUDE_BIN`, and the spec-0008 capture probe
+`tests/e2e/assertions/test_run_claude_capture.sh` gained check #4 pinning
+the `--model` line via `grep -qE` on the extracted `run_claude` body. The
+spec was reviewed and approved with a `claude-sonnet-4-6` default (the
+cost-optimization thesis); a same-cycle amendment (2026-06-12) reverted
+the default to `claude-opus-4-8`. The override var, the docs, and probe
+check #4 were retained — only the default string changed.
+**Why:** Before this spec the harness passed no `--model`, silently
+inheriting whatever the account/CLI default happened to be — a mutable,
+invisible dependency for the only CI job that actually drives Claude. The
+original motivation was to cut CI cost by defaulting the credit-gated
+`e2e-devcontainer` lifecycle to Sonnet 4.6. Both cross-model reviewers
+(codex, claude-p) returned approve-with-comments and explicitly flagged
+the risk: switching the default tier changes the model under test, with no
+evidence Sonnet passes the ~10-call lifecycle. claude-p named the next
+`e2e-devcontainer` run as the validation gate. That gate run
+[27367642623](https://github.com/DCSTOLF/speccraft/actions/runs/27367642623)
+(commit `537b769`) failed at `[9/13] TDD invariant` with a genuine
+assertion failure and **no** `ENVIRONMENT_FAILURE` tag: on Sonnet 4.6 the
+model invoked `/speccraft:spec:override` on the GREEN step — unnecessary,
+since the test was already written and the TDD guard would have allowed
+the edit — then stalled without writing `farewell()`, so `contains
+main.go: farewell` failed. For contrast, the prior commit `4529323`'s
+Opus-default run [27348320071](https://github.com/DCSTOLF/speccraft/actions/runs/27348320071)
+failed the same step only with `ENVIRONMENT_FAILURE: credit_exhausted` —
+an env issue, not a defect. The Sonnet failure was a real model-behaviour
+regression, so the cost-optimization thesis was abandoned and the default
+reverted.
+**Consequence:**
+- The cost-optimization goal was **not** achieved. The durable win that
+  remains: the e2e harness's model selection is now explicit and pinned in
+  `run.sh` (not silently inherited from a mutable account/CLI default) and
+  overridable via `CLAUDE_MODEL` — codex's stronger framing in review.
+  Anyone wanting Sonnet (or any model) for a local run sets `CLAUDE_MODEL=...`.
+- The mid-implementation amendment convention (spec 0013) was reused: the
+  revert is a strictly bounded one-line default change plus its paired
+  probe check, the spec's own validation gate kept CI red until it landed,
+  and the theme is identical (this spec's subject *is* the e2e default
+  model). AC1/AC3 were updated in place to name `claude-opus-4-8`; AC2/AC4
+  unchanged. This is the third use of the amendment pattern after specs
+  0013 (T6) and 0015 (T18).
+- The Sonnet `[9/13]` failure is a concrete instance of the spec-0014
+  "structural over content" lesson generalised one level: the e2e
+  lifecycle's *behaviour* (not just its assertion phrasing) varies by
+  model. A model-behaviour failure in the credit-gated `e2e-devcontainer`
+  run — the model reaching for `/speccraft:spec:override` on a GREEN step
+  — is a legitimate close/no-close signal, and the spec-0008
+  `ENVIRONMENT_FAILURE:` classifier is exactly what let CI distinguish it
+  from the prior commit's `credit_exhausted` env flake. No new convention
+  codified; the existing 0014 and 0008 entries are canonical.
+- No architecture change. `tests/e2e/run.sh` and its assertion fixtures are
+  already the documented e2e surface in architecture.md §Layering item 12;
+  the `--model` flag is a behavioural pin within that surface, not a new
+  layer or boundary.
+- Close gate: CI run
+  [27386675522](https://github.com/DCSTOLF/speccraft/actions/runs/27386675522)
+  on commit `a016dae` (Opus default) is fully green including
+  `e2e-devcontainer`.
+
 ## 2026-06-11 — Scrub README + v1-spec CodeGraphContext routing prose (spec 0016)
 
 **Spec:** specs/0016-scrub-readme-v1-spec-cgc-routing/

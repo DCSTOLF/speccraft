@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 	"github.com/dcstolf/speccraft/tools/internal/speccraft/runner"
@@ -35,8 +36,19 @@ type ToolInput struct {
 type deps struct {
 	exec      runner.ExecFunc
 	runnerFor func(cfg speccraft.SpeccraftConfig) runner.Runner
-	stderr    io.Writer // optional: captures Rust dispatch log messages
+	// runnerForLang resolves the red-check adapter for a non-Rust language
+	// ("go"/"python"/"js"/"ts"). ok=false signals the runner is unresolved
+	// (e.g. unconfigured JS/TS command) and the guard must fail closed
+	// (spec 0018, Decision D2). Production wiring goes through productionDeps().
+	runnerForLang func(lang string, cfg speccraft.SpeccraftConfig) (runner.Runner, bool)
+	stderr        io.Writer // optional: captures Rust dispatch log messages
 }
+
+// redCheckTimeout bounds a single non-Rust red-check adapter invocation so a
+// hanging `go test`/`pytest`/`node` process cannot wedge the PreToolUse hook
+// indefinitely (spec 0018, AC9). A deadline overrun surfaces as a Go error from
+// adapter.Run — not a new Outcome value — and the guard blocks on it.
+const redCheckTimeout = 30 * time.Second
 
 func main() {
 	if len(os.Args) < 2 {
@@ -79,8 +91,9 @@ func productionDeps() deps {
 		exec: func(ctx context.Context, name string, args []string, workDir string) ([]byte, []byte, int, error) {
 			return runner.ExecCmd(ctx, name, args, workDir)
 		},
-		runnerFor: runner.AdapterFor,
-		stderr:    os.Stderr,
+		runnerFor:     runner.AdapterFor,
+		runnerForLang: runner.AdapterForLanguage,
+		stderr:        os.Stderr,
 	}
 }
 
@@ -132,12 +145,17 @@ func dispatchByLanguage(input HookInput, absPath, root string, cfg speccraft.Spe
 	case speccraft.IsRustFile(absPath):
 		return rustDispatch(input, absPath, root, cfg, d)
 	case speccraft.IsTestFile(absPath):
-		// Test files (Go, Python, JS/TS) — always allowed.
+		// Test files (Go, Python, JS/TS) — always allowed. Capture the set
+		// of test ids this edit introduces so the production red-check can
+		// require an observed failure within the session's just-added set
+		// (spec 0018, Decision D1). Best-effort: a capture error never blocks
+		// a test-file edit.
+		captureRedCandidates(input.ToolInput, absPath, root)
 		return nil
 	case speccraft.IsProductionGoFile(absPath), speccraft.IsProductionPythonFile(absPath):
-		return goPythonProdGuard(absPath, root, cfg)
+		return goPythonProdGuard(absPath, root, cfg, d)
 	case speccraft.IsProductionJSTSFile(absPath):
-		return jsTsDispatch(absPath, root)
+		return jsTsDispatch(absPath, root, cfg, d)
 	default:
 		// Unknown file type — allow.
 		return nil
@@ -147,13 +165,15 @@ func dispatchByLanguage(input HookInput, absPath, root string, cfg speccraft.Spe
 // rustDispatch implements the spec-0005 Rust guard flow. Order:
 //
 //  1. Workspace detection — hard error citing reserved spec 0006 (AC #5).
+//
 //  2. Initial-capture if rust_test_baseline is empty (AC #12 (a)).
+//
 //  3. Red-check: walk crate (with the proposed edit applied in memory),
 //     compute just-added vs baseline, invoke runner per just-added FQTN,
 //     classify outcome per AC #4. On accept, append failing-just-added
 //     IDs to baseline via PostAcceptUpdateRustBaseline (AC #12 (c)).
 //
-//  Pre-edit gate integration (T54) lives in front of the red-check.
+//     Pre-edit gate integration (T54) lives in front of the red-check.
 func rustDispatch(input HookInput, absPath, root string, cfg speccraft.SpeccraftConfig, d deps) error {
 	isWorkspace, err := speccraft.IsCargoWorkspace(root)
 	if err != nil {
@@ -312,6 +332,45 @@ func computeJustAddedForEdit(absPath string, ti ToolInput, root string) ([]strin
 	return justAdded, nil
 }
 
+// captureRedCandidates extracts the test ids a sibling-test edit introduces
+// (post-edit set minus pre-edit set) and persists them, keyed by the absolute
+// test-file path, into the session's RedCandidates. This is the Go/Python/JS-TS
+// analog of the Rust just-added computation: these languages have no persisted
+// baseline, so the just-added set is captured at test-edit time and consumed by
+// siblingRedCheck at production-edit time (spec 0018, Decision D1). Best-effort
+// — any error is swallowed; a test-file edit is always allowed.
+func captureRedCandidates(ti ToolInput, absPath, root string) {
+	preBytes, _ := os.ReadFile(absPath)
+	pre := string(preBytes)
+	post := applyEdit(pre, ti)
+
+	preIDs := extractTestIDs(absPath, pre)
+	postIDs := extractTestIDs(absPath, post)
+
+	preSet := stringSet(preIDs)
+	var added []string
+	for _, id := range postIDs {
+		if _, ok := preSet[id]; !ok {
+			added = append(added, id)
+		}
+	}
+	_ = speccraft.SetRedCandidates(root, absPath, added)
+}
+
+// extractTestIDs selects the per-language test-identifier extractor by file
+// extension. Go → func Test…; Python → def test…; otherwise the JS/TS
+// test()/it()/describe() extractor (one extractor for both, per spec 0018).
+func extractTestIDs(absPath, content string) []string {
+	switch {
+	case strings.HasSuffix(absPath, ".go"):
+		return speccraft.GoTestIDs(content)
+	case strings.HasSuffix(absPath, ".py"):
+		return speccraft.PythonTestIDs(content)
+	default:
+		return speccraft.JSTSTestIDs(content)
+	}
+}
+
 // applyEdit models Edit/Write tool semantics in memory. If OldString is
 // empty (Write tool), NewString IS the full post-edit content. If
 // OldString is non-empty (Edit tool), it's a single search-and-replace.
@@ -372,45 +431,105 @@ func prodGuardPrologue(absPath, root string) (prologueDecision, error) {
 	return prologueContinue, nil
 }
 
-// goPythonProdGuard preserves the original Go/Python production-file flow.
-func goPythonProdGuard(absPath, root string, cfg speccraft.SpeccraftConfig) error {
-	dec, err := prodGuardPrologue(absPath, root)
-	switch dec {
-	case prologueBlock:
-		return err
-	case prologueAllow:
-		return nil
-	}
+// siblingRedCheck is the shared red-check for Go/Python/JS-TS production edits
+// (spec 0018). It requires an OBSERVED failing test among the set the session
+// just-added to the resolved sibling test file(s) before allowing the edit,
+// replacing the pre-0018 "a sibling test was touched this session" check.
+//
+// Decision D1: unlike Rust (which allows a green/refactor edit when nothing new
+// was added, backed by rust_test_baseline), these languages have no baseline,
+// so an empty just-added set BLOCKS. Decision D2: an unresolved runner BLOCKS
+// (fail-closed), never falls back to the touch-check. AC9: the real adapter
+// invocation is deadline-bounded so a hanging runner cannot wedge the hook.
+func siblingRedCheck(absPath, root string, cfg speccraft.SpeccraftConfig, lang string, d deps) error {
+	siblings := resolveSiblingTests(absPath, root, cfg, lang)
+	redCand, _ := speccraft.GetRedCandidates(root)
 
-	state, _ := speccraft.LoadState(root)
-	siblings, _ := speccraft.SiblingTestFiles(absPath, root, cfg.TDD.TestRoots)
-	dir := filepath.Dir(absPath)
-	editedTests := state.Session.EditedTestFiles
-
-	if !hasSiblingTestEdited(siblings, editedTests) {
-		siblingList := "(none found)"
-		if len(siblings) > 0 {
-			siblingList = ""
-			for _, s := range siblings {
-				siblingList += "\n    - " + s
+	justAdded := map[string]struct{}{}
+	var justAddedList []string
+	for _, sib := range siblings {
+		for _, id := range redCand[sib] {
+			if _, seen := justAdded[id]; !seen {
+				justAdded[id] = struct{}{}
+				justAddedList = append(justAddedList, id)
 			}
 		}
-		return fmt.Errorf(
-			"TDD invariant: edit a sibling test in %s/ this session before editing\n"+
-				"the production file.\n\n"+
-				"If no test exists yet, create one (RED) first.\n"+
-				"Sibling test files found:%s\n\n"+
-				"Use /spec:override \"<reason>\" for a one-time bypass.",
-			dir, siblingList)
 	}
-	return nil
+	dir := filepath.Dir(absPath)
+
+	if len(justAdded) == 0 {
+		return fmt.Errorf(
+			"TDD invariant: no failing test observed for %s.\n\n"+
+				"No test was added this session — add a failing test (RED) in a sibling\n"+
+				"test file, then edit the production file.\n\n"+
+				"Use /speccraft:spec:override \"<reason>\" for a one-time bypass.",
+			dir)
+	}
+
+	if d.runnerForLang == nil {
+		return fmt.Errorf("speccraft-guard: no language runner factory wired")
+	}
+	adapter, ok := d.runnerForLang(lang, cfg)
+	if !ok {
+		return fmt.Errorf(
+			"TDD invariant: no test runner available for %s.\n\n"+
+				"Configure a test command under [tdd.%s] in .speccraft/speccraft.toml,\n"+
+				"or use /speccraft:spec:override \"<reason>\" for a one-time bypass.",
+			dir, lang)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), redCheckTimeout)
+	defer cancel()
+
+	for _, sib := range siblings {
+		ids := redCand[sib]
+		sibDir := filepath.Dir(sib)
+		for _, id := range ids {
+			res, err := adapter.Run(ctx, runner.Request{WorkDir: sibDir, FullyQualifiedTestName: id})
+			if err != nil {
+				return fmt.Errorf("red-check runner: %w", err)
+			}
+			if res.Outcome == runner.OutcomeBuildFailed {
+				return fmt.Errorf(
+					"red-check: build/collection failed (not a valid RED state):\n%s\n\n"+
+						"Fix the build error so the just-added test can run and fail.",
+					strings.TrimSpace(res.Stderr))
+			}
+			for _, rec := range res.Records {
+				if rec.Status == "failed" {
+					if _, isJustAdded := justAdded[rec.TestName]; isJustAdded {
+						return nil // observed RED for a just-added test → allow
+					}
+				}
+			}
+		}
+	}
+
+	return fmt.Errorf(
+		"red-check: no failing test observed among the tests added this session: %v\n\n"+
+			"A just-added test must FAIL (RED) before the production edit is allowed.\n"+
+			"Use /speccraft:spec:override \"<reason>\" for a one-time bypass.",
+		justAddedList)
 }
 
-// jsTsDispatch implements the JS/TS production-file guard flow. It enforces
-// the same prologue gates as goPythonProdGuard, then checks that at least one
-// candidate sibling test path appears in session.EditedTestFiles (session-state
-// only — on-disk test files do not satisfy the invariant).
-func jsTsDispatch(absPath, root string) error {
+// resolveSiblingTests returns the candidate sibling test-file paths for a
+// production file, language-aware. Go/Python use on-disk glob resolution
+// (SiblingTestFiles); JS/TS use the computed candidate-path set (the red-check
+// then intersects whichever of these the session actually edited via
+// RedCandidates).
+func resolveSiblingTests(absPath, root string, cfg speccraft.SpeccraftConfig, lang string) []string {
+	if lang == "js" || lang == "ts" {
+		return jsTsCandidateTestPaths(absPath)
+	}
+	sibs, _ := speccraft.SiblingTestFiles(absPath, root, cfg.TDD.TestRoots)
+	return sibs
+}
+
+// goPythonProdGuard gates a Go or Python production-file edit. After the shared
+// prologue it runs the spec-0018 red-check: a test the session just-added to a
+// sibling test file must be observed to FAIL before the edit is allowed (this
+// replaces the pre-0018 "a sibling test was touched this session" check).
+func goPythonProdGuard(absPath, root string, cfg speccraft.SpeccraftConfig, d deps) error {
 	dec, err := prodGuardPrologue(absPath, root)
 	switch dec {
 	case prologueBlock:
@@ -418,62 +537,64 @@ func jsTsDispatch(absPath, root string) error {
 	case prologueAllow:
 		return nil
 	}
+	return siblingRedCheck(absPath, root, cfg, langFor(absPath), d)
+}
 
-	state, _ := speccraft.LoadState(root)
-	editedTests := state.Session.EditedTestFiles
+// langFor maps a production file path to the red-check language token used by
+// runner.AdapterForLanguage: ".py" → "python", otherwise "go".
+func langFor(absPath string) string {
+	if strings.HasSuffix(absPath, ".py") {
+		return "python"
+	}
+	return "go"
+}
 
+// jsTsDispatch gates a JavaScript/TypeScript production-file edit. After the
+// shared prologue it runs the spec-0018 red-check: a test the session just-added
+// to a candidate sibling test file must be observed to FAIL before the edit is
+// allowed (this replaces the pre-0018 session-membership touch-check). JS and TS
+// share one adapter; the language token only selects the configured command.
+func jsTsDispatch(absPath, root string, cfg speccraft.SpeccraftConfig, d deps) error {
+	dec, err := prodGuardPrologue(absPath, root)
+	switch dec {
+	case prologueBlock:
+		return err
+	case prologueAllow:
+		return nil
+	}
+	return siblingRedCheck(absPath, root, cfg, jsTsLangFor(absPath), d)
+}
+
+// jsTsLangFor returns "ts" for TypeScript extensions and "js" otherwise, so the
+// red-check picks the matching [tdd.typescript] / [tdd.javascript] command.
+func jsTsLangFor(absPath string) string {
+	switch strings.ToLower(filepath.Ext(absPath)) {
+	case ".ts", ".tsx", ".mts", ".cts":
+		return "ts"
+	default:
+		return "js"
+	}
+}
+
+// jsTsCandidateTestPaths returns the candidate sibling test-file paths for a
+// JS/TS production file: same-directory `*.test.<ext>` / `*.spec.<ext>` and the
+// `__tests__/` convention, across the 8 JS/TS extensions. These are the keys the
+// red-check looks up in the session's RedCandidates (spec 0018).
+func jsTsCandidateTestPaths(absPath string) []string {
 	dir := filepath.Dir(absPath)
-	base := filepath.Base(absPath)
-	// Strip last extension to get stem (e.g. "foo.ts" → "foo").
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-
+	stem := strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
 	exts := []string{"js", "ts", "jsx", "tsx", "mjs", "cjs", "mts", "cts"}
 	var candidates []string
 	for _, ext := range exts {
-		// Same-dir suffix candidates
 		candidates = append(candidates,
 			filepath.Clean(filepath.Join(dir, stem+".test."+ext)),
 			filepath.Clean(filepath.Join(dir, stem+".spec."+ext)),
-		)
-		// __tests__/ candidates: .test.<ext>, .spec.<ext>, and bare .<ext>
-		candidates = append(candidates,
 			filepath.Clean(filepath.Join(dir, "__tests__", stem+".test."+ext)),
 			filepath.Clean(filepath.Join(dir, "__tests__", stem+".spec."+ext)),
 			filepath.Clean(filepath.Join(dir, "__tests__", stem+"."+ext)),
 		)
 	}
-
-	for _, candidate := range candidates {
-		for _, edited := range editedTests {
-			if filepath.Clean(edited) == candidate {
-				return nil
-			}
-		}
-	}
-
-	rel, err2 := filepath.Rel(root, absPath)
-	if err2 != nil {
-		rel = absPath
-	}
-	return fmt.Errorf(
-		"TDD invariant: no sibling test registered for %s this session.\n\n"+
-			"Edit a test file matching one of the patterns first (RED), then edit\n"+
-			"the production file.\n\n"+
-			"Use /spec:override \"<reason>\" for a one-time bypass.",
-		rel)
-}
-
-// hasSiblingTestEdited checks if any sibling test was in the session's edited list.
-func hasSiblingTestEdited(siblings, editedTests []string) bool {
-	for _, sibling := range siblings {
-		abs, _ := filepath.Abs(sibling)
-		for _, edited := range editedTests {
-			if abs == edited {
-				return true
-			}
-		}
-	}
-	return false
+	return candidates
 }
 
 // readFrontmatterField reads a YAML frontmatter field from a markdown file.

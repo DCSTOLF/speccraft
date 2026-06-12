@@ -328,3 +328,79 @@ func TestTasksDonePct(t *testing.T) {
 		t.Errorf("TasksDonePct = %d, want 50", pct)
 	}
 }
+
+// --- Spec 0018: RedCandidates session field ---
+
+func mkRoot0018(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".speccraft"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return tmp
+}
+
+func Test_SetRedCandidates_PersistsPerFile(t *testing.T) {
+	root := mkRoot0018(t)
+	if err := speccraft.SetRedCandidates(root, "/repo/pkg/foo_test.go", []string{"TestNew", "TestNew"}); err != nil {
+		t.Fatalf("SetRedCandidates: %v", err)
+	}
+	if err := speccraft.SetRedCandidates(root, "/repo/pkg/bar_test.go", []string{"TestBar"}); err != nil {
+		t.Fatalf("SetRedCandidates: %v", err)
+	}
+	got, err := speccraft.GetRedCandidates(root)
+	if err != nil {
+		t.Fatalf("GetRedCandidates: %v", err)
+	}
+	if !eq0018(got["/repo/pkg/foo_test.go"], []string{"TestNew"}) {
+		t.Errorf("foo candidates = %v, want dedup'd [TestNew]", got["/repo/pkg/foo_test.go"])
+	}
+	if !eq0018(got["/repo/pkg/bar_test.go"], []string{"TestBar"}) {
+		t.Errorf("bar candidates = %v, want [TestBar]", got["/repo/pkg/bar_test.go"])
+	}
+}
+
+func Test_SetRedCandidates_OverwritesPerFile(t *testing.T) {
+	root := mkRoot0018(t)
+	speccraft.SetRedCandidates(root, "/repo/pkg/foo_test.go", []string{"TestA"})
+	speccraft.SetRedCandidates(root, "/repo/pkg/foo_test.go", []string{"TestB"})
+	got, _ := speccraft.GetRedCandidates(root)
+	if !eq0018(got["/repo/pkg/foo_test.go"], []string{"TestB"}) {
+		t.Errorf("expected overwrite to [TestB], got %v", got["/repo/pkg/foo_test.go"])
+	}
+}
+
+func Test_GetRedCandidates_EmptyWhenUnset(t *testing.T) {
+	root := mkRoot0018(t)
+	got, err := speccraft.GetRedCandidates(root)
+	if err != nil {
+		t.Fatalf("GetRedCandidates: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map, got %v", got)
+	}
+}
+
+func Test_ResetSession_ClearsRedCandidates(t *testing.T) {
+	root := mkRoot0018(t)
+	speccraft.SetRedCandidates(root, "/repo/pkg/foo_test.go", []string{"TestNew"})
+	if err := speccraft.ResetSession(root); err != nil {
+		t.Fatalf("ResetSession: %v", err)
+	}
+	got, _ := speccraft.GetRedCandidates(root)
+	if len(got) != 0 {
+		t.Errorf("expected RedCandidates cleared after ResetSession, got %v", got)
+	}
+}
+
+func eq0018(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

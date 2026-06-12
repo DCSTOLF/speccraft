@@ -1,7 +1,7 @@
 ---
 id: "0017"
 title: "e2e default model"
-status: in-progress
+status: closed
 created: 2026-06-11
 authors: [claude]
 packages: []

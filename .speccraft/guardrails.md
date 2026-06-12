@@ -9,6 +9,7 @@ Hard rules. Violations block at the hook level when `enforce:` is set. Rules wit
 ## TDD invariant
 
 - Never bypass the red→green invariant enforced by `speccraft-guard` except via `/speccraft:spec:override`, which records a reason in the spec's `changelog.md`.
+- The invariant is a real observed-failure red-check for all four languages (Go/Python/JS-TS via `siblingRedCheck`, Rust via its runner) since spec 0018: a production edit needs a test the session just-added to a sibling test file to be observed *failing*. One known limitation (spec 0018 AC13): introducing a **brand-new symbol** whose just-added test cannot compile until that symbol exists is a build failure, not a runtime RED (AC6 won't treat it as RED) — use a one-shot `/speccraft:spec:override` for that first symbol-introduction edit, same as Rust.
 - `speccraft-state` is the only writer of `.speccraft/state.json`. No hook, command, or test may edit it directly.
 
 ## Spec immutability

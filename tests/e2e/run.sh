@@ -307,14 +307,24 @@ status_is "$SPEC_DIR/spec.md" "planned"
 # ---- 9. TDD invariant: write test first, then prod ----
 echo "==> [9/13] TDD invariant"
 
-# This should be ALLOWED (test edit first).
+# Test edit first — always allowed, and captures TestFarewell into the
+# session's just-added set (spec 0018 red-check).
 run_claude "Edit main_test.go to add a TestFarewell that asserts farewell() returns \"goodbye\". Just write the test, don't implement farewell yet." 09a-tdd-test.log
 contains "main_test.go" "TestFarewell"
 
-# This should be ALLOWED (production edit, but test was edited first this session).
-run_claude "Now implement farewell() in main.go to return \"goodbye\", and update main() to also print farewell()." 09b-tdd-impl.log
+# Introducing a BRAND-NEW symbol is the one case the spec-0018 red-check cannot
+# observe as a runtime RED: the just-added TestFarewell references farewell(),
+# which does not compile until the production edit lands, so a pre-edit run sees
+# a build failure (AC6: build failure is not a valid RED, never silently
+# allowed). This is identical to Rust's red-check today. The sanctioned path is a
+# one-shot override for the symbol-introduction edit (the reason is logged to the
+# spec changelog).
+run_claude "/speccraft:spec:override \"introduce new farewell() symbol; its just-added test cannot runtime-fail until the function exists\"" 09b-override.log
+
+# Production edit, allowed by the one-shot override consumed in the prologue.
+run_claude "Now implement farewell() in main.go to return \"goodbye\", and update main() to also print farewell()." 09c-tdd-impl.log
 contains "main.go" "farewell"
-go test ./... >> "$LOG_DIR/09c-go-test.log" 2>&1 || fail "go test failed after implementation"
+go test ./... >> "$LOG_DIR/09d-go-test.log" 2>&1 || fail "go test failed after implementation"
 pass "go test passes"
 
 # ---- 10. /speccraft:spec:close ----

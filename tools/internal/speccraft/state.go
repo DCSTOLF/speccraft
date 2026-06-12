@@ -49,6 +49,16 @@ type Session struct {
 	// invariant. ConsumeOverride atomically reads and clears it so the
 	// bypass fires exactly once per /speccraft:spec:override invocation.
 	OverridePending bool `json:"override_pending,omitempty"`
+
+	// RedCandidates maps an absolute sibling-test-file path to the set of
+	// test identifiers the current session ADDED to that file (post-edit
+	// minus pre-edit). It is the Go/Python/JS-TS analog of RustTestBaseline:
+	// these languages have no persisted baseline, so speccraft-guard captures
+	// just-added test IDs at test-edit time and requires the red-check's
+	// observed failure to fall within this set (spec 0018, Decision D1).
+	// Cleared on SessionStart via ResetSession. Mutations route exclusively
+	// through speccraft-state / state.go per the single-writer rule.
+	RedCandidates map[string][]string `json:"red_candidates,omitempty"`
 }
 
 var mu sync.Mutex
@@ -279,6 +289,45 @@ func SetRustFingerprint(root, fp string) error {
 		return err
 	}
 	s.Session.RustGateFingerprint = fp
+	return saveStateLocked(root, s)
+}
+
+// GetRedCandidates returns the per-file just-added test-id map for the
+// session. Returns an empty (non-nil) map when unset.
+func GetRedCandidates(root string) (map[string][]string, error) {
+	s, err := LoadState(root)
+	if err != nil {
+		return nil, err
+	}
+	if s.Session.RedCandidates == nil {
+		return map[string][]string{}, nil
+	}
+	return s.Session.RedCandidates, nil
+}
+
+// SetRedCandidates records the deduplicated set of test ids the session added
+// to the given file, overwriting any prior entry for that file. Single-writer:
+// acquires mu once around load → mutate → save.
+func SetRedCandidates(root, file string, ids []string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	s, err := loadStateLocked(root)
+	if err != nil {
+		return err
+	}
+	if s.Session.RedCandidates == nil {
+		s.Session.RedCandidates = map[string][]string{}
+	}
+	seen := map[string]struct{}{}
+	deduped := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		deduped = append(deduped, id)
+	}
+	s.Session.RedCandidates[file] = deduped
 	return saveStateLocked(root, s)
 }
 

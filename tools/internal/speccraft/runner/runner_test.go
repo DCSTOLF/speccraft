@@ -86,3 +86,77 @@ func TestAdapterFor_EmptyConfig_DefaultsToCargo(t *testing.T) {
 		t.Errorf("AdapterFor empty = %T, want *runner.CargoAdapter (default)", a)
 	}
 }
+
+// --- Spec 0018 T12: AdapterForLanguage factory ---
+
+func cfgWith(jsCmd, tsCmd string) speccraft.SpeccraftConfig {
+	var cfg speccraft.SpeccraftConfig
+	cfg.TDD.Go.Command = "go test"
+	cfg.TDD.Python.Command = "pytest"
+	cfg.TDD.JavaScript.Command = jsCmd
+	cfg.TDD.TypeScript.Command = tsCmd
+	return cfg
+}
+
+func Test_AdapterForLanguage_Go(t *testing.T) {
+	a, ok := runner.AdapterForLanguage("go", cfgWith("", ""))
+	if !ok {
+		t.Fatal("expected ok=true for go")
+	}
+	if _, isGo := a.(*runner.GoAdapter); !isGo {
+		t.Errorf("expected *GoAdapter, got %T", a)
+	}
+}
+
+func Test_AdapterForLanguage_Python(t *testing.T) {
+	a, ok := runner.AdapterForLanguage("python", cfgWith("", ""))
+	if !ok {
+		t.Fatal("expected ok=true for python")
+	}
+	if _, isPy := a.(*runner.PytestAdapter); !isPy {
+		t.Errorf("expected *PytestAdapter, got %T", a)
+	}
+}
+
+func Test_AdapterForLanguage_JSShared(t *testing.T) {
+	a, ok := runner.AdapterForLanguage("js", cfgWith("vitest run", "tsc-test"))
+	if !ok {
+		t.Fatal("expected ok=true for js with configured command")
+	}
+	ja, isJS := a.(*runner.JSTSAdapter)
+	if !isJS {
+		t.Fatalf("expected *JSTSAdapter, got %T", a)
+	}
+	if ja.Command != "vitest run" {
+		t.Errorf("js Command = %q, want from [tdd.javascript]", ja.Command)
+	}
+}
+
+func Test_AdapterForLanguage_TSShared(t *testing.T) {
+	a, ok := runner.AdapterForLanguage("ts", cfgWith("vitest run", "tsc-test"))
+	if !ok {
+		t.Fatal("expected ok=true for ts with configured command")
+	}
+	ja, isJS := a.(*runner.JSTSAdapter)
+	if !isJS {
+		t.Fatalf("expected *JSTSAdapter (shared with JS), got %T", a)
+	}
+	if ja.Command != "tsc-test" {
+		t.Errorf("ts Command = %q, want from [tdd.typescript]", ja.Command)
+	}
+}
+
+func Test_AdapterForLanguage_JSTS_EmptyCommand_NotOK(t *testing.T) {
+	if _, ok := runner.AdapterForLanguage("js", cfgWith("", "")); ok {
+		t.Error("expected ok=false for js with empty command (fail-closed, D2)")
+	}
+	if _, ok := runner.AdapterForLanguage("ts", cfgWith("", "")); ok {
+		t.Error("expected ok=false for ts with empty command (fail-closed, D2)")
+	}
+}
+
+func Test_AdapterForLanguage_UnknownLang_NotOK(t *testing.T) {
+	if _, ok := runner.AdapterForLanguage("ruby", cfgWith("x", "x")); ok {
+		t.Error("expected ok=false for unknown language")
+	}
+}
