@@ -2,6 +2,75 @@
 
 Append-only. Newest first.
 
+## 2026-06-13 — Real red→green TDD check for Go/Python/JS-TS; runner primitive generalized beyond Rust (spec 0018)
+
+**Spec:** specs/0018-technical-review/
+**Decision:** Close technical-review finding P0-1: the marketed "red→green invariant" was a
+true observed-failure check only for Rust, while Go/Python/JS-TS merely verified that *a*
+sibling test file was *touched* this session (`hasSiblingTestEdited`, `main.go:390`; the
+JS/TS session-membership loop, `main.go:446-452`). A blank line in any matching test file
+unlocked every production file in its directory. Spec 0018 makes all four languages run the
+session's just-added sibling test through a real runner and require an observed failure. The
+spec-0005 test-runner invocation primitive — explicitly scoped to Rust at the time, with
+"retroactive adoption by Go/Python is a non-goal" written into `architecture.md` — was
+generalized: new `GoAdapter`/`PytestAdapter`/`JSTSAdapter` (one shared JS/TS adapter, JS and
+TS differing only by configured command) reuse `classifyOutcome`, and a new
+`runner.AdapterForLanguage(lang, cfg) (Runner, bool)` factory resolves them. The
+"which test failed" rule mirrors Rust's just-added model via a new capture mechanism:
+`Session.RedCandidates map[string][]string` (JSON `red_candidates,omitempty`,
+single-writer, cleared on `SessionStart`) is populated in the `IsTestFile` dispatch branch
+by `captureRedCandidates`, which diffs pre-edit disk content against the `applyEdit`-modelled
+post-edit content through the per-language regex extractors `GoTestIDs`/`PythonTestIDs`/`JSTSTestIDs`.
+A shared `siblingRedCheck` (used by both the Go/Python guard and the JS/TS dispatcher)
+unions those candidates over the resolved siblings, runs the adapter under a 30s
+`context.WithTimeout`, and accepts only when a `failed` record's id is in the just-added set.
+**Why:** This was the project's highest-impact correctness gap — speccraft sold one guarantee
+and enforced it for one of four supported languages. The decided direction (over the
+honest-rename alternative the review also offered) was to make the red→green name *true*. Two
+deliberate, load-bearing divergences from the Rust reference were required. First, the empty
+just-added set **blocks** for Go/Python/JS-TS (Rust *allows* on empty because its persisted
+`rust_test_baseline` already attests a prior RED; these languages have no such baseline, so
+allowing-on-empty would reopen P0-1 via a blank-line touch — claude-p caught that an
+implementer copying Rust's `if len(justAdded)==0 { return nil }` would silently regress).
+Second, an unresolved/uninvocable runner **fails closed** (BLOCK "no test runner available"),
+never falling back to the touch-check, because a fallback would let an arranged-absent runner
+re-open the exact bypass. The 30s deadline (AC9) closes a real hang vector: a runtime runner
+called with `context.Background()` could wedge the interactive hook indefinitely; a timeout
+surfaces as a Go error (the `Outcome` taxonomy does not grow) and blocks.
+**Consequence:**
+- New convention codified: the **capture-at-test-edit RedCandidates model** for
+  runtime-runner languages that lack a persisted baseline. When a language's red-check has no
+  equivalent of `rust_test_baseline`, the just-added test set is captured at *test-edit* time
+  (post-edit minus pre-edit ids via a per-language extractor) into a single-writer `Session`
+  map, and an empty just-added set must BLOCK, not allow.
+- `architecture.md` layer-8 and §Key-decisions were rewritten in this spec to record the
+  generalization and scrub the spec-0005 "non-goal" sentence at both sites (AC11). A new
+  Go-test oracle `tools/internal/speccraft/docs_parity_test.go` greps `architecture.md`/
+  `index.md`/`guardrails.md`/`speccraft-technical-review.md` so the parity claims cannot
+  silently drift back.
+- `Session` gains `red_candidates`; the single-writer grep allow-list
+  (`state_single_writer_test.go`) was extended per the existing "adding a `Session` field
+  requires extending the allow-list" rule.
+- A documented limitation (AC13), added via the spec-0013 mid-implementation amendment
+  convention (its fourth use, after 0013 T6, 0015 T18, 0017): introducing a brand-new
+  production symbol whose just-added test cannot compile until the symbol exists is a build
+  failure, which AC6 refuses to treat as RED — and the gated production edit is the one that
+  would make it compile. The sanctioned path is a one-shot `/speccraft:spec:override`,
+  identical to Rust today; `run.sh` step 9 was rewritten to test-edit → override → production
+  edit. The amendment also corrected stale `/spec:override` strings to the fully-qualified
+  `/speccraft:spec:override`. Deferred follow-up: an apply-edit-in-memory red-check that runs
+  against the post-edit package so a new symbol's test compiles and fails at runtime,
+  eliminating the override step.
+- The hermetic e2e fixtures `python_cycle.sh` and `javascript_cycle.sh` were rewritten to the
+  red-check model using a *configured-stub* runner (no real pytest/node), still running in
+  the cheap `e2e-language-only` job with no API key.
+- This closes P0-1 only. The other review findings (P0-2 fail-open on corrupt state, P1
+  MultiEdit/NotebookEdit parsing, e2e-on-PR, quorum/verdict hardening, CI static analysis,
+  the P2 cleanups) remain tracked for follow-up specs.
+- Close gate: PR #1 merged to `main` (merge `ddc1136`, feature `8c74168`); CI green
+  (`unit`/`hooks`/`e2e-language-only` on the PR), with the credit-gated `e2e-devcontainer`
+  lifecycle job — which exercises AC13 at step 9 — running on push to `main`.
+
 ## 2026-06-12 — Pin the e2e harness model explicitly; Sonnet default reverted after it failed the validation gate (spec 0017)
 
 **Spec:** specs/0017-e2e-default-model/

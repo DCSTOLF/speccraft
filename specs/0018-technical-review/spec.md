@@ -1,7 +1,7 @@
 ---
 id: "0018"
 title: "technical-review"
-status: in-progress
+status: closed
 created: 2026-06-12
 authors: [claude]
 packages: [tools/cmd/speccraft-guard, tools/internal/speccraft, tools/internal/speccraft/runner]
