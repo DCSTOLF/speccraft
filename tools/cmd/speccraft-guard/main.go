@@ -14,7 +14,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft/runner"
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 // HookInput is the JSON payload Claude Code sends for PreToolUse hooks.
 type HookInput struct {
