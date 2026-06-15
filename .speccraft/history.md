@@ -2,6 +2,30 @@
 
 Append-only. Newest first.
 
+## 2026-06-15 — Tolerant regex for the e2e revise no-op assertion; meta-test reads run.sh's live predicate (spec 0020)
+
+**Spec:** specs/0020-robust-e2e-revise-noop-assertion/
+**Decision:** The `[6/13] revise no-op` step in `tests/e2e/run.sh` grepped the live `claude -p`
+final-message log with fixed-string `contains "...06-revise-noop.log" "no changes"`. The command's
+no-op branch emits a deterministic marker (`no changes — spec unchanged`), but the model paraphrased
+it ("no-op", "byte-identical"), so the fixed-string grep missed — a phrasing flake, not a defect.
+Swapped to `contains_regex "[Nn]o.?op|[Nn]o changes|byte-identical|unchanged"`; the structural
+`^revision: 1` check stays unchanged and load-bearing. Did NOT touch `revise.md` / `revise.lib.sh`
+(per spec 0017, hardening model-output compliance isn't durable). RED→GREEN on a shell-only change
+was achieved via a new meta-test, `tests/e2e/revise_noop_assertion_test.sh`, mirroring spec 0014's
+`contains_adr_assertion_test.sh`: it reads run.sh's *live* assertion line and pattern at runtime
+(rather than hardcoding a copy) so the two cannot silently diverge, and is wired into
+`run_helper_unit_tests()`. Planned with `--skip-review`.
+**Why:** The third spec in the lineage (0014 structural-over-content, 0017 don't-harden-model-output,
+now 0020) treating model phrasing as untrustworthy at the assertion layer. The marker the command
+emits is deterministic, but the model's surrounding final-message paraphrase is not; the assertion
+must tolerate the model's word choice while still pinning a real signal.
+**Consequence:** The no-op step no longer flakes on phrasing. Because `run_helper_unit_tests()` runs
+in BOTH the credit-free `--language-only` path and the full lifecycle path, the new meta-test is a
+real close gate that needs no API credits — contrast spec 0017/0018, whose model-behaviour e2e steps
+are credit-gated and nondeterministic. The "meta-test reads run.sh's live predicate" pattern now has
+its second use and is codified as a named convention.
+
 ## 2026-06-15 — Bump version to 1.1.0 across all live surfaces (spec 0019)
 
 **Spec:** specs/0019-bump-version-to-1-1-0/

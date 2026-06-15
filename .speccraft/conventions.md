@@ -86,6 +86,17 @@ The `lib.sh` extraction is the only path that keeps the predicate provably ident
 - **Sibling fixtures source `lib.sh` directly.** Compute `LIB_DIR` from `${BASH_SOURCE[0]}` per the existing Bash convention and `source "$LIB_DIR/lib.sh"`. Wire the fixture into a sibling `run_helper_unit_tests()` (not `run_language_fixtures()` — that name describes language-cycle fixtures specifically). Helper-first ordering in dispatch is preferred: a helper regression should fail before the language cycles or `claude -p` steps consume budget.
 - **Canonical reference.** `tests/e2e/lib.sh` + `tests/e2e/contains_adr_assertion_test.sh` (spec 0014). Both files document the load-bearing constraints inline.
 
+#### Assertion meta-test reads run.sh's LIVE predicate
+
+Introduced by spec 0014, codified as a named pattern by spec 0020 (its second use).
+
+When a `claude -p` step's assertion in `tests/e2e/run.sh` is itself worth pinning — because the predicate must tolerate the model's free-text phrasing while still matching the deterministic marker the command emits — write a sibling meta-test under `tests/e2e/` that **reads run.sh's live assertion at runtime**, never a hardcoded copy of it.
+
+- **Anchor on the log filename, require exactly one match.** Locate the assertion by grepping run.sh for the step's log filename (e.g. `06-revise-noop.log`); fail the meta-test unless exactly one matching line is found, so a future run.sh edit that moves or duplicates the assertion is caught rather than silently passing against a stale copy.
+- **Extract the pattern from that line; do not duplicate it.** Pull run.sh's actual regex out of the matched line and assert it against synthetic inputs — both positive (the deterministic command marker plus the model paraphrases it must tolerate) and negative (an unrelated real-change line it must reject). Because the meta-test reads the live pattern, the assertion-under-test and the meta-test cannot silently diverge — which is the spec-0014 "exact predicate" invariant applied to a regex predicate rather than a sourced helper.
+- **Wire into `run_helper_unit_tests()`.** This runs in BOTH the credit-free `--language-only` path and the full lifecycle path, so the meta-test is a real close gate at zero API cost — the deterministic complement to the credit-gated, nondeterministic `claude -p` step it pins.
+- **Canonical references.** `tests/e2e/contains_adr_assertion_test.sh` (spec 0014, pins the `history.md` ADR-header predicate) and `tests/e2e/revise_noop_assertion_test.sh` (spec 0020, pins the revise no-op `contains_regex` predicate). Both source `lib.sh` and read run.sh inline.
+
 ### Sourceable command helpers: `commands/<group>/<name>.lib.sh` colocation
 
 Introduced by spec 0015.

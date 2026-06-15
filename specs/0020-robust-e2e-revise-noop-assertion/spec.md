@@ -1,7 +1,7 @@
 ---
 id: "0020"
 title: "Robust e2e revise no-op assertion"
-status: in-progress
+status: closed
 created: 2026-06-15
 authors: [claude]
 packages: []
