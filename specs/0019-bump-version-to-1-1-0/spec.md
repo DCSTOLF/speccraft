@@ -1,7 +1,7 @@
 ---
 id: "0019"
 title: "Bump version to 1.1.0"
-status: in-progress
+status: closed
 created: 2026-06-15
 authors: [claude]
 packages: []

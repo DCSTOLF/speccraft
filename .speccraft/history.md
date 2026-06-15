@@ -2,6 +2,25 @@
 
 Append-only. Newest first.
 
+## 2026-06-15 — Bump version to 1.1.0 across all live surfaces (spec 0019)
+
+**Spec:** specs/0019-bump-version-to-1-1-0/
+**Decision:** Bump 1.0.0 → 1.1.0 on every live version surface in one coherent release cut:
+the two packaging manifests (`.claude-plugin/plugin.json`, `marketplace.json`) and the three
+binary `const version` declarations (speccraft-state/guard/drift). The hardcoded `const version`
+mechanism is unchanged — only its value. Each const bump was gated by a real RED→GREEN version
+test (the test asserts the NEW value, so it fails before the edit), and manifests were verified
+by a grep oracle (positive 1.1.0 matches plus a negative check for stray 1.0.0), since manifests
+aren't assertable from `package main`. Planned with `--skip-review`.
+**Why:** Feature work had accumulated past 1.0.0 (latest = spec 0018) while every `--version`
+surface still reported 1.0.0. A single coordinated bump keeps the manifests and binaries telling
+one story for the next release.
+**Consequence:** `--version` parity across the three binaries is now pinned by tests — a regression
+on any one binary's reported version fails CI. The drift binary gained its first test file as a
+result. Build-time `-ldflags` version injection (P2-5, deferred from the spec 0018 technical
+review) remains a follow-up; until then version is a hand-edited const and future bumps must touch
+all five surfaces.
+
 ## 2026-06-13 — Real red→green TDD check for Go/Python/JS-TS; runner primitive generalized beyond Rust (spec 0018)
 
 **Spec:** specs/0018-technical-review/

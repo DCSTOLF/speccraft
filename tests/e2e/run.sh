@@ -114,6 +114,9 @@ run_helper_unit_tests() {
   ( bash "$E2E_DIR/contains_adr_assertion_test.sh" ) \
     || fail "contains_adr_assertion_test.sh failed"
   pass "contains_adr_assertion_test.sh"
+  ( bash "$E2E_DIR/revise_noop_assertion_test.sh" ) \
+    || fail "revise_noop_assertion_test.sh failed"
+  pass "revise_noop_assertion_test.sh"
 }
 
 # ---- assertion helpers ----
@@ -286,7 +289,12 @@ pass "active_spec unchanged across revise (was '$ACTIVE_BEFORE')"
 # ---- 6. /speccraft:spec:revise no-op (AC6) ----
 echo "==> [6/13] /speccraft:spec:revise no-op (AC6)"
 run_claude "/speccraft:spec:revise. Make no changes — the spec is fine as-is." 06-revise-noop.log
-contains "$LOG_DIR/06-revise-noop.log" "no changes"
+# Tolerant: the model paraphrases the no-op marker ("no-op", "byte-identical")
+# instead of the command's literal "no changes — spec unchanged" (spec 0020).
+# This exact predicate is pinned by revise_noop_assertion_test.sh; the
+# structural ^revision: 1 check below is the load-bearing proof the no-op
+# branch ran (spec 0014 structural-over-content).
+contains_regex "$LOG_DIR/06-revise-noop.log" "[Nn]o.?op|[Nn]o changes|byte-identical|unchanged"
 # Revision stays at 1, not bumped.
 contains_regex "$SPEC_DIR/spec.md" "^revision: 1"
 

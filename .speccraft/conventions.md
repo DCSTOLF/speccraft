@@ -11,6 +11,17 @@
 - Tests: `_test.go` files colocated with the code under test; table-driven for >2 cases; function names start with `Test`. <!-- enforce: regex pattern="^func Test[A-Z]" scope="tools/**/*_test.go" -->
 - Test-function naming (introduced by spec 0012): both `Test<UpperCamel>` (e.g. `TestStateRoundTrip`, `TestFarewell`) and `Test_<Subject>_<Scenario>` (e.g. `Test_SetField_ActiveSpec_NullArg_ClearsToJSONNull`) are acceptable. Prefer the underscore form for scenario-specific tests where the name encodes a concrete input → expected output, since it makes the failure line self-documenting. Prefer the camelCase form for broad round-trip / smoke tests where there is no single scenario to name. The `^func Test[A-Z]` enforce-regex above accepts both and stays as is — tightening it would force a rename of every existing camelCase test in the repo, which is out of scope.
 
+## Version bumps
+
+Introduced by spec 0019.
+
+When bumping a binary's `const version`, add or update a sibling test that asserts the new value
+(either `--version` output via the `run()` seam, or the package const directly). This forces the
+one-line const edit through a real RED→GREEN cycle (satisfying the TDD gate, which a bare const
+edit otherwise cannot) and keeps `--version` parity across speccraft-state/guard/drift asserted.
+JSON manifests, which aren't assertable from `package main`, are instead verified by a grep oracle
+(positive new-version match plus a negative check for the stale version) — the spec 0011/0016 pattern.
+
 ## Bash (`hooks/`, `tests/e2e/`, `scripts/`)
 
 - Every script starts with `#!/usr/bin/env bash` and `set -euo pipefail`.
