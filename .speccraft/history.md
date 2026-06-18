@@ -76,6 +76,16 @@ untagged after the main-push workflow succeeds"), CF-4 (strong-form checksums).
   release creation — a transient asset-propagation 404 on the first run would be a
   one-line retry/sleep follow-up. T15 (DRY four-tarball-name emitter) deferred.
 
+**Follow-up (2026-06-18, hotfix to `ci.yml`):** the first real run of the `auto-tag`
+job failed — `git push` for `v1.1.0` was denied as `github-actions[bot]` (403 on this
+*private* repo), i.e. the PAT was never used. Root cause: `actions/checkout` persists the
+built-in `GITHUB_TOKEN` as an `http.extraheader`, which **takes precedence over inline URL
+userinfo** — so the `git remote set-url origin https://x-access-token:${PAT}@…` approach
+silently authenticated as the bot. Fix: pass the PAT to checkout itself
+(`token: ${{ secrets.RELEASE_TAG_PAT }}`) so the *persisted* credential is the PAT, and
+push plainly (dropped the `set-url` + `env:` block). New gotcha to remember: **to push from
+CI with a non-default identity, set checkout's `token:`, never `git remote set-url`.**
+
 ## 2026-06-15 — Tolerant regex for the e2e revise no-op assertion; meta-test reads run.sh's live predicate (spec 0020)
 
 **Spec:** specs/0020-robust-e2e-revise-noop-assertion/
