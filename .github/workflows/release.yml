@@ -53,16 +53,13 @@ jobs:
           cd tools/dist
           TARBALL="speccraft-${VERSION#v}-${PLATFORM}.tar.gz"
           tar -czf "$TARBALL" speccraft-state speccraft-guard speccraft-drift
-          sha256sum "$TARBALL" >> checksums.txt
           echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: speccraft-${{ matrix.os }}-${{ matrix.arch }}
-          path: |
-            tools/dist/*.tar.gz
-            tools/dist/checksums.txt
+          path: tools/dist/*.tar.gz
 
   release:
     name: Create GitHub Release

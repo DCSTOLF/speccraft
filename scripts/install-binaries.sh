@@ -13,6 +13,19 @@ PROVENANCE_FILE="$PLUGIN_DIR/.binary-provenance"
 # hermetically. Defaults to the GitHub Releases download base.
 RELEASE_BASE="${SPECCRAFT_RELEASE_BASE:-https://github.com/dcstolf/speccraft/releases/download}"
 
+# Portable SHA-256 checklist verification. GNU coreutils ships `sha256sum`;
+# macOS/BSD ships `shasum`. Both accept "<hash>  <file>" lines on stdin via
+# `-c -`. Without this, macOS installs abort at the checksum step
+# (sha256sum: command not found) — defeating the download path on half the
+# supported platforms.
+sha256_check() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c -
+  else
+    shasum -a 256 -c -
+  fi
+}
+
 EXPECTED="$(jq -r '.version' "$PLUGIN_DIR/.claude-plugin/plugin.json")"
 INSTALLED="$([ -f "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo "none")"
 
@@ -61,7 +74,7 @@ elif ! curl -fsSL "$SUMS_URL" -o "$TMP/checksums.txt"; then
 fi
 
 if [ "$download_ok" = true ]; then
-  ( cd "$TMP" && grep "${TARBALL}" checksums.txt | sha256sum -c - >&2 )
+  ( cd "$TMP" && grep "${TARBALL}" checksums.txt | sha256_check >&2 )
   tar -xzf "$TMP/${TARBALL}" -C "$BIN_DIR"
   chmod +x "$BIN_DIR"/*
   echo "$EXPECTED" > "$VERSION_FILE"

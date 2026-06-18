@@ -25,6 +25,15 @@ trap 'rm -rf "$TMP"' EXIT
 
 die() { echo "verify-release: $*" >&2; exit 1; }
 
+# Portable SHA-256 of a file (GNU `sha256sum` vs macOS/BSD `shasum`).
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  else
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  fi
+}
+
 # fetch <url> <dest> — copy for a file:// base, curl otherwise. Returns
 # non-zero (without aborting under set -e at the call site via `|| die`)
 # when the asset is missing or unreachable.
@@ -50,7 +59,7 @@ for plat in "${PLATFORMS[@]}"; do
   [ -n "$expected" ] \
     || die "no checksum entry for $tarball in checksums.txt"
 
-  actual="$(sha256sum "$TMP/$tarball" | awk '{ print $1 }')"
+  actual="$(sha256_of "$TMP/$tarball")"
   if [ "$actual" != "$expected" ]; then
     die "checksum mismatch (SHA-256) for $tarball: expected $expected, got $actual"
   fi
