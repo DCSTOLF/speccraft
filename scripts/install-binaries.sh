@@ -7,7 +7,11 @@ set -euo pipefail
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$PLUGIN_DIR/bin"
 VERSION_FILE="$PLUGIN_DIR/.binary-version"
-RELEASE_BASE="https://github.com/dcstolf/speccraft/releases/download"
+PROVENANCE_FILE="$PLUGIN_DIR/.binary-provenance"
+# Release base is overridable (SPECCRAFT_RELEASE_BASE) so tests can point the
+# download at a local file:// fixture and exercise the happy/failure paths
+# hermetically. Defaults to the GitHub Releases download base.
+RELEASE_BASE="${SPECCRAFT_RELEASE_BASE:-https://github.com/dcstolf/speccraft/releases/download}"
 
 EXPECTED="$(jq -r '.version' "$PLUGIN_DIR/.claude-plugin/plugin.json")"
 INSTALLED="$([ -f "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo "none")"
@@ -43,12 +47,25 @@ trap 'rm -rf "$TMP"' EXIT
 
 echo "speccraft: installing helper binaries (v${EXPECTED}, ${PLATFORM})..." >&2
 
-if curl -fsSL "$URL" -o "$TMP/${TARBALL}" 2>/dev/null \
-   && curl -fsSL "$SUMS_URL" -o "$TMP/checksums.txt" 2>/dev/null; then
+# Download the tarball + checksums. Catch each curl explicitly (not a
+# `&&`/`2>/dev/null` chain) so `set -e` does not abort before we can name
+# the failed URL and fall back. A silenced failure here is the exact bug
+# this spec eliminates.
+download_ok=true
+if ! curl -fsSL "$URL" -o "$TMP/${TARBALL}"; then
+  echo "speccraft: download failed (asset unavailable): $URL" >&2
+  download_ok=false
+elif ! curl -fsSL "$SUMS_URL" -o "$TMP/checksums.txt"; then
+  echo "speccraft: download failed (checksums unavailable): $SUMS_URL" >&2
+  download_ok=false
+fi
+
+if [ "$download_ok" = true ]; then
   ( cd "$TMP" && grep "${TARBALL}" checksums.txt | sha256sum -c - >&2 )
   tar -xzf "$TMP/${TARBALL}" -C "$BIN_DIR"
   chmod +x "$BIN_DIR"/*
   echo "$EXPECTED" > "$VERSION_FILE"
+  echo "download" > "$PROVENANCE_FILE"
   echo "speccraft: installed." >&2
   exit 0
 fi
@@ -61,6 +78,7 @@ if command -v go >/dev/null 2>&1; then
          CGO_ENABLED=0 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd"
        done )
   echo "$EXPECTED" > "$VERSION_FILE"
+  echo "source" > "$PROVENANCE_FILE"
   echo "speccraft: built from source." >&2
   exit 0
 fi

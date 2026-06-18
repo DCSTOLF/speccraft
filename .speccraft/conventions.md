@@ -22,12 +22,48 @@ edit otherwise cannot) and keeps `--version` parity across speccraft-state/guard
 JSON manifests, which aren't assertable from `package main`, are instead verified by a grep oracle
 (positive new-version match plus a negative check for the stale version) — the spec 0011/0016 pattern.
 
+### A version bump must mechanically produce a published, verified release
+
+Introduced by spec 0021.
+
+A version bump is not "done" when the manifests/consts are edited — it is done when a
+`vX.Y.Z` GitHub Release exists carrying the four platform tarballs
+(`speccraft-<version>-{linux-amd64,linux-arm64,macos-amd64,macos-arm64}.tar.gz`) plus
+`checksums.txt`, with every asset's bytes installable. Before spec 0021 this step had
+never once been performed manually, so every release-asset URL 404'd and
+`install-binaries.sh` silently fell back to `go build`. Two load-bearing rules:
+
+- **Auto-tag-on-bump pushes via a PAT/deploy key, NEVER `GITHUB_TOKEN`.** The `auto-tag`
+  job in `ci.yml` (push to `main`) creates+pushes `vX.Y.Z` using
+  `secrets.RELEASE_TAG_PAT`. GitHub intentionally suppresses `on: push: tags` re-triggers
+  for events caused by the built-in `GITHUB_TOKEN` (its infinite-loop guard); a tag pushed
+  with `GITHUB_TOKEN` leaves the tag-triggered `release.yml` silently never firing —
+  reproducing the exact silent-failure class spec 0021 exists to eliminate. If a PAT is
+  undesirable, hand off via `workflow_dispatch`/`repository_dispatch` instead; do not push
+  the tag with the built-in token. The decision logic is a pure, unit-testable
+  `scripts/auto-tag.sh should_tag` (inputs injected via `SPECCRAFT_PLUGIN_JSON` /
+  `SPECCRAFT_TAGS`); the actual `git push` lives in the workflow step.
+- **Release completeness is asserted strong-form by `scripts/verify-release.sh`.** The
+  oracle downloads each tarball + `checksums.txt`, recomputes SHA-256, and fails
+  loudly+named on any missing asset/entry or hash mismatch — the weak form (assert the
+  file resolves and lists four names) is insufficient because only the strong form proves
+  the published bytes are installable. It honors `SPECCRAFT_RELEASE_BASE` (with a
+  `file://` fast-path) so the sibling shell test runs hermetically with no network, and is
+  reused as `release.yml`'s final self-verify step keyed to `github.ref_name`. The guard
+  must key off the **tag**, never the bare `plugin.json` value, so it can never observe the
+  legitimate transient "bumped but not yet released" state (deadlock-free invariant:
+  bump→main → auto-tag → release.yml builds+publishes+self-verifies). The producer and
+  consumer must agree on the asset name (`checksums.txt`), and the release job must
+  regenerate it `sha256sum *.tar.gz > checksums.txt` over all downloaded tarballs (the
+  per-arch artifacts collide under `merge-multiple`).
+
 ## Bash (`hooks/`, `tests/e2e/`, `scripts/`)
 
 - Every script starts with `#!/usr/bin/env bash` and `set -euo pipefail`.
 - Use absolute paths derived from `${BASH_SOURCE[0]}`; never assume CWD.
 - All filesystem writes to `.speccraft/` go through the `speccraft-state` binary — hooks do not edit `state.json` directly.
 - Hooks emit Claude Code hook-protocol JSON on stdout and exit non-zero on guardrail violations.
+- **`scripts/*.sh` and their sibling shell tests are NOT gated by `speccraft-guard` (introduced by spec 0021).** The guard's TDD red→green invariant applies only to the four supported source languages (Go, Python, Rust, JS/TS — see §"Dispatch by language"); it does not classify `.sh` files as production code. Editing or creating a shell script — including the create-file edit that introduces a brand-new script — therefore never triggers a TDD-gate block and never needs a `/speccraft:spec:override`. (Spec 0021's plan wrongly assumed each new-script create-file edit would hit the build-failure-is-not-RED case like a new Go symbol; it does not.) Shell work is still expected to follow the spec's own RED→GREEN discipline via sibling shell tests wired into `run_helper_unit_tests()`, but that discipline is author-enforced, not guard-enforced.
 
 ### PreToolUse hook tool enumeration
 
@@ -137,6 +173,15 @@ Introduced by spec 0008.
 - **`e2e-devcontainer` (expensive, credit-gated).** Gated to `push` on `main`. Receives `ANTHROPIC_API_KEY` from repo secrets. Runs the full lifecycle (`claude -p`-driven spec workflow + language fixtures).
 
 Anything that invokes `claude -p` belongs in the lifecycle job. Anything that exercises `speccraft-guard` against a representative project layout (no API calls) belongs in the language-only job.
+
+### Release automation jobs are cheap-hermetic (`auto-tag`, `release.yml` self-verify)
+
+Introduced by spec 0021. The release/distribution CI surfaces are cheap-hermetic — they invoke no `claude -p` and require no `ANTHROPIC_API_KEY`:
+
+- **`auto-tag` job (`ci.yml`).** Gated `if github.event_name == 'push' && github.ref == 'refs/heads/main'`. Runs `scripts/auto-tag.sh should_tag`; when `plugin.json`'s version is untagged it creates+pushes `vX.Y.Z`. Credentials: the implicit `GITHUB_TOKEN` plus `secrets.RELEASE_TAG_PAT` for the tag-push step specifically (the PAT is mandatory — see §Version bumps for why `GITHUB_TOKEN` cannot push the tag). The decision logic is unit-pinned by `tests/e2e/auto_tag_version_diff_test.sh`; the push itself is verified only in CI run history.
+- **`release.yml` "Verify published release" step.** Runs `scripts/verify-release.sh "${TAG#v}"` keyed to `github.ref_name`, after the upload. `GITHUB_TOKEN`-only. This is the primary release-completeness guard; the optional secondary main/scheduled guard from the spec's What#4 was deliberately not shipped.
+
+A `paths-ignore` denylist (not allowlist) on both `push` and `pull_request` skips CI for doc-only files (`README.md`, `KICKOFF.md`, `LICENSE`, `speccraft-technical-review.md`, `speccraft-v1-spec.md`, `images/**`, `specs/**`). Extend the denylist for new doc-only paths; never convert it to an allowlist (an allowlist fails dangerous by silently skipping real changes) and never add `.claude-plugin/plugin.json` to it (it must keep triggering CI or the `auto-tag` job never fires on a bump).
 
 ### `ENVIRONMENT_FAILURE:` annotation pattern
 

@@ -2,6 +2,7 @@
 bin/*
 !bin/.gitkeep
 .binary-version
+.binary-provenance
 
 # Runtime state — machine state, not project intent
 .speccraft/state.json

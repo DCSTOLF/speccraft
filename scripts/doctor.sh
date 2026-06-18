@@ -6,6 +6,7 @@ set -euo pipefail
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$PLUGIN_DIR/bin"
 VERSION_FILE="$PLUGIN_DIR/.binary-version"
+PROVENANCE_FILE="$PLUGIN_DIR/.binary-provenance"
 
 ok()   { printf "  %-30s [OK]\n" "$1"; }
 warn() { printf "  %-30s [WARN] %s\n" "$1" "$2"; }
@@ -54,6 +55,16 @@ done
 
 if [ "$PLUGIN_VERSION" != "$INSTALLED_VERSION" ]; then
   warn "version mismatch" "plugin=$PLUGIN_VERSION installed=$INSTALLED_VERSION; run install-binaries.sh"
+fi
+
+# Provenance: distinguish a clean download from a source-build fallback.
+# A "source" marker means the release download was unavailable and the
+# binaries were compiled locally — a distinct, actionable state (the
+# release for this version may be missing or broken).
+PROVENANCE="$([ -f "$PROVENANCE_FILE" ] && cat "$PROVENANCE_FILE" || echo unknown)"
+echo "  Binary provenance:         $PROVENANCE"
+if [ "$PROVENANCE" = "source" ]; then
+  warn "binary provenance" "built from source (download unavailable) — the release for v$PLUGIN_VERSION may be missing or broken"
 fi
 
 echo

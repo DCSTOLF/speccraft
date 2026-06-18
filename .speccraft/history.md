@@ -2,6 +2,80 @@
 
 Append-only. Newest first.
 
+## 2026-06-18 — Release pipeline self-verifies and auto-tags on version bump; the source-build fallback is no longer silent (spec 0021)
+
+**Spec:** specs/0021-publish-release-binaries-on-version-tag/
+**Decision:** Close the "plugin compiles from source at runtime instead of downloading
+release assets" defect at its root: no `vX.Y.Z` tag had ever been pushed, so the
+tag-triggered `release.yml` never ran, every release-asset URL 404'd, and
+`install-binaries.sh`'s `curl … 2>/dev/null && …` chain masked it by falling through to
+`go build`. The fix has three load-bearing parts. (1) A new `auto-tag` CI job
+(`ci.yml`, `push` to `main`, gated `if github.event_name == 'push' && github.ref ==
+'refs/heads/main'`) runs the pure `scripts/auto-tag.sh should_tag` and, when
+`plugin.json`'s version is untagged, creates+pushes `vX.Y.Z` via
+`secrets.RELEASE_TAG_PAT` — **NOT** the built-in `GITHUB_TOKEN`, because GitHub
+intentionally suppresses `on: push: tags` re-triggers for events caused by the built-in
+token (its infinite-loop guard); pushing with `GITHUB_TOKEN` would leave `release.yml`
+silently never firing, reproducing this very bug class. (2) A new
+`scripts/verify-release.sh` is a **strong-form** release-completeness oracle: it
+downloads each of the four platform tarballs + `checksums.txt`, recomputes SHA-256, and
+fails loudly+named on any missing asset/entry or hash mismatch. It is wired as
+`release.yml`'s final self-verify step, keyed to `github.ref_name` so it can only ever
+run against an existing tag — never a bare `plugin.json` value (the deadlock-free
+invariant: bump→main → auto-tag pushes tag → release.yml builds+publishes+self-verifies;
+no CI check fails on an unreleased version). (3) `install-binaries.sh` replaces the
+silent `&&`/`2>/dev/null` chain with an explicit `if ! curl …; then warn-naming-URL;
+download_ok=false; fi` (set -e safe) and writes a gitignored `.binary-provenance` marker
+(`download`|`source`); `doctor.sh` reads it and reports a distinct "built from source
+(download unavailable)" WARN state. The producer/consumer asset-name contract is fixed:
+`release.yml` publishes `checksums.txt` (was `checksums-merged.txt`), and the file is
+regenerated `sha256sum *.tar.gz > checksums.txt` over all tarballs in the release job
+(fixing a per-arch checksum collision under `merge-multiple` that was beyond the named
+name-mismatch scope but required for the strong-form verify to pass). All four scripts
+are exercised hermetically via `SPECCRAFT_RELEASE_BASE` `file://` fixtures by sibling
+shell tests wired into `run_helper_unit_tests()` (specs 0014/0020 pattern), so they gate
+close credit-free.
+**Why:** The documented "download a tarball on first use, no Go required" experience did
+not exist for any user — every version 404'd, and the fallback succeeded quietly wherever
+Go happened to be installed, so the broken pipeline was invisible. Spec 0019's
+1.0.0→1.1.0 bump made it acute by invalidating cached `.binary-version` stamps. Making "a
+version bump produces a release" mechanical (rather than a manual checklist step that had
+never once been performed) is the durable fix; making the fallback loud + provenance-
+marked ensures a future regression of this class surfaces instead of hiding. Two-round
+cross-model review: revision 1 changes-requested (codex+claude-p) on the AC4/AC5 ordering
+deadlock and missing oracles; revision 2 quorum met with four carry-forwards folded into
+the spec before planning — CF-1 (PAT-not-`GITHUB_TOKEN`, claude-p's highest-priority
+latent-correctness catch), CF-2 (both new CI surfaces are cheap-hermetic/`GITHUB_TOKEN`-
+only per the spec-0008 job-split convention), CF-3 (AC5 reworded to "cannot remain
+untagged after the main-push workflow succeeds"), CF-4 (strong-form checksums).
+**Consequence:**
+- New convention material codified in `conventions.md`: auto-tag-on-bump must push via a
+  PAT/deploy key not `GITHUB_TOKEN` (§Version bumps); release completeness is verified by
+  `verify-release.sh` strong-form against a `SPECCRAFT_RELEASE_BASE` `file://` fixture
+  (§Version bumps); and — a previously-unwritten fact made explicit — `scripts/*.sh` and
+  their sibling shell tests are NOT gated by `speccraft-guard` (only the four source
+  languages are), so shell-only work needs no `/speccraft:spec:override` (§Bash). This
+  last point is a documented **plan deviation**: the plan's "which steps need override"
+  section assumed each new-script create-file edit would hit the build-failure-is-not-RED
+  case (guardrails AC13) and need a one-shot override; in fact none did, because the guard
+  ignores `.sh`.
+- The `auto-tag` job is the third cheap-hermetic CI surface alongside `e2e-language-only`
+  and the bats `hooks` job (§CI). It needs `RELEASE_TAG_PAT` in addition to the implicit
+  `GITHUB_TOKEN`; no `ANTHROPIC_API_KEY`.
+- `architecture.md` updated: the packaging layer (item 1) now records that release-asset
+  delivery is automated and self-verifying, and a new §Key-boundaries entry documents the
+  release/distribution pipeline (tag → build → publish → self-verify; provenance marker).
+- Orthogonal CI hygiene tweak folded in (agreed with user): `ci.yml` `paths-ignore`
+  extended to also skip CI for doc-only edits to `LICENSE`,
+  `speccraft-technical-review.md`, `speccraft-v1-spec.md` — a deliberate *denylist*
+  extension (an allowlist fails dangerous; `.claude-plugin/plugin.json` must keep
+  triggering CI or auto-tag never fires).
+- Outstanding ops (not unit-gated, tracked in changelog): `RELEASE_TAG_PAT` secret DONE
+  by user; T14 (the push landing this work auto-tags `v1.1.0` and triggers the first real
+  release) verified in CI run history. Watch-item: the verify step runs immediately after
+  release creation — a transient asset-propagation 404 on the first run would be a
+  one-line retry/sleep follow-up. T15 (DRY four-tarball-name emitter) deferred.
+
 ## 2026-06-15 — Tolerant regex for the e2e revise no-op assertion; meta-test reads run.sh's live predicate (spec 0020)
 
 **Spec:** specs/0020-robust-e2e-revise-noop-assertion/

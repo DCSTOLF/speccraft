@@ -117,6 +117,19 @@ run_helper_unit_tests() {
   ( bash "$E2E_DIR/revise_noop_assertion_test.sh" ) \
     || fail "revise_noop_assertion_test.sh failed"
   pass "revise_noop_assertion_test.sh"
+  # spec 0021 — release packaging/distribution sibling tests.
+  ( bash "$E2E_DIR/verify_release_test.sh" ) \
+    || fail "verify_release_test.sh failed"
+  pass "verify_release_test.sh"
+  ( bash "$E2E_DIR/install_binaries_provenance_test.sh" ) \
+    || fail "install_binaries_provenance_test.sh failed"
+  pass "install_binaries_provenance_test.sh"
+  ( bash "$E2E_DIR/auto_tag_version_diff_test.sh" ) \
+    || fail "auto_tag_version_diff_test.sh failed"
+  pass "auto_tag_version_diff_test.sh"
+  ( bash "$E2E_DIR/release_yml_asset_contract_test.sh" ) \
+    || fail "release_yml_asset_contract_test.sh failed"
+  pass "release_yml_asset_contract_test.sh"
 }
 
 # ---- assertion helpers ----

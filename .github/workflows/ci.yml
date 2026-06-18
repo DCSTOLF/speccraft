@@ -6,6 +6,9 @@ on:
     paths-ignore:
       - 'README.md'
       - 'KICKOFF.md'
+      - 'LICENSE'
+      - 'speccraft-technical-review.md'
+      - 'speccraft-v1-spec.md'
       - 'images/**'
       - 'specs/**'
   pull_request:
@@ -13,6 +16,9 @@ on:
     paths-ignore:
       - 'README.md'
       - 'KICKOFF.md'
+      - 'LICENSE'
+      - 'speccraft-technical-review.md'
+      - 'speccraft-v1-spec.md'
       - 'images/**'
       - 'specs/**'
 
@@ -112,3 +118,38 @@ jobs:
           devcontainer up --workspace-folder .
           devcontainer exec --workspace-folder . \
             bash tests/e2e/run.sh --language-only
+
+  auto-tag:
+    # Spec 0021 (AC5): when a merged commit bumps the plugin version and
+    # that version has no matching tag yet, create + push vX.Y.Z so
+    # release.yml builds and publishes the release. Cheap-hermetic: no
+    # ANTHROPIC_API_KEY; the decision logic is unit-pinned by
+    # tests/e2e/auto_tag_version_diff_test.sh.
+    #
+    # The tag MUST be pushed with RELEASE_TAG_PAT (a PAT/deploy key), NOT
+    # the default GITHUB_TOKEN: GitHub suppresses `on: push` re-triggers
+    # for events caused by the built-in token, which would leave
+    # release.yml silently never firing.
+    name: Auto-tag on version bump
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create release tag if plugin.json version is untagged
+        env:
+          RELEASE_TAG_PAT: ${{ secrets.RELEASE_TAG_PAT }}
+        run: |
+          git fetch --tags --quiet
+          if tag="$(bash scripts/auto-tag.sh should_tag)"; then
+            echo "Creating release tag: $tag"
+            git config user.name "speccraft-bot"
+            git config user.email "speccraft-bot@users.noreply.github.com"
+            git tag -a "$tag" -m "Release $tag"
+            git remote set-url origin \
+              "https://x-access-token:${RELEASE_TAG_PAT}@github.com/${GITHUB_REPOSITORY}.git"
+            git push origin "$tag"
+          else
+            echo "plugin.json version is already tagged; nothing to do."
+          fi

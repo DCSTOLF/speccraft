@@ -79,15 +79,29 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Merge checksums
-        run: cat dist/checksums.txt | sort | uniq > dist/checksums-merged.txt
+      - name: Generate checksums
+        # Recompute over all downloaded tarballs so checksums.txt carries a
+        # complete, correctly-named entry for every platform (the per-arch
+        # artifacts collide under merge-multiple). Bare filenames match what
+        # install-binaries.sh and verify-release.sh expect.
+        run: cd dist && sha256sum *.tar.gz > checksums.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
-            dist/checksums-merged.txt
+            dist/checksums.txt
           name: speccraft ${{ github.ref_name }}
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Verify published release
+        # Primary release-completeness guard (spec 0021, AC4): fail the
+        # release loudly if any platform tarball or checksums.txt is missing
+        # or its SHA-256 does not match. Keyed to the just-pushed tag, so it
+        # can only run for an existing tag — never a bare plugin.json bump
+        # (deadlock-free). Cheap-hermetic: no ANTHROPIC_API_KEY.
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash scripts/verify-release.sh "${TAG#v}"
