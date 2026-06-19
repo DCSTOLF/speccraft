@@ -8,22 +8,24 @@ on:
 jobs:
   build:
     name: Build ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    # All targets are pure-Go, CGO_ENABLED=0 cross-compiles (GOOS/GOARCH set
+    # explicitly below), so the host runner is irrelevant to the output. Build
+    # everything on ubuntu-latest: no macOS-runner queue/capacity dependency
+    # (macos-13 Intel is constrained/retiring), faster, and far cheaper on a
+    # private repo (macOS minutes bill at 10x). This also sidesteps runner-only
+    # portability traps like macOS lacking `sha256sum`.
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
           - os: linux
             arch: amd64
-            runner: ubuntu-latest
           - os: linux
             arch: arm64
-            runner: ubuntu-latest
           - os: macos
             arch: amd64
-            runner: macos-13
           - os: macos
             arch: arm64
-            runner: macos-14
 
     steps:
       - uses: actions/checkout@v4
