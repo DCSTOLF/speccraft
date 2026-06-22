@@ -15,10 +15,17 @@ import (
 // the e2e assertion at tests/e2e/run.sh:281-282 — i.e. `jq -r '.active_spec
 // // "null"' state.json` outputs the literal string "null" because the key
 // is absent. See spec 0012 AC1/AC2.
+// ActiveProduct and ActiveDesign are the PM and Architect lanes (spec 0022).
+// They are additive sibling keys: active_spec stays byte-identical, and each
+// new lane carries ,omitempty with the same clear-to-empty SetField semantics
+// so `jq -r '.<lane> // "null"'` yields "null" when cleared. The lanes are
+// independent — clearing one never touches the others (spec 0022 AC6).
 type State struct {
-	Version    int     `json:"version"`
-	ActiveSpec string  `json:"active_spec,omitempty"`
-	Session    Session `json:"session"`
+	Version       int     `json:"version"`
+	ActiveSpec    string  `json:"active_spec,omitempty"`
+	ActiveProduct string  `json:"active_product,omitempty"`
+	ActiveDesign  string  `json:"active_design,omitempty"`
+	Session       Session `json:"session"`
 }
 
 // Session holds per-session edit tracking (reset on SessionStart).
@@ -119,6 +126,10 @@ func GetField(root, field string) (string, error) {
 	switch field {
 	case "active_spec":
 		return s.ActiveSpec, nil
+	case "active_product":
+		return s.ActiveProduct, nil
+	case "active_design":
+		return s.ActiveDesign, nil
 	case "version":
 		return "1", nil
 	case "override_pending":
@@ -152,6 +163,19 @@ func SetField(root, field, value string) error {
 			value = ""
 		}
 		s.ActiveSpec = value
+	case "active_product":
+		// PM lane — same clear-to-empty semantics as active_spec so
+		// `set active_product null` drops the key (spec 0022 AC2/AC7).
+		if value == "null" {
+			value = ""
+		}
+		s.ActiveProduct = value
+	case "active_design":
+		// Architect lane — same clear-to-empty semantics (spec 0022).
+		if value == "null" {
+			value = ""
+		}
+		s.ActiveDesign = value
 	case "override_pending":
 		s.Session.OverridePending = (value == "true")
 	}

@@ -35,7 +35,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-_none_
+specs/0022-pm-architect-upstream-workflows/
 
 ## Recent decisions (last 3)
 

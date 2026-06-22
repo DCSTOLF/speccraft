@@ -328,6 +328,18 @@ func TestIsAlwaysAllowed(t *testing.T) {
 		{"/repo/README.md", true},
 		{"/repo/internal/foo/bar.go", false},
 		{"/other/path/file.go", true}, // outside root → always allow
+		// Spec 0022 AC3 — doc-zone regression pin. PM/Architect markdown
+		// artifacts are already allowed via the *.md rule; these rows lock
+		// that so a future refactor cannot start gating the doc zones.
+		{"/repo/product/0001-x/brief.md", true},   // PM brief markdown allowed
+		{"/repo/product/0001-x/review.md", true},  // PM review markdown allowed
+		{"/repo/design/0001-x/design.md", true},   // Architect design markdown allowed
+		// NEGATIVE pins — a SOURCE file under product/ or design/ must stay
+		// gated. This is why we rely on the *.md rule and deliberately do NOT
+		// add product/ or design/ to the prefix() chain (that would bypass
+		// the TDD guard for source files placed under those trees).
+		{"/repo/product/0001-x/sample.go", false}, // source under product/ gated
+		{"/repo/design/0001-x/sample.go", false},  // source under design/ gated
 	}
 	for _, c := range cases {
 		got := speccraft.IsAlwaysAllowed(root, c.path)

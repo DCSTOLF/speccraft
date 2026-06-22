@@ -29,6 +29,15 @@ E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$E2E_DIR/lib.sh"
 
+# Spec 0022 credit-gated bridge/memory fixtures. SOURCED (not subshelled) so
+# they share run_claude / LOG_DIR / the lib.sh predicates; each defines a
+# function the lifecycle calls after /speccraft:spec:close. No top-level side
+# effects. They are skipped under --language-only (they need claude + credits).
+# shellcheck source=pm_to_spec_bridge.sh
+source "$E2E_DIR/pm_to_spec_bridge.sh"
+# shellcheck source=arch_close_memory.sh
+source "$E2E_DIR/arch_close_memory.sh"
+
 # ---- flag parse (spec 0008 AC #2) ----
 # `--language-only` skips the entire claude -p driven lifecycle and runs
 # only the per-language fixture scripts (Rust + Python). Used by the
@@ -359,6 +368,16 @@ contains_regex ".speccraft/history.md" "^## 20[0-9]{2}-[0-9]{2}-[0-9]{2}"
 ACTIVE="$(jq -r '.active_spec // "null"' .speccraft/state.json)"
 [ "$ACTIVE" = "null" ] || fail "active_spec not cleared after close: $ACTIVE"
 pass "active_spec cleared"
+
+# ---- 10b. PM → spec --from bridge + informed-by (spec 0022 AC5) ----
+# Credit-gated. Reuses the initialized .speccraft in $TEST_ROOT. Drives
+# pm:new then spec:new --from and a plain spec:new, asserting structurally.
+echo "==> [10b/13] PM → spec --from bridge (spec 0022 AC5)"
+pm_to_spec_bridge
+
+# ---- 10c. arch:close memory-keeper routing + lane independence (spec 0022 AC4/AC6) ----
+echo "==> [10c/13] arch:close → memory-keeper routing (spec 0022 AC4/AC6)"
+arch_close_memory
 
 # ---- 11. Helper unit tests (spec 0014) ----
 # Runs the lib.sh helper assertions first so a helper regression
