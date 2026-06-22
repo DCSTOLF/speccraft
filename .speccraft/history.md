@@ -2,6 +2,21 @@
 
 Append-only. Newest first.
 
+## 2026-06-22 — Milestone version bump to 1.5.0 (spec 0023)
+
+**Spec:** specs/0023-milestone-version-1.5.0/
+**Decision:** Mark the spec-0022 milestone (PM + Architect upstream workflows)
+with a coordinated 1.1.0 → 1.5.0 bump across all five live version surfaces —
+the two manifests (`plugin.json`, `marketplace.json`) and the three binary
+`const version` declarations (`speccraft-{state,guard,drift}`) — identical
+mechanism to spec 0019, only the value moves. Each const bump pinned RED→GREEN by
+its sibling version test (asserts the NEW value, fails pre-edit); manifests
+verified by a grep oracle (positive `1.5.0` + no stray `1.1.0`), since they
+aren't assertable from `package main`. Pushing the bumped `plugin.json` to `main`
+triggers the `auto-tag` CI job (spec 0021) → pushes `v1.5.0` → fires
+`release.yml`. No deviations. `-ldflags` injection (deferred since 0018) remains
+a future option.
+
 ## 2026-06-22 — Optional PM and Architect workflows ship upstream of specs (spec 0022)
 
 **Spec:** specs/0022-pm-architect-upstream-workflows/
