@@ -2,6 +2,61 @@
 
 Append-only. Newest first.
 
+## 2026-06-22 — Optional PM and Architect workflows ship upstream of specs (spec 0022)
+
+**Spec:** specs/0022-pm-architect-upstream-workflows/
+**Decision:** Add two optional, advisory upstream workflows — PM
+(`/speccraft:pm:{new,review,prioritize,close}`) and Architect
+(`/speccraft:arch:{new,review,decide,close}`) — that sit above the spec
+lifecycle (PM → Architect → Spec → implement), WITHOUT changing the
+standalone-specs guarantee: a user who only ever wants specs+TDD sees zero
+behavioral change (AC1). PM artifacts live under `product/NNNN-slug/` (`brief.md`),
+Architect under `design/NNNN-slug/` (`design.md`); both reuse existing machinery
+(`cross-reviewer` backs both `*:review` unchanged; `arch:close` routes durable
+decisions through the existing `memory-keeper` — no new store).
+
+Three load-bearing design choices, all driven by AC1/AC7. (1) **State shape:
+additive sibling keys, not a nested record.** `state.go` gains `active_product`
+and `active_design` as top-level `,omitempty` siblings of `active_spec`, which
+stays byte-identical on disk. A nested `active.{product,design,spec}` or a
+`kind`-discriminated record was REJECTED: it moves `active_spec` off the top
+level, silently defeating the `run.sh` close-gate `jq -r '.active_spec // "null"'`,
+the raw-`jq` revise preflight, and the four e2e fixture `state.json` literals —
+i.e. it breaks AC1. Lane independence (close-one-preserves-others, all three
+directions) is asserted at the serialization layer; the single-writer regression
+lock is extended to the new lanes. (2) **AC3 doc-zone is a markdown-scoped
+regression pin, NOT a `prefix()` entry.** `product/`/`design/` `*.md` are
+always-allowed via the pre-existing `ext==".md"` rule; `files_test.go` adds
+POSITIVE rows for the markdown plus NEGATIVE rows proving a SOURCE file under
+those trees stays TDD-gated. Adding `product/`/`design/` to the `prefix()` chain
+was deliberately refused — it would flip the negative rows and reopen the broad
+bypass. (3) **Cross-stage linkage is pull-only and advisory.**
+`spec:new --from product/<id>|design/<id>` (`commands/spec/new.lib.sh`) pulls the
+referent's Why/What and writes a non-empty `informed-by: [<referent>]` key; plain
+`spec:new` writes NO key (byte-shape parity). A missing, deleted, or `closed`
+referent NEVER blocks spec:new — non-fatal note, command proceeds (AC8). A
+`closed` brief is in fact the ideal `--from` source.
+
+Closed-artifact immutability stays **advisory/by-convention** (same treatment
+closed specs get) — NO status-aware PreToolUse guard, explicitly out of scope.
+Four agents added: `pm-author`/`arch-author` (mirror spec-author) and
+`pm-critic`/`arch-critic` (mirror spec-critic — narrow stage-specific self-check,
+not a second quorum).
+
+**Tests:** go test green; bats 77/77; `specs/0022-.../verify.sh` frontmatter
+oracle green. Two credit-gated e2e fixtures (`pm_to_spec_bridge.sh`,
+`arch_close_memory.sh`) are authored as SOURCED functions sharing `run.sh`'s
+`run_claude` (a new convention — credit-gated fixtures can't subshell);
+structural predicates only; `bash -n` clean but full lifecycle pending user e2e.
+
+**Deviations:** ONE `/speccraft:spec:override` (T3) — adding the new state-lane
+struct fields is a brand-new Go symbol whose Write-created sibling test can't be
+observed as a runtime RED, because `applyEdit` in `speccraft-guard/main.go`
+models the `Edit` tool's `new_string` but NOT the `Write` tool's `content`
+(`red_candidates` empty). A real guard limitation → follow-up spec. Two optional
+refactors (T10/T16) skipped; `roadmap.md` deferred (roadmap management out of
+scope). Landed in commit `daaa251` (fast-forward to `main`).
+
 ## 2026-06-18 — Release pipeline self-verifies and auto-tags on version bump; the source-build fallback is no longer silent (spec 0021)
 
 **Spec:** specs/0021-publish-release-binaries-on-version-tag/

@@ -1,7 +1,7 @@
 ---
 id: "0022"
 title: "Optional PM and Architect workflows upstream of specs"
-status: in-progress
+status: closed
 created: 2026-06-20
 authors: [claude]
 packages: []

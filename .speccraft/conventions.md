@@ -133,6 +133,17 @@ When a `claude -p` step's assertion in `tests/e2e/run.sh` is itself worth pinnin
 - **Wire into `run_helper_unit_tests()`.** This runs in BOTH the credit-free `--language-only` path and the full lifecycle path, so the meta-test is a real close gate at zero API cost — the deterministic complement to the credit-gated, nondeterministic `claude -p` step it pins.
 - **Canonical references.** `tests/e2e/contains_adr_assertion_test.sh` (spec 0014, pins the `history.md` ADR-header predicate) and `tests/e2e/revise_noop_assertion_test.sh` (spec 0020, pins the revise no-op `contains_regex` predicate). Both source `lib.sh` and read run.sh inline.
 
+### Credit-gated e2e fixtures are SOURCED into run.sh, not subshelled
+
+Introduced by spec 0022.
+
+The language-fixture pattern above runs each fixture in a hermetic subshell — `( bash "$E2E_DIR/<lang>_cycle.sh" )` — because those fixtures only need `speccraft-guard` and build their own binaries; they never touch `claude`. A fixture that must actually drive `claude -p` (e.g. to exercise a command body end-to-end) CANNOT use that form: `run_claude`, `$LOG_DIR`, and `$CLAUDE_BIN` are defined at body scope in `run.sh` and a `bash <file>` subshell starts a fresh process that does not inherit them.
+
+- **Define a function, source the file, call it in the lifecycle.** Such a fixture carries `#!/usr/bin/env bash` + `set -euo pipefail` and defines ONE entry function (plus any pure helpers) with NO top-level side effects — sourcing it only defines symbols. `run.sh` adds a `source "$E2E_DIR/<fixture>.sh"` near the top (right after `source lib.sh`, so the lib predicates the fixture uses are already defined) and invokes the entry function inside the credit-gated lifecycle path, AFTER `[10/13] spec:close`. It is therefore skipped under `--language-only` (which short-circuits before the lifecycle) — correct, because it needs credits.
+- **Guard the coupling.** The entry function asserts its host contract up front: `command -v run_claude >/dev/null 2>&1 || fail "<fixture> must be sourced by run.sh (run_claude undefined)"`. This turns "ran the fixture standalone by mistake" into a clear message instead of an opaque unbound-variable error.
+- **Reuse the initialized repo; structural predicates only.** The fixture runs in `$TEST_ROOT` (already `init`-ed by the lifecycle), so it doesn't re-pay for `/speccraft:init`. It asserts only STRUCTURAL signals (frontmatter key present/absent, a state lane's `jq` value, a dated-ADR header shape, a file byte-unchanged via `cmp -s`) per the structural-over-content rule — never grep model prose. Pure sub-helpers (e.g. `section_nonempty`, which checks a `## Header` is followed by a non-blank, non-`<placeholder>` line) are unit-checkable without credits.
+- **Canonical references.** `tests/e2e/pm_to_spec_bridge.sh` (spec 0022, AC5 — the `spec:new --from`/`informed-by` bridge) and `tests/e2e/arch_close_memory.sh` (spec 0022, AC4/AC6 — `arch:close` memory-keeper routing + lane independence). Both are sourced at the top of `run.sh` and called as steps `[10b/13]`/`[10c/13]`.
+
 ### Sourceable command helpers: `commands/<group>/<name>.lib.sh` colocation
 
 Introduced by spec 0015.
