@@ -35,7 +35,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-none
+specs/0026-bump-version-1.6.0/
 
 ## Recent decisions (last 3)
 
