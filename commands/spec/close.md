@@ -56,3 +56,19 @@ Steps:
 7. Update `.speccraft/index.md`:
    - "Active spec" section → "none"
    - "Recent decisions" section → last 3 entries from history.md
+
+8. **History-compaction nudge (non-blocking; edits nothing).** After the close is
+   complete, check whether `history.md` has grown past its bound and there is
+   actually something below the recent window:
+   ```bash
+   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
+   source "$CLAUDE_PLUGIN_ROOT/commands/history/compact.lib.sh"
+   HIST="$REPO_ROOT/.speccraft/history.md"
+   COUNT="$(history_parse_entries "$HIST" | grep -c '^## ' || true)"
+   BYTES="$(wc -c < "$HIST" | tr -d ' ')"
+   if [ "$(history_nudge_predicate "$COUNT" "$BYTES" "$HISTORY_WINDOW_N")" = "nudge" ]; then
+     echo "note: history.md has $COUNT entries / $BYTES bytes — consider running /speccraft:history:compact"
+   fi
+   ```
+   This only prints a suggestion. It MUST NOT edit `history.md` or anything else;
+   compaction happens solely via the explicit `/speccraft:history:compact` command.

@@ -37,6 +37,8 @@ source "$E2E_DIR/lib.sh"
 source "$E2E_DIR/pm_to_spec_bridge.sh"
 # shellcheck source=arch_close_memory.sh
 source "$E2E_DIR/arch_close_memory.sh"
+# shellcheck source=history_compact.sh
+source "$E2E_DIR/history_compact.sh"
 
 # ---- flag parse (spec 0008 AC #2) ----
 # `--language-only` skips the entire claude -p driven lifecycle and runs
@@ -378,6 +380,10 @@ pm_to_spec_bridge
 # ---- 10c. arch:close memory-keeper routing + lane independence (spec 0022 AC4/AC6) ----
 echo "==> [10c/13] arch:close → memory-keeper routing (spec 0022 AC4/AC6)"
 arch_close_memory
+
+# ---- 10d. history:compact bounded/reviewable compaction (spec 0024 AC7-AC11) ----
+echo "==> [10d/13] history:compact → bounded, reviewable compaction (spec 0024)"
+history_compact
 
 # ---- 11. Helper unit tests (spec 0014) ----
 # Runs the lib.sh helper assertions first so a helper regression

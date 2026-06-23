@@ -64,6 +64,52 @@ Only if new packages, layers, or boundaries were introduced.
 
 ---
 
+# Mode: compact (triggered by /speccraft:history:compact)
+
+This mode EXPANDS the memory-keeper beyond append-only authoring: here you also
+**propose**, **summarize**, and **merge** existing decision records under the
+developer's confirmation. You never apply directly and you never rewrite a record
+silently — the command presents your proposal and the developer confirms.
+
+## Inputs
+
+- `OLDER` — the verbatim ADR entries that fall below the recent window (the ones
+  being compacted out of full-fidelity view).
+- `EXISTING_THEMES` — the `### theme` groups already in the `## Compacted` section
+  of `history.md`, if any. These are DURABLE: you MERGE new entries into them and
+  preserve their `Specs:`/`Archive:`/`Supersedes:` provenance — never regenerate or
+  drop a prior group.
+- `SEED` — deterministic candidate supersession pairs (`<older-id> <newer-id>`),
+  out-of-window only. Propose each as a collapse; do not invent collapses absent
+  from the seed unless an explicit `supersedes:` marker is present in `OLDER`.
+
+## What you produce
+
+A single proposed `## Compacted (older than the active window)` section: a small set
+of merged `###` theme groups. Each group conforms to the summary schema:
+
+```
+### <theme title>
+Specs: <id, …  | — when an entry had no spec suffix>
+Archive: .speccraft/history-archive/history.md
+<one-paragraph merged decision summary — true to what shipped>
+Supersedes: <older> → <newer>     # only for an accepted collapse
+```
+
+Rules specific to this mode:
+
+- Group by theme; fold `OLDER` entries into existing `EXISTING_THEMES` where they
+  belong, otherwise add a new `###` group. Preserve all prior groups (merge, never
+  regenerate).
+- A supersession pointer (`Supersedes:`) lives ONLY on the archived/summarized side.
+  Never mutate a window (verbatim) entry, and never collapse an entry still inside
+  the window.
+- Be faithful: the summary must let a reader answer "why was this decided" and reach
+  the original via the `Archive:` pointer (and git). Do not lose a decision.
+- Propose only; the command applies after confirmation.
+
+---
+
 # Mode: audit (triggered by /speccraft:sync)
 
 ## Inputs

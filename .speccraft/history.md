@@ -2,6 +2,55 @@
 
 Append-only. Newest first.
 
+## 2026-06-23 — Bounded, reviewable history.md compaction (spec 0024)
+
+**Spec:** specs/0024-history-compaction/
+**Decision:** Make `.speccraft/history.md` bounded instead of unbounded
+append-only (it had reached 22 entries / ~60KB, bloating the context the
+`speccraft-context` skill loads). Add an explicit, confirm-gated
+`/speccraft:history:compact`: keep the newest N entries (default 10) verbatim,
+fold everything older into a merged thematic `## Compacted` section, and move the
+originals VERBATIM into a new append-only `.speccraft/history-archive/` folder —
+double provenance (archive file + git), never a deletion. A non-blocking nudge at
+`spec:close` suggests it once the file is past bound. Compaction is the ONLY thing
+that rewrites history.md and it never rewrites without confirmation.
+
+Three design pins came out of two review rounds (codex + claude-p). (1) The
+window is POSITIONAL — first N by `## YYYY-MM-DD` date header in file order, NOT a
+date sort (the live file is genuinely not date-ordered) and NOT keyed on the
+`(spec NNNN)` suffix (the real corpus has suffix-less and plural `(specs 0002,
+0003)` entries, so provenance is OPTIONAL and list-valued). (2) Everything is
+CLOCK-FREE: nudge by entry-count/byte-size (count>N AND (count>15 OR >40KB) — the
+count>N arm kills false alarms when nothing is compactable), and a fixed-path
+append-only archive (no date-stamped filenames → no same-day collisions, byte-match
+dedup). (3) Supersession collapse is restricted to OUT-OF-WINDOW entries with the
+pointer on the archived/summarized side — never mutating a byte-identical window
+entry — which resolves the AC2/AC5 contradiction the first review caught.
+
+Implemented per the spec's two-tier AC split (the spec 0022 precedent): a pure-bash
+`commands/history/compact.lib.sh` + `tests/hooks/history-compact.bats` (19 tests)
+for the deterministic tier (parse/window/provenance/archive/dedup/nudge/themes/
+seed), the model-behavior tier in a SOURCED credit-gated `tests/e2e/history_compact.sh`
+(structural predicates only), and a `verify.sh` grep oracle for the doc contracts —
+including the load-bearing paired invariant that `history-archive/` is NEVER added
+to the context-skill load list (so archiving can't silently re-bloat context).
+`memory-keeper` is REUSED (no new store): it gains a documented `# Mode: compact`
+that expands it from append-only to propose/summarize/merge under confirmation.
+
+A deliberate enhancement beyond the reviewed spec: `history_supersession_seed`
+pins the DETERMINISTIC core of the supersession heuristic at the bats layer
+(explicit `supersedes:` markers + in-body `spec NNNN` xrefs, out-of-window only),
+leaving only the thematic grouping/prose to the model — answering codex's "give the
+proposal a deterministic test surface" ask. New convention codified: expose the
+deterministic seed of a model heuristic at the cheap layer; let the model do only
+the fuzzy part.
+
+**Deviations:** no `/speccraft:spec:override` needed (all .sh/.md/.bats/e2e —
+ungated by speccraft-guard); the e2e fixture is credit-gated, verified
+deterministically (bash -n + seed-corpus-vs-lib cross-check), full lifecycle
+pending user e2e; one optional refactor (T10) skipped. Tests: bats 96/96, go test
+untouched-green, verify.sh 10/10.
+
 ## 2026-06-22 — Milestone version bump to 1.5.0 (spec 0023)
 
 **Spec:** specs/0023-milestone-version-1.5.0/
