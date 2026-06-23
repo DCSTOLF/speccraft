@@ -1,7 +1,7 @@
 ---
 id: "0026"
 title: "Bump plugin version to 1.6.0"
-status: in-progress
+status: closed
 created: 2026-06-23
 authors: [claude]
 packages: []

@@ -2,6 +2,23 @@
 
 Append-only. Newest first.
 
+## 2026-06-23 — Version bump to 1.6.0 (spec 0026)
+
+**Spec:** specs/0026-bump-version-1.6.0/
+**Decision:** Coordinated `1.5.0` → `1.6.0` bump across all five live version
+surfaces — the two manifests (`plugin.json`, `marketplace.json`) and the three
+binary `const version` declarations (`speccraft-{state,guard,drift}`) — same
+hardcoded, lockstep mechanism as specs 0019/0023; only the value moves. Each const
+pinned RED→GREEN by its sibling `version_test.go` (asserts the NEW value, fails
+pre-edit); manifests are plain JSON (unguarded). Marks the **README/docs
+restructure** release: README slimmed to a hero + four differentiators, detail split
+into `INSTALL.md`, `docs/commands.md`, `docs/architecture.md`, `CONTRIBUTING.md`, and
+docs paths added to the CI `paths-ignore` lists. Pushing the bumped `plugin.json` to
+`main` triggers the `auto-tag` CI job (spec 0021) → `v1.6.0` → `release.yml`. Done as
+its own in-progress spec because production edits (the Go consts) require an active
+spec — the guard's active-spec gate fires before anything else. No deviations beyond
+skipping the plan/implement loop for a mechanical bump.
+
 ## 2026-06-23 — Closed specs consolidate into current domain specs at close (spec 0025)
 
 **Spec:** specs/0025-spec-consolidation-on-close/
