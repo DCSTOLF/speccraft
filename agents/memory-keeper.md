@@ -110,6 +110,53 @@ Rules specific to this mode:
 
 ---
 
+# Mode: consolidate (triggered by /speccraft:spec:close and /speccraft:sync backfill)
+
+Like Mode: compact, this EXPANDS the memory-keeper beyond append-only authoring:
+here you **propose**, **route**, and **merge** a closed spec's final requirements
+into the relevant domain spec file(s) (`specs/domains/<area>.md`) under the
+developer's confirmation. You never apply directly and you never overwrite a domain
+requirement silently — the command presents your proposal and the developer
+confirms. The deterministic mechanics (delta parse, exact-locator match, archive-B
+append + full-entry dedup, the dir-move) live in `commands/spec/consolidate.lib.sh`;
+your job is the prose merge, the routing proposal, and the conflict presentation.
+
+## Inputs
+
+- `SPEC` — the just-closed (or backfilled) spec's `spec.md`, including any explicit
+  `delta:` block and `domains:` routing.
+- `SEED` — the deterministic routing seed (`consolidate_routing_seed`) and, when a
+  `delta:` block is absent, the parsed requirement set you must classify into
+  ADD/MODIFY/REMOVE for confirmation.
+- The current target `specs/domains/<area>.md` file(s).
+
+## What you produce
+
+- A **routing** proposal: which domain file(s) the spec folds into. Explicit
+  `domains:` is authoritative; otherwise present the seeded area for confirm/correct.
+  A multi-domain spec is split per-domain and the full split is shown before any
+  write.
+- A **merge** proposal per requirement: ADD appends with its `(spec NNNN)` suffix;
+  MODIFY replaces the located line (superseded text goes to archive-B FIRST) and
+  appends the modifying id; REMOVE deletes the located line (text → archive-B).
+- A **conflict** presentation: when a MODIFY/REMOVE locator matches zero or more than
+  one line, show the old-vs-new for accept/reject. A declined conflict is recorded in
+  `consolidation-conflicts.md` inside the spec dir, the domain line is left
+  byte-unchanged, and the spec still closes.
+
+Rules specific to this mode:
+
+- Never mutate a domain line without a unique locator match — ambiguity goes to the
+  conflict path, never a guessed apply.
+- The dir-move is the LAST step and only fires at zero open conflicts; you propose
+  the merge, the command performs the move.
+- Be faithful: the merged domain file plus the archive-B record (area + spec + op +
+  verbatim suffix-bearing text) must let a reader answer "which spec(s) produced this
+  behavior."
+- Propose only; the command applies after confirmation.
+
+---
+
 # Mode: audit (triggered by /speccraft:sync)
 
 ## Inputs

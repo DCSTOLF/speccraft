@@ -19,6 +19,14 @@ you when and how to pull deeper files.
   when discussing layering, dependencies, or new modules.
 - `.speccraft/history.md` — when about to make a decision that resembles a
   prior one; when investigating "why is this like this".
+- `specs/domains/<area>.md` — the consolidated, current statement of an area's
+  behavior (spec 0025). Pull the relevant area file LAZILY, only when the task
+  touches that area — exactly like `architecture.md`/`conventions.md`, to read
+  "what does this area do today" in one place instead of diffing closed spec dirs.
+  NEVER load either `.archive/` provenance tree (the moved closed-spec directories
+  and the superseded requirement text) — loading them would silently re-bloat
+  context, defeating consolidation. Only the live `specs/domains/<area>.md` files
+  are loadable.
 
 ## Codebase-wide structural queries
 

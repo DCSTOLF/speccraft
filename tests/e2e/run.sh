@@ -39,6 +39,8 @@ source "$E2E_DIR/pm_to_spec_bridge.sh"
 source "$E2E_DIR/arch_close_memory.sh"
 # shellcheck source=history_compact.sh
 source "$E2E_DIR/history_compact.sh"
+# shellcheck source=spec_consolidate.sh
+source "$E2E_DIR/spec_consolidate.sh"
 
 # ---- flag parse (spec 0008 AC #2) ----
 # `--language-only` skips the entire claude -p driven lifecycle and runs
@@ -384,6 +386,10 @@ arch_close_memory
 # ---- 10d. history:compact bounded/reviewable compaction (spec 0024 AC7-AC11) ----
 echo "==> [10d/13] history:compact → bounded, reviewable compaction (spec 0024)"
 history_compact
+
+# ---- 10e. spec consolidation into domain specs (spec 0025 AC7-AC12) ----
+echo "==> [10e/13] spec:consolidate → fold closed spec into domain spec (spec 0025)"
+spec_consolidate
 
 # ---- 11. Helper unit tests (spec 0014) ----
 # Runs the lib.sh helper assertions first so a helper regression

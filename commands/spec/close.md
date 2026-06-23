@@ -72,3 +72,42 @@ Steps:
    ```
    This only prints a suggestion. It MUST NOT edit `history.md` or anything else;
    compaction happens solely via the explicit `/speccraft:history:compact` command.
+
+9. **Inline spec consolidation (confirm-gated; never gates close).** After the
+   close is otherwise complete (state/index/history already updated), fold the
+   just-closed spec's final requirements into its domain file(s). This step is
+   confirm-gated and additive — if the developer declines, or any conflict is left
+   open, **the spec still closes** and NOTHING is moved (close still completes
+   regardless). Source the helper and reuse `memory-keeper` (Mode: consolidate) for
+   the prose merge + propose/confirm:
+
+   ```bash
+   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
+   source "$CLAUDE_PLUGIN_ROOT/commands/spec/consolidate.lib.sh"
+   SPEC_DIR="$REPO_ROOT/specs/$ACTIVE"
+   ```
+
+   a. **Route.** `consolidate_routing_seed "$SPEC_DIR/spec.md"` yields the target
+      area(s). An explicit frontmatter `domains:` is authoritative; otherwise the
+      seeded area is PRESENTED for the developer to confirm/correct (never silent).
+      A multi-domain spec is split per-domain and the full split is shown before any
+      write.
+   b. **Parse the delta.** `consolidate_parse_delta "$SPEC_DIR/spec.md"` yields the
+      ordered ADD/MODIFY/REMOVE records (each MODIFY/REMOVE carrying a verbatim
+      locator). With no `delta:` block, the `memory-keeper` proposes a
+      classification for confirmation.
+   c. **Present the full plan and CONFIRM.** Show routing + split + the merge +
+      every entry that would be archived. Write/move NOTHING until the developer
+      confirms. On decline, the domain files and `specs/` layout are byte-identical
+      to before.
+   d. **Apply (on confirm).** Per entry, `consolidate_apply_delta <domain.md>
+      <archive.md> <area> <spec-id> <op> <locator> <text>` (archive-B append FIRST,
+      then the domain mutation). A return of `2` is a conflict: record it with
+      `consolidate_record_conflict "$SPEC_DIR" "<old-vs-new>"` and continue — the
+      spec still closes.
+   e. **Commit move LAST, only at zero conflicts.** When every entry is applied and
+      no `consolidation-conflicts.md` remains, `consolidate_archive_dir_move
+      "$SPEC_DIR" "$REPO_ROOT/specs/.archive"` relocates the closed dir out of the
+      live corpus (frontmatter `status` stays `closed`; location signals
+      "consolidated"). While any conflict file exists the move is refused and the
+      spec stays a live silo under `specs/` for a later `/speccraft:sync` backfill.

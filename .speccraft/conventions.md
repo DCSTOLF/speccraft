@@ -169,6 +169,31 @@ When a slash command under `commands/<group>/<name>.md` needs Bash logic complex
 
 Sibling to the existing E2E language-fixture pattern and the verify.sh grep oracle: language fixtures exercise `speccraft-guard` against representative project layouts, `verify.sh` exercises documentation specs, and `commands/<group>/<name>.lib.sh` + bats exercises command-mechanism shell.
 
+#### A command lib MAY source another command's lib to reuse a parser
+
+Introduced by spec 0025.
+
+A `commands/<group>/<name>.lib.sh` helper sourced by more than one command (or by a
+command plus its bats suite) MAY itself `source` ANOTHER command's `.lib.sh` to reuse
+a pure parser/helper rather than duplicating it. This is an explicit, deliberate
+cross-spec coupling — not accidental import — and carries two obligations:
+
+- **The reused symbols must be pure** (the colocation pure-function discipline above),
+  so sourcing the upstream lib is a no-op beyond defining functions. The downstream
+  lib computes the upstream path relative to `${BASH_SOURCE[0]}` (e.g.
+  `source "$_X_LIB_DIR/../<group>/<other>.lib.sh"`), never an absolute or CWD-relative
+  path.
+- **A bats test sources BOTH libs and asserts the shared parser's output**, so the
+  coupling is pinned: if the upstream parser's contract changes, the downstream test
+  fails rather than the reuse drifting silently.
+
+Canonical reference: `commands/spec/consolidate.lib.sh` (spec 0025) sources
+`commands/history/compact.lib.sh` (spec 0024) to reuse `history_parse_entries` /
+`history_provenance_ids` for the backfill replay chronology — a single source of
+`.speccraft/history.md` parsing rather than two. Pinned by `tests/hooks/spec-consolidate.bats`.
+Prefer this reuse over copying a parser whenever the upstream helper is already pure
+and the two libs share a genuine data contract (here: history.md entry shape).
+
 ### Grep-assertion oracle for doc-only specs
 
 Introduced by spec 0011.

@@ -2,6 +2,87 @@
 
 Append-only. Newest first.
 
+## 2026-06-23 — Closed specs consolidate into current domain specs at close (spec 0025)
+
+**Spec:** specs/0025-spec-consolidation-on-close/
+**Decision:** Closing a spec now folds its final requirements into a consolidated,
+*current* domain spec at `specs/domains/<area>.md` instead of leaving N permanent
+per-feature directories the reader must diff to learn "what does this area do now."
+The domain set is open (a domain exists iff its file exists; no enum, no registry).
+Merge vocabulary is ADD/MODIFY/REMOVE per requirement, modeled on delta-spec; an
+explicit frontmatter `domains:`/`delta:` is authoritative, otherwise a path/title
+heuristic SEEDS a proposed routing + classification the developer confirms — routing
+is never silent. Consolidation runs INLINE at `/speccraft:spec:close` (step 9),
+confirm-gated, and NEVER blocks close: decline or an open conflict still completes
+close. `/speccraft:sync` (step 4) gains a confirm-gated retroactive backfill loop.
+This is the same unbounded-growth / signal-decay fix spec 0024 made for `history.md`,
+applied to the spec corpus itself.
+
+Several load-bearing pins came out of two review rounds (codex + claude-p). (1) Every
+MODIFY/REMOVE carries a REQUIRED verbatim target locator, matched by exact normalized
+comparison with the trailing `(spec NNNN)` provenance suffix STRIPPED (provenance is
+list-valued, not identity — same fact 0024 hit); a 0-or->1 match falls through to the
+non-blocking conflict path, never applied to a guessed line, and a locator-less
+MODIFY/REMOVE is a malformed-block rejection. This exact-locator match is the
+DETERMINISTIC SEED of the model heuristic (the 0024 convention), so only genuine
+ambiguity ever reaches the model. (2) TWO clock-free archives: the closed spec
+DIRECTORY is MOVED wholesale to `specs/.archive/NNNN-slug/` as the LAST step, only at
+ZERO open conflicts, with frontmatter `status` left `closed` — LOCATION (not a new
+`status: consolidated` value) signals "already consolidated," and relocation is not
+content-modification so the closed-spec-immutability guardrail is not violated;
+superseded requirement TEXT is appended to `specs/domains/.archive/<area>.md` with a
+self-describing header (area + spec + op) under FULL-ENTRY byte-dedup (the analogue of
+0024's `history-archive/`). (3) The per-delta write order is PINNED archive-B append
+FIRST → domain mutation → dir-move LAST, so a crash between the two writes can't lose
+the suffix-bearing preimage; both crash windows are bats-pinned (CF-1, codex). (4) The
+open-conflict sink is `consolidation-conflicts.md` inside the spec dir — not
+`state.json` (would entangle the single-writer rule) and not the domain file (would
+break byte-unchanged); it is DELETED on resolution and its absence is exactly the
+zero-conflict precondition the dir-move gates on (CF-2, claude-p). (5) Backfill's
+candidate predicate is location-based + clock-free (`status==closed` AND under
+`specs/` AND no `consolidation-skip` marker), subsuming pre-feature and
+declined-at-close specs; replay order is `.speccraft/history.md` chronology
+(oldest-first), NOT ascending spec ID — spec ID is not closure order (history.md
+proves it: spec 0001 dated 2026-05-28 vs 0002/0003 dated 2026-05-15). A spec whose
+history entry was compacted out by spec 0024 falls to a `created:`-then-ID fallback
+bucket, which is the dominant path for the oldest specs; it is presentation ordering
+only and fails safe via the confirm-gated conflict path (CF-3 + the developer's
+backfill-predicate reconciliation, claude-p).
+
+Implemented per the spec 0022 two-tier AC split: a pure-bash
+`commands/spec/consolidate.lib.sh` (the spec-0015 colocation convention) +
+`tests/hooks/spec-consolidate.bats` (31 tests, all green) for the deterministic tier
+(delta parse/locator-match, routing-seed key, dir-move-last + full-entry dedup, blast
+radius, structural invariants, the two crash-window re-run idempotence cases); the
+model-behavior tier (AC7–AC12) in a SOURCED credit-gated `tests/e2e/spec_consolidate.sh`
+(`[10e/13]`, structural predicates only); and a `verify.sh` grep oracle for the doc
+contracts — including the paired invariant that neither `specs/.archive/` nor
+`specs/domains/.archive/` is ever added to the context-skill load list. The helper is
+sourced by both `close.md` and `sync.md` and itself `source`s
+`commands/history/compact.lib.sh` to REUSE spec 0024's
+`history_parse_entries`/`history_provenance_ids` for the backfill chronology rather
+than maintaining a second parser — an explicit cross-spec coupling pinned by a bats
+test that sources both libs. `memory-keeper` is REUSED (no new agent/store): it gains
+a documented `# Mode: consolidate` expanding it from append-only to propose/merge
+domain requirements under confirmation, mirroring 0024's `# Mode: compact`.
+
+A deliberate divergence from spec 0024: consolidation is INLINE at close, not a
+separate `/speccraft:spec:consolidate` command. The divergence is trigger-driven —
+consolidation has a natural close-time trigger (requirements are final exactly at
+close), whereas 0024's compaction is periodic size-keyed maintenance with no such
+trigger, so a separate explicit command was right there. New convention codified: a
+shared deterministic helper sourced by more than one command may itself `source`
+another command's `.lib.sh` to reuse a parser rather than duplicating it, pinned by a
+bats test that sources both libs.
+
+**Deviations:** the MODIFY new-line text is written AUTHOR-AUTHORITATIVE — the helper
+does NOT mechanically re-merge the old provenance ids into the new suffix; the author
+writes the merged suffix in the delta text (AC5's suffix-grammar invariant still
+holds; a mechanical suffix-merge is a follow-up). No `/speccraft:spec:override` needed
+(all `.sh`/`.md`/`.bats`/e2e — ungated by speccraft-guard; no Go binary added). The
+e2e model tier is credit-gated, verified deterministically meanwhile (`bash -n` + 31
+bats + `verify.sh`); full lifecycle run pending a real credit-gated CI run.
+
 ## 2026-06-23 — Bounded, reviewable history.md compaction (spec 0024)
 
 **Spec:** specs/0024-history-compaction/
