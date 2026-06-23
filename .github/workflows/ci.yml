@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths-ignore:
       - 'README.md'
+      - 'INSTALL.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/**'
       - 'KICKOFF.md'
       - 'LICENSE'
       - 'speccraft-technical-review.md'
@@ -15,6 +18,9 @@ on:
     branches: [main]
     paths-ignore:
       - 'README.md'
+      - 'INSTALL.md'
+      - 'CONTRIBUTING.md'
+      - 'docs/**'
       - 'KICKOFF.md'
       - 'LICENSE'
       - 'speccraft-technical-review.md'

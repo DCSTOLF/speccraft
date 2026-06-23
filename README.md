@@ -1,57 +1,13 @@
-![speccraft logo](images/speccraft-logo-banner.png) 
+![speccraft logo](images/speccraft-logo-banner.png)
 
-> Spec-first, test-driven development for [Claude Code](https://claude.com/code).
-> Versioned intent. Auto-injected memory. Cross-model review. Hook-enforced TDD.
+> **Spec-first, test-driven development for [Claude Code](https://claude.com/code) — actually enforced.**
 
-speccraft is a Claude Code plugin that turns code changes into deliberate, reviewable, test-driven workflows. Every change starts from a versioned spec; every implementation starts from a failing test; every repo carries a small, always-injected memory of guardrails, architecture, and conventions. Heavy work and second-opinion reviews can be offloaded to auxiliary CLI agents like Codex and OpenCode.
-
-**v1 status:** Go, Python, and Rust repositories supported. Multi-repo workspaces coming.
-
----
-
-## Table of contents
-
-- [Why speccraft](#why-speccraft)
-- [Install](#install)
-- [Quick start](#quick-start)
-- [What it adds to your repo](#what-it-adds-to-your-repo)
-- [The workflow](#the-workflow)
-- [Commands](#commands)
-- [Auxiliary agents](#auxiliary-agents)
-- [Enforcing conventions](#enforcing-conventions)
-- [Recommended companions](#recommended-companions)
-- [TDD enforcement](#tdd-enforcement-how-it-works)
-- [Rust](#rust)
-- [CI](#ci)
-- [Configuration](#configuration)
-- [Requirements](#requirements)
-- [Troubleshooting](#troubleshooting)
-- [FAQ](#faq)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
-
----
-
-## Why speccraft
-
-Most Claude Code sessions look like this: prompt → code change → maybe tests → next prompt. Intent lives in your head, drifts across sessions, and gets re-derived from grep every time. Conventions are enforced by hope. Reviews are whatever Claude decides to flag.
-
-speccraft fixes three specific problems:
-
-- **Intent is ephemeral.** Specs live alongside code under `specs/NNNN-slug/`, version-controlled, written *before* implementation, and reviewed by a second model before code is written.
-- **Project memory is too long for every prompt.** A small `.speccraft/index.md` is auto-injected at session start; deeper files (guardrails, architecture, conventions, history) load on demand.
-- **Reviews are single-model.** `/speccraft:spec:review` and `/speccraft:spec:review-code` route to Codex, OpenCode, or any CLI agent you configure, in parallel, and synthesize the verdicts.
-
-It also enforces TDD with a hook, not a prompt: edits to production files are blocked unless a covering test has been written first. The exact rule is language-specific — Go and Python use a sibling-test heuristic, Rust uses a delta-based static classifier plus runner-as-oracle. See [TDD enforcement](#tdd-enforcement-how-it-works) for details.
-
-speccraft is **deliberately small in scope**. For codebase-wide structural queries (call graphs, symbol search) and tool-call token compression, it composes with existing tools — see [Recommended companions](#recommended-companions).
-
----
-
-## Install
-
-In a Claude Code session:
+Other spec-driven tools help you *write* a spec. speccraft makes the discipline
+**non-optional**: a hook blocks production edits until a failing test exists, specs and
+diffs are reviewed by *other* models before code lands, an autonomous loop runs the
+TDD cycle and only stops when a real decision is needed — and project memory stays
+bounded and current as the codebase grows, instead of degrading the model the bigger it
+gets.
 
 ```
 /plugin marketplace add dcstolf/speccraft
@@ -59,205 +15,61 @@ In a Claude Code session:
 /reload-plugins
 ```
 
-Then in your project root:
+Then, in your project root:
 
 ```
 /speccraft:init
-```
-
-This creates `.speccraft/` and `specs/` in the repo and walks you through personalizing the memory files.
-
-> **Helper binaries are downloaded automatically** the first time speccraft runs in a session — about 5 MB, cached forever, version-stamped. Pure Go, no C toolchain. See [Requirements](#requirements).
-
----
-
-## Quick start
-
-In a Go repo, after `/speccraft:init`:
-
-```
 /speccraft:spec:new "Add a /healthz endpoint"
 ```
 
-speccraft interviews you Socratically — *why*, *what*, *acceptance criteria* — and writes `specs/0001-add-a-healthz-endpoint/spec.md`.
-
-```
-/speccraft:spec:review
-```
-
-Codex and OpenCode (whichever you've configured) review the spec in parallel, flag ambiguity, missing edge cases, and untestable criteria. The synthesis lands in `review.md`.
-
-```
-/speccraft:spec:plan
-```
-
-A test-first plan: each step is RED → GREEN → REFACTOR with concrete file paths and test function names.
-
-```
-/speccraft:spec:implement
-```
-
-speccraft executes the plan. The TDD hook ensures you write failing tests before production code. Tasks can be delegated:
-
-```
-/speccraft:spec:delegate codex "Generate table-driven tests for internal/health/handler.go"
-```
-
-When done:
-
-```
-/speccraft:spec:close
-```
-
-A changelog is written, the `memory-keeper` agent proposes additions to `history.md` and `conventions.md`, you approve.
-
-That's the loop.
+That's "it works." The full install picture — helper binaries, requirements,
+configuration — is in **[INSTALL.md](./INSTALL.md)**.
 
 ---
 
-## What it adds to your repo
+## Why speccraft
 
-```
-.speccraft/
-├── index.md          # 1-page summary, auto-injected on every session start
-├── guardrails.md     # hard rules, optionally enforced by hooks
-├── architecture.md   # current shape, layering, key decisions
-├── conventions.md    # style and patterns, optionally enforced
-├── history.md        # append-only ADR log
-├── agents.toml       # auxiliary agent registry
-└── state.json        # runtime state (gitignored)
+### 1. Hook-enforced TDD — the edit is *blocked*, not nudged
 
-specs/
-└── 0001-some-feature/
-    ├── spec.md       # WHAT, WHY, acceptance criteria
-    ├── plan.md       # test-first plan
-    ├── review.md     # cross-model critique
-    ├── tasks.md      # checklist with status
-    └── changelog.md  # what shipped vs what was specced
-```
+A `PreToolUse` hook intercepts every `Edit`/`Write` and blocks edits to production
+files until a covering test has been written **and observed failing** in the session.
+The rule is language-aware: Go and Python use a sibling-test heuristic,
+TypeScript/JavaScript use a sibling + runner check, and Rust uses a delta-based static
+classifier plus the test runner as an oracle (because Rust's unit tests live inline).
+No competitor blocks the edit — they suggest. Tests, docs, and `scratch/` are always
+free, and `/speccraft:spec:override "<reason>"` gives a logged one-shot bypass.
 
-`.speccraft/state.json` is gitignored. Everything else is part of your repo and intended to be committed — that's the point. Your team's intent, conventions, and history live with the code.
+### 2. Cross-model review — catch what one model can't
 
----
+`/speccraft:spec:review` and `/speccraft:spec:review-code` route a spec or a diff in
+**parallel** to the external CLI agents you've configured, then synthesize the
+verdicts into `review.md`. The default registry ships Codex and OpenCode (plus
+`claude -p`); the registry is just CLI commands, so you can add any other agent. A
+single-model tool can't flag what its own model is blind to. (Review depends on those
+agents being installed and authenticated — speccraft is the dispatcher, not the
+runtime.)
 
-## The workflow
+### 3. Autonomous implementation loop — stops only when *you* matter
 
-A complete spec lifecycle, illustrated:
+`/speccraft:spec:implement` runs the RED→GREEN→REFACTOR cycle on its own, from a
+reviewed spec and plan, delegating discrete tasks to aux agents where useful. It
+surfaces a blocker only when a developer decision is genuinely required — not at every
+step.
 
-### 1. New spec
+### 4. Context-bloat resilience — memory that stays bounded *and* true
 
-```
-> /speccraft:spec:new "Rate limit public API"
+The common failure of spec-first tools is that performance degrades as the project
+grows: specs pile up, memory bloats, stale context misleads the model. speccraft is
+built against this. Closed specs **consolidate** into current `specs/domains/<area>.md`
+files instead of accumulating as per-feature silos; `history.md` is **compacted**
+(newest entries kept verbatim, older ones folded into a thematic summary, originals
+archived) instead of growing append-only; and only a one-page `index.md` is always
+injected — guardrails, architecture, conventions, and history load on demand. Memory
+stays bounded, current, and enforced as the codebase scales.
 
-I'll help you draft this spec. A few questions first.
-
-What problem are you trying to solve? Who's affected?
-> Public API gets hammered by scrapers; 99p latency is degrading.
-
-What does success look like, concretely?
-> Anonymous clients capped at 60 req/min. Authenticated at 600. 429 with
-> Retry-After when over.
-
-What's explicitly out of scope?
-> Distributed rate limiting. Per-customer custom limits.
-
-Acceptance criteria — observable behaviors only:
-1. Anonymous client at 100 req/min sees ~60 successes, ~40 429s.
-2. Authenticated at 700 req/min sees ~600 successes, ~100 429s.
-3. X-RateLimit-* headers on all 200 and 429 responses.
-
-Open questions?
-> Should limiter state survive a server restart?
-[noted as open question]
-
-Drafting spec.md... done.
-Active spec: 0042-rate-limit-public-api
-Next: /speccraft:spec:review (recommended) or /speccraft:spec:plan
-```
-
-### 2. Cross-model review
-
-```
-> /speccraft:spec:review
-
-Routing to: codex, opencode (parallel)
-
-[codex] verdict: changes-requested
-  Concern: AC4 implies persistence; spec doesn't say what happens to
-  in-flight tokens on restart. Affects test design.
-
-[opencode] verdict: approve-with-comments
-  Suggestion: out-of-scope item "cost-based limiting" might re-emerge;
-  consider a minimal hook in the bucket interface.
-
-Synthesizing...
-Wrote review.md. Status: changes-requested.
-Update spec.md and re-run /speccraft:spec:review.
-```
-
-### 3. Plan
-
-```
-> /speccraft:spec:plan
-
-Scanning packages: internal/http, internal/middleware
-- Existing test files: internal/http/router_test.go, internal/middleware/auth_test.go
-- Probable test files to extend: internal/http/router_test.go
-
-Drafting plan.md with 7 RED→GREEN→REFACTOR steps...
-Wrote plan.md and tasks.md.
-Status: planned.
-```
-
-### 4. Implement (TDD-enforced)
-
-```
-> /speccraft:spec:implement
-
-T1 — Bucket tests (RED)
-  Edit internal/middleware/ratelimit/bucket_test.go ✓
-  go test ./... → FAIL (expected)
-
-T2 — Bucket impl (GREEN)
-  > Edit internal/middleware/ratelimit/bucket.go
-
-  speccraft: BLOCKED. TDD invariant.
-  bucket.go is a production file. Tests covering it must be edited
-  this session before this edit is allowed. Suggested test files:
-    - internal/middleware/ratelimit/bucket_test.go (already edited ✓)
-
-  [retrying — already edited, allowed]
-  Edit internal/middleware/ratelimit/bucket.go ✓
-  go test ./... → PASS
-```
-
-The hook didn't actually block the second attempt — the test *was* already edited in T1, so by T2 the invariant is satisfied. The block message above is illustrative of what would happen if you skipped T1.
-
-### 5. Close
-
-```
-> /speccraft:spec:close
-
-Reading diff from started_at_sha to HEAD...
-All tasks complete (7/7).
-
-memory-keeper proposes:
-
-[1] history.md ADR
-    2026-05-08 — Rate limiting on public API
-    Decision: token bucket, Redis-backed, fail-open.
-    [Approve / Edit / Reject]
-    > approve
-
-[2] conventions.md addition
-    "All HTTP middleware lives under internal/middleware/<name>/."
-    Rationale: enforced naturally by 0042; codifying.
-    [Approve / Edit / Reject]
-    > approve
-
-Wrote changelog.md, updated history.md, conventions.md.
-Active spec cleared.
-```
+**Also worth knowing:** `.speccraft/` memory is auto-injected (a one-page always-on
+index, deeper files on demand), and `enforce:` regex guardrails in `guardrails.md` /
+`conventions.md` fire at edit time. See [docs/architecture.md](./docs/architecture.md).
 
 ---
 
@@ -266,434 +78,118 @@ Active spec cleared.
 | Command | Purpose |
 |---|---|
 | `/speccraft:init` | Bootstrap `.speccraft/` and `specs/` in this repo. |
-| `/speccraft:sync` | Drift scan + memory-keeper audit. Reconcile drift. |
 | `/speccraft:spec:new "<title>"` | Start a new spec via Socratic interview. |
 | `/speccraft:spec:review` | Cross-model review of the active spec. |
-| `/speccraft:spec:plan` | Generate a test-first plan from a reviewed spec. |
-| `/speccraft:spec:implement` | Execute the active plan TDD-style. |
-| `/speccraft:spec:delegate <agent> "<task>"` | Hand a discrete task to an aux agent. |
-| `/speccraft:spec:review-code [--base <ref>]` | Cross-model review of the current diff. |
-| `/speccraft:spec:close` | Write changelog, propose memory updates, close the spec. |
-| `/speccraft:spec:override "<reason>"` | One-time bypass of the TDD invariant. Logged. |
+| `/speccraft:spec:plan` | Generate a test-first (RED→GREEN→REFACTOR) plan. |
+| `/speccraft:spec:implement` | Run the TDD implementation loop. |
+| `/speccraft:spec:review-code` | Cross-model review of the current diff. |
+| `/speccraft:spec:delegate <agent> "<task>"` | Hand a task to an aux agent. |
+| `/speccraft:spec:close` | Changelog, memory updates, consolidate, close. |
+| `/speccraft:sync` | Drift scan + memory audit. |
 
-Each command takes optional flags; run with `--help` for details.
-
----
-
-## Auxiliary agents
-
-speccraft talks to external CLI coding agents through a small registry at `.speccraft/agents.toml`:
-
-```toml
-[defaults]
-review_quorum = 1
-review_timeout_s = 600
-
-[[agents]]
-name = "codex"
-mode = "cli"
-cmd = ["codex", "exec", "--full-auto"]
-input = "stdin"
-strengths = ["refactoring", "review"]
-
-[[agents]]
-name = "opencode"
-mode = "cli"
-cmd = ["opencode", "run"]
-input = "argv"
-strengths = ["analysis", "planning"]
-
-[[agents]]
-name = "claude-p"
-mode = "cli"
-cmd = ["claude", "-p"]
-input = "argv"
-strengths = ["general"]
-```
-
-Each agent needs to be installed and authenticated separately — speccraft is the dispatcher, not the runtime. See:
-
-- Codex: https://developers.openai.com/codex/cli
-- OpenCode: https://opencode.ai/docs
-- Claude Code (`claude -p`): the same CLI you're running speccraft in
-
-**ACP support (opt-in).** If you have [`acpx`](https://github.com/openclaw/acpx) installed, set `mode = "acp"` and `acp_agent = "codex"` (or any ACP-compatible agent name) to use a single ACP backend instead of direct shellouts.
-
-```toml
-[[agents]]
-name = "codex-acp"
-mode = "acp"
-acp_agent = "codex"
-```
-
-Agents can be enabled/disabled per call:
-
-```
-/speccraft:spec:review --agents codex,opencode
-/speccraft:spec:delegate claude-p "Refactor internal/foo to use slog"
-```
+Optional PM/Architect lanes (`/speccraft:pm:*`, `/speccraft:arch:*`) sit upstream of
+specs, and `/speccraft:history:compact` keeps history bounded. **Full reference,
+including the illustrated lifecycle, aux-agent setup, and convention enforcement:
+[docs/commands.md](./docs/commands.md).**
 
 ---
 
-## Enforcing conventions
+## How speccraft compares
 
-Rules in `guardrails.md` and `conventions.md` can be tagged with an `enforce:` directive. When a `PostToolUse` hook fires after an edit, speccraft scans only files in scope for tagged rules and surfaces violations.
+Spec-driven tools sit on a spectrum from *structure* (help me write a good spec) to
+*enforcement* (make the discipline non-optional). speccraft is built around
+enforcement. The others land elsewhere, and specsmith specializes in the upstream
+"idea → spec" step.
 
-### Regex enforcement
+### Capability matrix
 
-```markdown
-## Logging
-- Use `slog` only. No `fmt.Println` outside `cmd/`. <!-- enforce: regex pattern="fmt\\.Print(ln|f)?" scope="!cmd/" -->
-```
+| Capability | speccraft | delta-spec | shipspec | specsmith |
+|---|---|---|---|---|
+| **Type** | Claude Code plugin | Claude Code plugin | Claude Code plugin | Hosted SaaS CLI |
+| **Spec generation from rough ideas** | ✅ Socratic interview | ✅ proposal-driven | ✅ PRD interview | ✅ clarifying chat |
+| **Identifies ambiguity / missing edge cases** | ✅ cross-model review | ⚠️ manual | ✅ PRD agent | ✅ core feature |
+| **Acceptance criteria / Definition of Done** | ✅ | ✅ GWT scenarios | ✅ per-task | ✅ |
+| **Spec formalism** | prose + AC | RFC-2119 + GIVEN/WHEN/THEN | numbered REQ-IDs | structured AC + DoD |
+| **Versioned specs in-repo** | ✅ `specs/NNNN-slug/` | ✅ delta-merged by domain | ✅ per-feature dir | ❌ (specs are output) |
+| **Test-first plan generation** | ✅ RED→GREEN→REFACTOR | ❌ | ✅ task breakdown | ❌ |
+| **TDD enforcement (blocks prod edits)** | ✅ hook-enforced, Go/Python/JS·TS/Rust | ❌ | ❌ | ❌ |
+| **Cross-model / multi-agent review** | ✅ Codex + OpenCode in parallel | ❌ | ⚠️ Claude subagents only | ❌ |
+| **Autonomous iteration loop** | ✅ surfaces a blocker only when a developer decision is required | ❌ | ✅ Ralph loop (retry until verified) | ❌ |
+| **Auto-injected repo memory** | ✅ guardrails / architecture / conventions / history | ⚠️ git history | ⚠️ per-feature docs | ❌ |
+| **Convention enforcement (regex guardrails)** | ✅ `enforce:` directives | ❌ | ❌ | ❌ |
+| **Spec consolidation (merge closed specs → domain files)** | ✅ on close | ✅ delta-merge on archive | ❌ per-feature silos | ❌ |
+| **Memory compaction (bounded history)** | ✅ compacts `history.md` | ⚠️ git is the archive | ⚠️ context deleted per feature | ❌ |
+| **External tracker integration** | ❌ | ❌ | ❌ | ✅ Jira, GitHub |
+| **Runs fully local / offline** | ✅ (one-time binary download) | ✅ pure shell | ✅ | ❌ cloud API required |
+| **Install footprint** | helper binaries + `jq` | trivial (shell only) | medium | `pip` + cloud key |
+| **License / cost** | MIT, free | MIT, free | MIT, free | MIT client, paid platform |
 
-`scope` is a glob; `!` prefix excludes. The default scope is the entire repo. Violations show as `<file>:<line>: <rule-source>: matches <pattern>`.
+✅ first-class · ⚠️ partial / indirect · ❌ not offered
 
-### Advisory rules
+### Drift & scale: how each keeps memory bounded *and* true
 
-Rules without an `enforce:` tag — including structural rules like layer dependencies, no-direct-http, and required test coverage — are documentation only in v1. Claude reads them at session start, but the hook doesn't act on them.
+The common failure of spec-first tools is that performance degrades as the project
+grows — specs pile up, memory bloats, and stale context starts misleading the model.
+Each tool picks one defense, and most trade away something for it.
 
-Structural rule enforcement today lives outside speccraft — see [Recommended companions](#recommended-companions) for tools that handle it (such as CodeGraphContext). A future v1.x will add a bridge directive (`enforce: cgc rule="..."`) that wires CodeGraphContext output back into the speccraft drift hook.
+| Strategy | Tool | Keeps context bounded by… | Catches spec↔code drift? |
+|---|---|---|---|
+| **Consolidation + compaction + enforcement** | **speccraft** | merging closed specs into domain files **and** compacting `history.md`, on top of a 1-page always-injected index | ✅ edit-time hook + `/speccraft:sync` drift scan |
+| Consolidation only | delta-spec | collapsing deltas into domain specs at archive | ❌ nothing automatic between archives |
+| Ephemeral re-extraction | shipspec | deleting per-feature context, re-deriving each time | ⚠️ only within a feature's own loop |
+| Externalize entirely | specsmith | keeping nothing locally | ❌ spec frozen at generation |
 
----
+speccraft is the only tool here that keeps project memory **bounded, current, and
+enforced at the same time**: closed specs fold into consolidated domain specs instead
+of accumulating as silos, `history.md` is compacted rather than growing append-only,
+and an edit-time hook plus `/speccraft:sync` catch drift between spec and code.
 
-## Recommended companions
+### One-line positioning
 
-speccraft is intentionally narrow in scope. Two external tools complement it well, and we recommend installing them alongside speccraft for non-trivial projects.
-
-### CodeGraphContext — code intelligence as MCP
-
-[CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) is an MCP server that gives Claude Code (and any MCP-compatible client) call-graph and symbol-search capabilities across your codebase. It can answer questions like:
-
-- "Where is this function called from?"
-- "What does this file/package export?"
-- "Which tests exercise this code?"
-- "Does this change cross a layering boundary?"
-
-speccraft v1 deliberately doesn't build this in. Earlier drafts included a JSON code graph at `.speccraft/graph/`; we removed it in favor of pointing users at a dedicated tool that's already solving the problem well. The two tools are complementary:
-
-| Concern | Owned by |
-|---|---|
-| Spec lifecycle, intent, memory, history | speccraft |
-| TDD discipline (sibling-test heuristic) | speccraft |
-| Cross-model spec review | speccraft |
-| Regex-based guardrails | speccraft |
-| Call-graph / symbol queries | CodeGraphContext |
-| Structural rule enforcement (layering, etc.) | CodeGraphContext (v1.x bridge planned) |
-
-Install CodeGraphContext per its README; once registered as a Claude Code MCP server, its tools are available alongside speccraft's.
-
-### rtk (Rust Token Killer) — tool-call token compression
-
-[rtk](https://github.com/rtk-ai/rtk) compresses the token cost of LLM tool-calling. If you're hammering aux agents through `/speccraft:spec:delegate` or `/speccraft:spec:review`, or if your sessions tend to chain many tool calls, rtk can cut per-message overhead substantially without changing semantics.
-
-It's especially worth considering when:
-
-- You delegate frequently to expensive aux agents (Codex, OpenCode running large models).
-- Your `.speccraft/` memory plus a long diff plus the aux-agent prompt template is pushing context limits.
-- You're iterating quickly and tool-call overhead is starting to dominate latency.
-
-rtk is independent of speccraft — it operates at the LLM API layer, not the plugin layer — but it's the right tool to reach for when token economics start to bite. Install per its README; it integrates with most major LLM clients.
-
----
-
-## TDD enforcement (how it works)
-
-The `PreToolUse` hook intercepts every `Edit`/`Write`. The rule applied depends on the file's language; the rest of the workflow (active-spec check, override mechanism, tests/docs/scratch exemptions) is shared.
-
-**Go.** Sibling-test heuristic: edits to `pkg/foo/bar.go` are allowed only if some `pkg/foo/*_test.go` was edited more recently in this session. Trades precision for simplicity but catches the "writing prod before tests" pattern in 100% of cases for code following Go's idiomatic test colocation.
-
-**Python.** Two-tier lookup. Tier 1: same-directory siblings (`test_bar.py` or `bar_test.py` beside `bar.py`) — no config needed. Tier 2: when no sibling is found and `.speccraft/speccraft.toml` declares `test_roots`, the configured roots are walked recursively for `test_<stem>.py` / `<stem>_test.py`. Lets projects keep tests in a separate `tests/` tree.
-
-**Rust** (spec 0005). Different model because Rust's idiomatic unit tests live **inline** inside the same `.rs` file as the production code (`#[cfg(test)] mod tests`). The sibling-edit heuristic can't apply, so the guard combines (a) a delta-based static classifier — does this edit add a new canonical test ID? — with (b) an authoritative runner invocation that confirms the just-added test actually fails. A whole-crate fingerprint cache short-circuits `cargo check --tests` on Edit/Write events; a baseline lifecycle (initial-capture / post-accept update / manual recapture) keeps the just-added set well-defined across edits. See [Rust](#rust) below for the full model.
-
-In all three cases, tests, docs, README, and `scratch/` are always allowed without restriction. `/speccraft:spec:override "<reason>"` provides a one-shot bypass with the reason logged into the active spec. For unsupported languages, set `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings.
+- **speccraft** — enforcement-first, and scale-aware: test-first and cross-model
+  review are non-optional, and consolidation + compaction keep memory from degrading
+  as the codebase grows.
+- **delta-spec** — minimalism-first. No CLI, no binaries; elegant delta-merge, git as
+  the archive. Fastest to adopt, but no enforcement.
+- **shipspec** — pipeline-first. Polished PRD → SDD → TASKS with a retry-until-verified
+  loop. PM-friendly; per-feature docs don't consolidate.
+- **specsmith** — upstream-first. Turns vague ideas into structured, tracker-linked
+  specs. A spec *source* that can feed any of the above.
 
 ---
 
-## Rust
+## Scope & limitations
 
-Rust support (spec 0005) ships a different model than Go and Python because Rust's idiomatic unit tests live **inline** inside the same `.rs` file as the production code under test (`#[cfg(test)] mod tests`). The sibling-edit heuristic doesn't apply; instead, the guard combines a delta-based static classifier with an authoritative test-runner invocation.
+speccraft is deliberately small in scope. What it does **not** do, stated plainly:
 
-### Config
-
-Opt into Rust support via `.speccraft/speccraft.toml`:
-
-```toml
-[tdd.rust]
-runner = "cargo"   # one of: "cargo" (default) | "nextest"
-```
-
-- `runner = "cargo"` — uses `cargo test --exact <fqtn>`. Always available wherever a Rust toolchain is installed.
-- `runner = "nextest"` — uses `cargo nextest run -E 'test(=<fqtn>)' --message-format libtest-json`. Requires `cargo install cargo-nextest --locked`. The guard exits with a clear error if `cargo-nextest` is not on PATH when this value is configured.
-- Unknown values produce a config-parse error that names the file, key, and allowed enum.
-- **No PATH auto-detection.** Selection is explicit so the same crate behaves the same on every machine.
-
-### How edits are classified
-
-Two idiomatic test locations are recognized:
-
-- **inline tests** — `mod <ident>` items inside `src/**/*.rs` whose preceding attribute list contains `#[cfg(test)]` (or `#[cfg(any(test, ...))]`). Multi-attribute mod items (e.g. `#[cfg(test)] / #[allow(dead_code)] / mod tests { ... }`) are recognized too. A string/comment-aware tokenizer skips matches inside string literals, raw strings (`r"..."`, `r#"..."#`, etc.), char literals, and line/block comments — so a `let s = "#[cfg(test)] mod ..."` in production code is **not** misclassified as a test edit.
-- **integration tests** — files at `tests/<stem>.rs` are stem-mapped to `src/<stem>.rs` (Rust 2015/2018 file form), `src/<stem>/mod.rs` (directory submodule), or the Rust 2018+ path form. `src/lib.rs` is the library crate root, not a stem-mapping target.
-
-The classifier asks "does this edit add at least one new test function?" by computing the canonical-ID delta of `<file-stem>::<module-path>::<fn>` between pre-edit and proposed post-edit content. This precisely answers the test-add question without the false positives a naive regex would produce.
-
-### Red-check via runner
-
-The runner is the authoritative oracle for whether a real failing test exists. Each just-added FQTN is invoked through the configured runner (cargo or nextest, always with a targeted single-test filter — never a full-suite run). The three outcomes:
-
-- `build_failed` → reject (`"build failed"`). Compile failure is **not** a valid red state.
-- `all_passed` → reject (`"no failing test observed"`). Records with `status == "ignored"` count as ran-and-passed and do **not** satisfy the accept branch.
-- `at_least_one_failed` → accept, and the failing-just-added IDs are appended to the baseline.
-
-### Pre-edit gate
-
-Before every `.rs` edit, a pre-edit gate compile-checks the crate via `cargo check --tests`. The gate is short-circuited by a **crate fingerprint** — SHA-256 of sorted `(path, mtime-nanos, size)` tuples over every `.rs` file under `src/`, `tests/`, `examples/`, `benches/`, plus `Cargo.toml`, `Cargo.lock`, and optional `rust-toolchain.toml` / `.cargo/config.toml`. `target/` is excluded. Cache hit → zero subprocesses. Cache miss → `cargo check --tests`. Whole-crate (not per-file) hashing ensures cross-file breakage doesn't escape the gate.
-
-### Baseline lifecycle
-
-The guard maintains `rust_test_baseline` in `.speccraft/state.json` (single-writer: `speccraft-state` only). Three mutation rules:
-
-- **Initial capture.** On the first guard invocation with the baseline unset, the crate is walked and all current canonical test IDs are written as the baseline. The red-check is **skipped** on this invocation; stderr announces `rust_test_baseline captured: N tests`. This snapshots the "prior green state" so subsequent edits can compute a meaningful just-added set.
-- **Post-accept update.** When the red-check accepts, the failing-just-added IDs are appended to the baseline. This prevents the same test from re-satisfying red on the next edit.
-- **Manual recapture.** Run `speccraft-state rust-baseline recapture` to overwrite the baseline with a freshly-walked snapshot. Use this when speccraft was installed on a crate that already had pre-existing failing tests — recapture clears the stale entries after you fix them.
-
-### Workspace handling
-
-Cargo workspaces (`[workspace]` in root `Cargo.toml`) are **out of scope** in this release. The guard detects them and exits with an actionable message referencing spec 0006 (Cargo workspace support, reserved). Single-crate projects only — a `Cargo.toml` with `[package]` and no `[workspace]` table.
-
-### What's out of scope
-
-- Cargo workspaces (reserved spec 0006).
-- Non-Cargo build systems (Buck2, Bazel).
-- Doctests (`/// # Examples`). Run `cargo test --doc` yourself outside the speccraft loop.
-- Proc-macro crates.
-- Benchmarks (`#[bench]`, criterion).
-- Retroactive runner-invocation adoption by Go and Python — the runner primitive is shared infrastructure, but Go/Python continue to use sibling-edit detection.
-
-### Documentation policy
-
-Spec 0005 added the runner primitive, Rust adapters, and the baseline lifecycle. Per the **stack-agnostic** guardrail, `templates/speccraft/**` was **not** modified — the templates ship to host repos without Rust-specific assumptions. All Rust-specific guidance lives here in the README.
+- **Enforcement covers four languages.** Hook-enforced TDD supports Go, Python,
+  TypeScript/JavaScript, and Rust. For any other language, set
+  `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings.
+- **Only `enforce:` regex rules are enforced.** Advisory rules in `guardrails.md` /
+  `conventions.md` *without* an `enforce:` tag are documentation only — Claude reads
+  them, but the hook does not act on them. Enforcement is limited to what a regex can
+  express.
+- **Structural/architectural rules are out of scope.** Layer dependencies, call-graph
+  constraints, and symbol queries are delegated to
+  [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) (see
+  [Recommended companions](./docs/commands.md#recommended-companions)).
+- **Cross-model review needs the agents available.** It's not zero-config — Codex,
+  OpenCode, or whatever you configure must be installed and authenticated, or that
+  agent is simply skipped. speccraft is the dispatcher, not the runtime.
+- **Not a security boundary.** The hook only enforces what Claude Code does. Edit a
+  production file with `vim` and no hook fires.
 
 ---
 
-## Configuration
-
-Beyond `agents.toml`, a few environment variables tune behavior:
-
-| Variable | Default | Effect |
-|---|---|---|
-| `SPECCRAFT_TDD_MODE` | `hybrid` | `hard` (block all prod edits without spec), `hybrid` (block prod, allow tests/docs), `soft` (warn only). |
-| `SPECCRAFT_REVIEW_TIMEOUT` | `600` | Seconds. Overrides `agents.toml` default. |
-| `SPECCRAFT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
-
----
-
-## Requirements
-
-**On your machine:**
-
-- Claude Code (any recent version)
-- `git`
-- `jq` (for hook JSON parsing — install via your package manager)
-- `curl` (for the first-run binary download)
-- macOS (Apple Silicon or Intel) or Linux (x86_64 or ARM64). Windows users should run inside WSL.
-
-**Optional:**
-
-- `go` ≥ 1.22 — only needed if you want to build helper binaries from source instead of downloading the release tarball.
-- `acpx` — only needed if you opt into ACP-mode aux agents.
-- `codex`, `opencode`, etc. — only needed if you actually call them via `/speccraft:spec:delegate` or `/speccraft:spec:review`.
-- [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) — for codebase-wide structural queries (see [Recommended companions](#recommended-companions)).
-- [rtk](https://github.com/rtk-ai/rtk) — for tool-call token compression in heavy aux-agent workflows.
-
-**Inside your repo (for v1):**
-
-- A Go module (`go.mod` at repo root, or in a discoverable parent). speccraft's spec lifecycle, memory, and TDD enforcement work language-agnostically, but the sibling-test heuristic assumes Go's `<dir>/foo.go` ↔ `<dir>/foo_test.go` colocation. v1.x will add per-language sibling resolvers.
-
----
-
-## Troubleshooting
-
-**`speccraft-state: command not found`**
-First-run binary download failed. Run:
-```
-bash $CLAUDE_PLUGIN_ROOT/scripts/doctor.sh
-```
-to diagnose. Common causes: no network, corporate proxy blocking GitHub Releases, no `curl`. Fall back to building from source with Go ≥ 1.22 installed.
-
-**Edits to test files are being blocked**
-That's a bug — tests/docs/scratch should always be allowed. Check `SPECCRAFT_TDD_MODE`; if set to `hard` it blocks all edits without an active spec. Default is `hybrid`. File a bug if it reproduces with `hybrid`.
-
-**`/speccraft:spec:review` reports "agent not found"**
-The aux agent's CLI isn't on `PATH` in the Claude Code session's environment. Verify with:
-```
-which codex
-which opencode
-```
-If the binary is in a non-default location, add it to `PATH` in your shell rc *and* restart Claude Code (it inherits the shell's environment at launch).
-
-**TDD invariant blocks an edit but I did write a test**
-The hook's rule depends on the language:
-- **Go:** same-directory `pkg/foo/*_test.go` sibling required. Tests in a different package don't satisfy it.
-- **Python:** same-directory siblings (`test_*.py`, `*_test.py`) first; falls back to walking the roots in `.speccraft/speccraft.toml`'s `[tdd] test_roots = [...]` if no sibling is found.
-- **Rust:** delta-based. The guard checks whether the edit adds a new canonical test ID; if it does, the runner is invoked to confirm the test fails. If neither holds (and you've already initial-captured), the gate rejects with `"no failing test observed"` until a new failing test is added. Run `speccraft-state rust-baseline recapture` to reset the baseline if you started speccraft on a crate that already had failing tests.
-
-For one-off bypasses use `/speccraft:spec:override "<reason>"`; for unsupported languages set `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings.
-
-**"Where is X called?" — speccraft can't tell me**
-Correct, by design. v1 doesn't carry a code graph. Install [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) as an MCP server and Claude Code will pick up its tools automatically. See [Recommended companions](#recommended-companions).
-
-**`/speccraft:init` doesn't update `.gitignore`**
-Likely the `.gitignore` already had a conflicting `.speccraft/` line. Check and reconcile manually; speccraft is conservative about overwriting existing patterns.
-
-**Hooks don't seem to fire**
-Run `/plugin` to verify speccraft is Enabled. Check that `hooks/hooks.json` exists in the plugin install. Hooks may be globally disabled by your Claude Code config — check `~/.claude/settings.json` for `"hooks": false` or matcher overrides.
-
-**The doctor**
-When in doubt:
-```
-bash $CLAUDE_PLUGIN_ROOT/scripts/doctor.sh
-```
-Reports on every dependency, the binary version stamp, network reachability, and configured aux agents.
-
----
-
-## FAQ
-
-**Does speccraft replace AGENTS.md / CLAUDE.md?**
-Complementary. `.speccraft/index.md` is the always-injected one-pager — similar role to AGENTS.md or CLAUDE.md. Some teams use them in parallel; in that case, point your AGENTS.md at `.speccraft/index.md` so they don't drift.
-
-**Can I use speccraft without aux agents?**
-Yes. Skip `/speccraft:spec:review` and `/speccraft:spec:review-code`. Everything else (specs, TDD enforcement, memory) works without a single external CLI configured.
-
-**Can I use it in a non-Go repo?**
-Spec workflows, memory injection, and drift detection (regex mode) all work language-agnostically. TDD enforcement supports Go, Python, and Rust:
-
-- **Go:** same-directory `*_test.go` sibling (no config needed).
-- **Python, colocated tests:** `test_bar.py` or `bar_test.py` beside `bar.py` (no config needed).
-- **Python, separate `tests/` tree:** add `.speccraft/speccraft.toml`:
-  ```toml
-  [tdd]
-  test_roots = ["tests"]
-  ```
-  `/speccraft:init` detects `tests/` and `test/` at the repo root and offers to write this file automatically.
-- **Rust:** opt in via `[tdd.rust] runner = "cargo"` (or `"nextest"`) in `.speccraft/speccraft.toml`. The guard handles both inline `#[cfg(test)] mod tests` and `tests/<stem>.rs` integration tests, plus a crate-fingerprint-gated `cargo check --tests` pre-edit gate and a baseline lifecycle. Cargo workspaces are not supported in this release (spec 0006 reserved). See [Rust](#rust) for the full model.
-
-For other languages, set `SPECCRAFT_TDD_MODE=soft` to convert blocks to warnings.
-
-**What happens to specs after a spec is closed?**
-They stay in `specs/`, marked `status: closed`. They become history. `/speccraft:sync` can `archive` very old closed specs (move under `specs/archive/`) but it never deletes them — they're git-versioned and serve as a record of decisions.
-
-**Will the TDD invariant block me when I'm just experimenting?**
-Three escape hatches: (1) edit tests/docs/scratch freely, (2) `/speccraft:spec:override "<reason>"` for a one-time bypass with a logged reason, (3) `SPECCRAFT_TDD_MODE=soft` to convert all blocks to warnings.
-
-**Why doesn't speccraft have a built-in code graph?**
-Earlier drafts did. We removed it because (a) it nearly doubled the v1 implementation cost, (b) a graph that drifts from the source produces confidently wrong answers, and (c) [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) already does this well as an MCP server. speccraft v1 is small on purpose; install CodeGraphContext alongside it when you need structural queries.
-
-**My aux-agent runs are eating tokens. Anything I can do?**
-Look at [rtk](https://github.com/rtk-ai/rtk) — it's a tool-call token compressor that sits at the LLM API layer and can substantially cut overhead in workflows that chain many tool calls. See [Recommended companions](#recommended-companions).
-
-**Can the spec-first invariant be bypassed by editing files outside Claude Code?**
-Yes. speccraft only enforces what Claude Code does. If you `vim` a production file directly, no hook fires. The plugin is a workflow tool, not a security boundary.
-
-**Does it phone home?**
-No telemetry. The only network call is the one-time binary download from GitHub Releases on first install.
-
----
-
-## Roadmap
-
-**v1.x**
-- Per-language sibling-test resolvers (Python, TypeScript, Rust, Java)
-- Native Windows support (currently WSL only)
-- Per-spec bypass audit log (`bypasses.md`)
-- `enforce: cgc rule="..."` directive — bridge regex-mode drift to CodeGraphContext for structural rules
-
-**v2**
-- Multi-package monorepo awareness (per-package spec scoping)
-- Multi-repo workspaces (federated `.speccraft/`)
-- Marketplace publishing
-
-See [SPEC.md](./speccraft-v1-spec.md) for the full v1 spec and detailed roadmap (§20).
-
----
-
-## CI
-
-speccraft's GitHub Actions workflow (`.github/workflows/ci.yml`) splits e2e coverage into two jobs with very different cost profiles:
-
-- **`e2e-language-only`** — runs on **every push and pull request**. Builds the devcontainer and invokes `bash tests/e2e/run.sh --language-only` inside it. Exercises the per-language fixture scripts (`rust_inline_cycle.sh`, `rust_integration_cycle.sh`, `python_cycle.sh`) without ever invoking `claude -p`. **Does NOT require `ANTHROPIC_API_KEY`.** Fast, hermetic, free — the primary signal that the Rust and Python dispatch code in `speccraft-guard` is correct after every change.
-
-- **`e2e-devcontainer`** — runs **only on push to `main`**. Exercises the full spec lifecycle by calling `claude -p` for `/speccraft:init`, `/speccraft:spec:new`, `/speccraft:spec:review`, `/speccraft:spec:plan`, the TDD invariant cycle, and `/speccraft:spec:close`. **Requires `ANTHROPIC_API_KEY`**, costs real credits per run, and is gated to `main` to bound spend.
-
-If you want the fast signal during development, the equivalent local invocation is:
-
-```bash
-bash tests/e2e/run.sh --language-only
-```
-
-It needs cargo on PATH but nothing else.
-
-### `ENVIRONMENT_FAILURE:` annotations
-
-When the `e2e-devcontainer` job fails because `claude -p` hit an environmental problem (not a real assertion failure), the job log includes a literal `ENVIRONMENT_FAILURE: <category>` line on stderr. Categories:
-
-- **`ENVIRONMENT_FAILURE: credit_exhausted`** — the API quota is out. Refill credits or wait for the monthly reset.
-- **`ENVIRONMENT_FAILURE: auth`** — HTTP 401/403, missing/empty `ANTHROPIC_API_KEY`, or a known auth-error substring in the response. Check the repo secret.
-- **`ENVIRONMENT_FAILURE: transient_api`** — HTTP 5xx / 429, network/timeout/connection-refused. Re-run the job.
-
-If a `claude -p` failure matches none of these patterns, no annotation is emitted and the job exits non-zero like any other assertion failure — that means it's a real bug. The exit code stays non-zero in every case; the annotation is observability, not error-swallowing.
-
----
-
-## Development
-
-speccraft is developed inside its own devcontainer. This ensures that buggy hooks under development can't lock up unrelated Claude Code sessions on your host machine.
-
-**Prerequisites:** VS Code with the Dev Containers extension installed.
-
-1. Clone the repo and open it in VS Code.
-2. `Cmd+Shift+P` → `Dev Containers: Reopen in Container`. The container installs Go, the Rust toolchain (via rustup), jq, bats, and mock aux-agent CLIs automatically.
-3. **Authenticate Claude Code inside the container** (one-time): run `claude` in the integrated terminal and complete the browser flow. The OAuth token lands in a named Docker volume and persists across `Rebuild Container`.
-4. Start a Claude Code session *inside the container*. All hook development and testing happens here — never against the host.
-
-**Run tests inside the container:**
-
-```bash
-# Go unit tests
-cd tools && go test ./...
-
-# Hook tests (bats)
-bats tests/hooks/
-
-# End-to-end lifecycle
-bash tests/e2e/run.sh
-```
-
-`KEEP_TEST_DIR=1 bash tests/e2e/run.sh` preserves the throwaway Go module on failure for inspection.
-
-**Non-interactive e2e (CI / no browser):** run `claude setup-token` on the host, store the result in `~/.env.devcontainer` (gitignored), and uncomment `CLAUDE_CODE_OAUTH_TOKEN` in `.devcontainer/devcontainer.json`.
-
----
-
-## Contributing
-
-speccraft is dogfood: it's developed in a speccraft-managed repo. The spec for v1 is itself a speccraft spec at `specs/0001-speccraft-v1/`.
-
-If you want to contribute:
-
-1. `/speccraft:spec:new "<your change>"` to draft a spec.
-2. `/speccraft:spec:review` to get cross-model critique.
-3. PR with the spec, plan, and implementation.
-
-Before opening a PR, run:
-
-```
-go test ./tools/...
-bash scripts/doctor.sh
-```
-
-Issues and discussions welcome.
+## Documentation
+
+- **[INSTALL.md](./INSTALL.md)** — install, helper binaries, requirements,
+  configuration, troubleshooting.
+- **[docs/commands.md](./docs/commands.md)** — full command reference, illustrated
+  lifecycle, aux-agent setup, convention enforcement, FAQ.
+- **[docs/architecture.md](./docs/architecture.md)** — how the hooks, the Rust delta
+  classifier, the Go/Python sibling heuristic, and consolidation/compaction work; CI.
+- **[CONTRIBUTING.md](./CONTRIBUTING.md)** — devcontainer setup and running tests.
 
 ---
 
@@ -701,15 +197,17 @@ Issues and discussions welcome.
 
 MIT. See [LICENSE](./LICENSE).
 
----
-
 ## Acknowledgments
 
 speccraft borrows ideas from many places, particularly:
 
-- The [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) family of plugins, which pioneered multi-CLI orchestration in Claude Code.
-- [Forge](https://github.com/) and similar spec-driven development tools for the spec → plan → implement structure.
+- The [oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) family of
+  plugins, which pioneered multi-CLI orchestration in Claude Code.
+- Spec-driven development tools for the spec → plan → implement structure.
 - [AGENTS.md](https://agents.md) for the always-injected memory pattern.
-- [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) for handling code-intelligence so speccraft doesn't have to.
-- [rtk](https://github.com/rtk-ai/rtk) for tackling tool-call token economics as a separable concern.
-- [ACP](https://github.com/openclaw/acpx) for showing what a unified agent protocol looks like.
+- [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) for handling
+  code-intelligence so speccraft doesn't have to.
+- [rtk](https://github.com/rtk-ai/rtk) for tackling tool-call token economics as a
+  separable concern.
+- [ACP](https://github.com/openclaw/acpx) for showing what a unified agent protocol
+  looks like.
