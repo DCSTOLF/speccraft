@@ -1,53 +1,69 @@
 #!/usr/bin/env bash
 # tests/e2e/spec_consolidate.sh — credit-gated e2e fixture for spec consolidation
-# (spec 0025, model-behavior tier AC7–AC12).
+# (spec 0025 model-behavior tier; leg isolation hardened by spec 0028).
 #
 # SOURCED by tests/e2e/run.sh from inside the claude -p lifecycle (run_claude,
-# LOG_DIR, and the lib.sh predicates must already be in scope). Defines ONE entry
-# function the lifecycle calls; no side effects at source time. Like the spec-0022
-# /0024 fixtures, the consolidation flow can only be exercised by really driving
-# the command body through claude — the deterministic mechanics are pinned at zero
-# credit cost by tests/hooks/spec-consolidate.bats and specs/0025-…/verify.sh.
+# LOG_DIR, E2E_DIR, and the lib.sh predicates must already be in scope). Defines ONE
+# entry function the lifecycle calls; no side effects at source time.
 #
-# STRUCTURAL predicates only — never grep model prose (plan R3 / structural-over-
-# content). Reuses the `cmp -s` byte-unchanged idiom from arch_close_memory.sh.
-# Drives the retroactive /speccraft:sync backfill (the same routing→delta→merge→
-# archive flow close runs inline) on seeded closed specs. Asserts:
-#   - DECLINE: the domain file AND the specs/ layout are byte-identical; the spec
-#     dir is NOT moved (AC9).
-#   - CONFIRM: the routed domain file gained the provenance-suffixed requirement
-#     and the archive-B file is non-empty (AC7); the closed dir moved under
-#     specs/.archive/ and is gone from specs/ (AC12 / dir-move).
-#   - CONFLICT: a MODIFY whose locator matches nothing leaves consolidation-
-#     conflicts.md in the spec dir, the domain line byte-unchanged, dir NOT moved
-#     (AC8).
-#
-# AC10 (routing seed presented / multi-domain split) and AC11 (the backfill
-# candidate/order predicate) are pinned deterministically by spec-consolidate.bats
-# and verify.sh — not re-driven here, to avoid redundant credit-gated runs.
+# Spec 0028 — LEG ISOLATION. /speccraft:sync enumerates the WHOLE candidate corpus
+# each run, and a sync-decline writes a permanent consolidation-skip marker. So the
+# three legs are isolated by LAZY per-leg seeding to exactly ONE eligible candidate
+# per sync (see the spec-0028 corpus-state table):
+#   | leg     | seeded & under specs/ | skip-marked   | archived | candidate |
+#   | DECLINE | 0001, 0090            | 0001          | —        | 0090      |
+#   | CONFIRM | 0001, 0090, 0089      | 0001, 0090    | —        | 0089      |
+#   | CONFLICT| 0001, 0090, 0088      | 0001, 0090    | 0089     | 0088      |
+# 0001 (the lifecycle spec, closed in place by [10/13]) is skip-marked ONCE at entry;
+# each leg's source is seeded immediately before its own sync; 0090's skip is written
+# by the DECLINE sync itself, 0089 is archived by the CONFIRM move — NO marker is ever
+# cleared. Each leg additionally asserts the LIVE candidate set is the intended
+# singleton via a DIRECT invocation of consolidate_backfill_candidates (AC3,
+# load-bearing) — the credit-free, fixture-mirroring guard lives in
+# tests/hooks/spec-consolidate.bats (AC2). STRUCTURAL predicates only — never grep
+# model prose.
 
 set -euo pipefail
 
 PROV_SUFFIX_RE='\(specs?[[:space:]]+[0-9]{4}'
 
-# Seed a domain file plus a closed spec carrying a well-formed delta block.
-_spec_consolidate_seed() {
-  local dom="specs/domains/state.md"
+# --- lazy per-leg seed helpers (each lands immediately before its own leg) -------
+
+_seed_state_domain() {
   mkdir -p "specs/domains"
-  cat > "$dom" <<'EOF'
+  cat > "specs/domains/state.md" <<'EOF'
 # State domain
 
 - close clears active_spec to "" (spec 0012)
 - state uses a sentinel string for cleared active_spec (spec 0012)
 EOF
+}
 
+_seed_0090_decline_source() {
+  mkdir -p "specs/0090-decline-source"
+  cat > "specs/0090-decline-source/spec.md" <<'EOF'
+---
+id: "0090"
+title: "Decline Source"
+status: closed
+created: 2026-06-01
+domains: [state]
+delta:
+  - ADD: a decline-source note that is never applied (spec 0090)
+---
+
+# body
+EOF
+}
+
+_seed_0089_confirm_source() {
   mkdir -p "specs/0089-demo-consolidation"
   cat > "specs/0089-demo-consolidation/spec.md" <<'EOF'
 ---
 id: "0089"
 title: "Demo Consolidation Source"
 status: closed
-created: 2026-06-01
+created: 2026-06-02
 domains: [state]
 delta:
   - ADD: pre-tool-use hook gates the Write tool (spec 0089)
@@ -57,15 +73,16 @@ delta:
 
 # body
 EOF
+}
 
-  # A second closed spec whose MODIFY locator matches nothing → conflict path.
+_seed_0088_conflict_source() {
   mkdir -p "specs/0088-conflict-source"
   cat > "specs/0088-conflict-source/spec.md" <<'EOF'
 ---
 id: "0088"
 title: "Conflict Source"
 status: closed
-created: 2026-06-02
+created: 2026-06-03
 domains: [state]
 delta:
   - MODIFY: a replacement requirement (spec 0088)
@@ -76,66 +93,96 @@ delta:
 EOF
 }
 
+# _assert_candidate_singleton <expected-dir> <leg-label>
+# AC3 (load-bearing): assert the LIVE backfill candidate set is exactly the leg's
+# intended singleton, via a DIRECT invocation of consolidate_backfill_candidates —
+# NOT by parsing model logs. This is the only check that verifies the corpus the
+# fixture actually built matches the per-leg table; a seeding/order drift becomes a
+# fast, named failure here instead of a confusing downstream state.md failure.
+_assert_candidate_singleton() {
+  local expected="$1" leg="$2" got
+  got="$(consolidate_backfill_candidates "$PWD")"
+  [ "$got" = "$expected" ] \
+    || fail "$leg candidate set is not the singleton '$expected' (got: <$got>)"
+}
+
 spec_consolidate() {
   command -v run_claude >/dev/null 2>&1 \
     || fail "spec_consolidate must be sourced by run.sh (run_claude undefined)"
+  : "${E2E_DIR:?spec_consolidate needs E2E_DIR (sourced by run.sh)}"
+
+  # Source the plugin's consolidate lib for the AC3 candidate guard (pure — defines
+  # functions only). Resolved from E2E_DIR so it is independent of the test CWD.
+  # shellcheck source=../../commands/spec/consolidate.lib.sh
+  source "$E2E_DIR/../../commands/spec/consolidate.lib.sh"
 
   local DOM="specs/domains/state.md"
   local ARCH="specs/domains/.archive/state.md"
-  _spec_consolidate_seed
+  _seed_state_domain
 
-  # Snapshots for the decline (byte-unchanged) assertions.
+  # Skip-mark the lifecycle spec 0001 ONCE (set-and-never-cleared isolation artifact)
+  # so it never leaks into any leg's sync (spec 0028 B2). Resolve its dir like run.sh.
+  local ONE; ONE="$(find specs -maxdepth 1 -name '0001-*' -type d 2>/dev/null | head -1)"
+  [ -n "$ONE" ] || fail "spec_consolidate: lifecycle spec 0001-* not found under specs/"
+  touch "$ONE/consolidation-skip"
+
   local SNAP_DOM; SNAP_DOM="$(mktemp)"; cp "$DOM" "$SNAP_DOM"
 
-  # ---- DECLINE: nothing is written or moved ----
-  echo "==> [cons 1/3] /speccraft:sync consolidation backfill (decline → no write/move)"
-  run_claude "/speccraft:sync. When the consolidation backfill proposes folding spec 0089 into specs/domains/state.md, DECLINE it — do not apply, do not move anything." cons-01-decline.log
+  # ---- [cons 1/3] DECLINE: candidate is 0090; nothing written/moved; skip written ----
+  _seed_0090_decline_source
+  _assert_candidate_singleton "0090-decline-source" "[cons 1/3]"
+  echo "==> [cons 1/3] /speccraft:sync consolidation backfill (decline spec 0090 → no write/move)"
+  run_claude "/speccraft:sync. When the consolidation backfill proposes folding spec 0090 into specs/domains/state.md, DECLINE it — do not apply, do not move anything." cons-01-decline.log
+  # AC4: a sync-decline writes a consolidation-skip marker (pins spec 0025 AC11)...
+  exists "specs/0090-decline-source/consolidation-skip"
+  # ...and changes nothing else.
   cmp -s "$SNAP_DOM" "$DOM" || fail "consolidation (decline) modified the domain file"
-  [ ! -d "specs/.archive/0089-demo-consolidation" ] || fail "consolidation (decline) moved the spec dir"
-  [ -d "specs/0089-demo-consolidation" ] || fail "consolidation (decline) lost the spec dir from specs/"
-  pass "consolidation (decline) left the domain file + specs/ layout byte-unchanged"
+  [ ! -d "specs/.archive/0090-decline-source" ] || fail "consolidation (decline) moved the spec dir"
+  [ -d "specs/0090-decline-source" ] || fail "consolidation (decline) lost the spec dir from specs/"
+  pass "[cons 1/3] decline wrote 0090's skip marker; domain + specs/ layout byte-unchanged"
 
-  # ---- CONFIRM: 0089 folds into the domain, dir moves, archive-B written ----
+  # ---- [cons 2/3] CONFIRM: candidate is 0089; folds in, archives, moves the dir ----
   #
-  # spec 0027 — inline-at-close coverage. This CONFIRM leg is the positive coverage of
-  # the INLINE-AT-CLOSE consolidation path. It drives /speccraft:sync, but that
-  # exercises the SAME consolidate.lib.sh move → merge → archive flow that
-  # commands/spec/close.md step 9 drives inline-at-close (route → consolidate_apply_delta
-  # → consolidate_archive_dir_move). The /speccraft:spec:close [10/13] step deliberately
-  # DECLINES consolidation (so its legacy path assertions hold), so this leg is where the
-  # confirm/move/merge OUTCOME is asserted in the lifecycle. The two pieces it does not
-  # re-drive are already pinned deterministically and credit-free elsewhere:
-  #   - the close-command inline WIRING (close.md sources consolidate.lib.sh and calls
-  #     the confirm-gated helper) — specs/0025-spec-consolidation-on-close/verify.sh;
-  #   - the lib MECHANICS incl. the wholesale `mv` of consolidate_archive_dir_move that
-  #     preserves ALL dir contents (so a close-written changelog.md "rides along") and
-  #     conflict record/clear — tests/hooks/spec-consolidate.bats (31 tests).
-  # So declining consolidation at [10/13] does NOT leave the inline-at-close path
-  # unverified. Structural predicates only below — never grep model prose.
+  # spec 0027 — this CONFIRM leg is the inline-at-close-EQUIVALENT coverage: it drives
+  # /speccraft:sync but exercises the SAME consolidate.lib.sh route → apply_delta →
+  # archive_dir_move that close.md step 9 drives inline. The close-command WIRING is
+  # pinned credit-free by specs/0025-spec-consolidation-on-close/verify.sh and the lib
+  # MECHANICS (incl. the wholesale `mv`) by tests/hooks/spec-consolidate.bats.
+  _seed_0089_confirm_source
+  _assert_candidate_singleton "0089-demo-consolidation" "[cons 2/3]"
   echo "==> [cons 2/3] /speccraft:sync consolidation backfill (confirm spec 0089; inline-at-close-equivalent)"
   run_claude "/speccraft:sync. Approve the consolidation backfill for spec 0089: fold its delta (the ADD and the MODIFY) into specs/domains/state.md, archive the superseded text, and move the closed dir to specs/.archive/." cons-02-confirm.log
-
-  # AC7: routed domain file carries the merged, provenance-suffixed requirement(s).
+  # AC6: routed domain carries the merged, provenance-suffixed requirement(s).
   contains "$DOM" "(spec 0089)"
   contains_regex "$DOM" "$PROV_SUFFIX_RE"
-  # AC7/B5: the MODIFY's superseded text was archived (archive-B exists + non-empty).
+  # AC6: the MODIFY's superseded text was archived (archive-B exists + non-empty).
   exists "$ARCH"
   [ -s "$ARCH" ] || fail "archive-B file is empty after a MODIFY consolidation"
-  # AC12 / dir-move: the closed dir moved under specs/.archive/ and is gone from specs/.
+  # AC6 / dir-move: the closed dir moved under specs/.archive/ and is gone from specs/.
   exists "specs/.archive/0089-demo-consolidation/spec.md"
   [ ! -d "specs/0089-demo-consolidation" ] || fail "consolidated spec dir still a live silo under specs/"
-  pass "consolidation (confirm) merged into the domain, archived superseded text, moved the dir (inline-at-close-equivalent path)"
+  pass "[cons 2/3] confirm merged into the domain, archived superseded text, moved the dir"
 
-  # ---- CONFLICT: a non-matching MODIFY locator records a conflict, never moves ----
+  # ---- [cons 3/3] CONFLICT: candidate is 0088; conflict recorded, nothing moved ----
   local SNAP_DOM2; SNAP_DOM2="$(mktemp)"; cp "$DOM" "$SNAP_DOM2"
+  _seed_0088_conflict_source
+  # AC3 + AC7: the singleton is 0088 — which double-verifies 0089's archival removed
+  # it from the corpus via the feature's specs/.archive/ exclusion.
+  _assert_candidate_singleton "0088-conflict-source" "[cons 3/3]"
   echo "==> [cons 3/3] /speccraft:sync consolidation backfill (spec 0088 → conflict)"
   run_claude "/speccraft:sync. Process the consolidation backfill for spec 0088. Its MODIFY locator matches no line in specs/domains/state.md, so record the conflict and leave the domain file unchanged; the spec must not move." cons-03-conflict.log
-
   exists "specs/0088-conflict-source/consolidation-conflicts.md"
   cmp -s "$SNAP_DOM2" "$DOM" || fail "a conflict consolidation mutated the domain file"
   [ ! -d "specs/.archive/0088-conflict-source" ] || fail "a spec with an open conflict was moved to .archive"
   [ -d "specs/0088-conflict-source" ] || fail "the conflicted spec dir was lost from specs/"
-  pass "consolidation (conflict) recorded the sink, left the domain byte-unchanged, did not move the dir"
+  pass "[cons 3/3] conflict recorded the sink, left the domain byte-unchanged, did not move the dir"
+
+  # ---- AC8: only the two by-design skips persist; no other isolation skip exists ----
+  exists "specs/0090-decline-source/consolidation-skip"          # feature-generated (DECLINE sync)
+  exists "$ONE/consolidation-skip"                               # isolation artifact (set once, never cleared)
+  [ ! -e "specs/0088-conflict-source/consolidation-skip" ] || fail "AC8: unexpected skip marker on 0088 (conflict, not declined)"
+  [ ! -e "specs/.archive/0089-demo-consolidation/consolidation-skip" ] || fail "AC8: unexpected skip marker on archived 0089"
+  pass "[cons AC8] only 0090's (feature) and 0001's (isolation) skips persist; nothing cleared"
 
   rm -f "$SNAP_DOM" "$SNAP_DOM2"
 }

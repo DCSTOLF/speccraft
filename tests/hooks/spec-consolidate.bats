@@ -408,6 +408,71 @@ EOF
   ! printf '%s\n' "$output" | grep -qx "0092-done"
 }
 
+# ---------------------------------------------------------------------------
+# AC2 (spec 0028) — the EXECUTABLE per-leg corpus-state table.
+# Each case reconstructs the exact corpus the spec_consolidate.sh fixture builds
+# for that leg (seeded-under-specs/ / skip-marked / archived sets, per the spec's
+# corpus-state table) and asserts consolidate_backfill_candidates returns EXACTLY
+# the intended singleton. A fixture-SEEDING regression (the 0089-bug class) is thus
+# caught credit-free on every CI bats job — not only on a credit-gated lifecycle run.
+# `setup()`'s ambient closed 0099-demo is neutralized with a skip marker so each
+# corpus is exactly what the case seeds.
+# ---------------------------------------------------------------------------
+
+# _seed_closed <dir>  — a minimal closed spec under TEST_REPO/specs/<dir>.
+_seed_closed() {
+  local d="$TEST_REPO/specs/$1"
+  mkdir -p "$d"
+  printf -- '---\nid: "%s"\nstatus: closed\ncreated: 2026-06-01\n---\n' "${1%%-*}" > "$d/spec.md"
+}
+
+@test "Test_consolidate_backfill_candidates_decline_leg_singleton_is_0090" {
+  source "$LIB"
+  touch "$TEST_REPO/specs/0099-demo/consolidation-skip"      # neutralize ambient seed
+  _seed_closed 0001-add-farewell-function; touch "$TEST_REPO/specs/0001-add-farewell-function/consolidation-skip"
+  _seed_closed 0090-decline-source
+  run consolidate_backfill_candidates "$TEST_REPO"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0090-decline-source" ]                      # EXACTLY the singleton
+}
+
+@test "Test_consolidate_backfill_candidates_confirm_leg_singleton_is_0089" {
+  source "$LIB"
+  touch "$TEST_REPO/specs/0099-demo/consolidation-skip"
+  _seed_closed 0001-add-farewell-function; touch "$TEST_REPO/specs/0001-add-farewell-function/consolidation-skip"
+  _seed_closed 0090-decline-source;        touch "$TEST_REPO/specs/0090-decline-source/consolidation-skip"
+  _seed_closed 0089-demo-consolidation
+  run consolidate_backfill_candidates "$TEST_REPO"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0089-demo-consolidation" ]
+}
+
+@test "Test_consolidate_backfill_candidates_conflict_leg_singleton_is_0088" {
+  source "$LIB"
+  touch "$TEST_REPO/specs/0099-demo/consolidation-skip"
+  _seed_closed 0001-add-farewell-function; touch "$TEST_REPO/specs/0001-add-farewell-function/consolidation-skip"
+  _seed_closed 0090-decline-source;        touch "$TEST_REPO/specs/0090-decline-source/consolidation-skip"
+  _seed_closed 0088-conflict-source
+  # 0089 archived (CONFIRM leg's move) — under specs/.archive/, excluded by the specs/*/ glob
+  local arch="$TEST_REPO/specs/.archive/0089-demo-consolidation/spec.md"; mkdir -p "$(dirname "$arch")"
+  printf -- '---\nid: "0089"\nstatus: closed\n---\n' > "$arch"
+  run consolidate_backfill_candidates "$TEST_REPO"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0088-conflict-source" ]                     # 0089's archival double-verified (absent)
+}
+
+@test "Test_consolidate_backfill_candidates_skip_excludes_confirm_target_0089" {
+  # The original 0089 bug, reproduced at zero credits: a skip-marked confirm-target
+  # is excluded from the candidate set.
+  source "$LIB"
+  touch "$TEST_REPO/specs/0099-demo/consolidation-skip"
+  _seed_closed 0089-demo-consolidation
+  touch "$TEST_REPO/specs/0089-demo-consolidation/consolidation-skip"
+  run consolidate_backfill_candidates "$TEST_REPO"
+  [ "$status" -eq 0 ]
+  ! printf '%s\n' "$output" | grep -qx "0089-demo-consolidation"
+}
+
 @test "consolidate_backfill_order: oldest-first via 0024 history parser; history-less specs last by created then id" {
   source "$LIB"
   # history.md records 0099 then 0098 (newest-first); 0097 has NO history entry

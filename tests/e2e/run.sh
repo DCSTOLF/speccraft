@@ -373,6 +373,13 @@ status_is "$SPEC_DIR/spec.md" "closed"
 # failure. The CONFIRM path is covered separately at [10e/13] (spec_consolidate.sh).
 [ ! -d "specs/.archive/0001-add-farewell-function" ] \
   || fail "[10/13] consolidation moved the closed spec dir to specs/.archive/ despite decline"
+# spec 0028 (AC5): an INLINE-close decline writes NO consolidation-skip marker (only a
+# /speccraft:sync decline does — across-run skip-permanence). Symmetric to the [cons
+# 1/3] sync-decline-writes-skip assertion; pins the skip-semantics contrast that
+# produced the original 0089 bug. Runs strictly before the [10e/13] fixture's set-once
+# isolation skip-mark on 0001, so the two never observe the dir in a conflicting state.
+[ ! -e "$SPEC_DIR/consolidation-skip" ] \
+  || fail "[10/13] inline-close decline wrote a consolidation-skip on 0001 (sync-decline semantics leaked into inline close)"
 contains_regex ".speccraft/history.md" "^## 20[0-9]{2}-[0-9]{2}-[0-9]{2}"
 
 # state.json should have cleared active_spec

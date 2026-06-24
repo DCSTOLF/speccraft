@@ -35,7 +35,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-none
+specs/0028-e2e-consolidation-fixture-isolation/
 
 ## Recent decisions (last 3)
 
