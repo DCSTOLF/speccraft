@@ -2,6 +2,55 @@
 
 Append-only. Newest first.
 
+## 2026-06-24 — Decline-vs-confirm: separate e2e paths for the inline-at-close consolidation gate (spec 0027)
+
+**Spec:** specs/0027-e2e-inline-consolidation-fix/
+**Decision:** A test-harness-only fix for a regression spec 0025 introduced. Spec
+0025's inline, confirm-gated consolidation at `commands/spec/close.md` step 9 was
+swept into the `[10/13]` "Approve all proposed memory updates" blanket approval in the
+credit-gated e2e lifecycle; with the throwaway spec `0001-add-farewell-function`
+hitting zero conflicts, consolidation ran and — by design — moved its dir to
+`specs/.archive/`, so the pre-0025 assertion `tests/e2e/run.sh:367`
+`exists "$SPEC_DIR/changelog.md"` failed (the changelog rode along via the wholesale
+`mv`). The feature behaved exactly as specified; the break was a pre-0025 lifecycle
+assertion never updated for the dir-relocating close. The fix tests the two close
+confirm-gates on SEPARATE paths: `[10/13]`'s prompt now explicitly DECLINES
+consolidation (dir stays under `specs/`, legacy line-367/368 assertions hold) with a
+new structural non-move guard `[ ! -d specs/.archive/0001-add-farewell-function ]`
+that turns a model slip into an immediate, named failure at `[10/13]` rather than the
+confusing downstream changelog-path failure; and `[cons 2/3]` in
+`tests/e2e/spec_consolidate.sh` is documented as the inline-at-close-EQUIVALENT
+CONFIRM coverage — it drives `/speccraft:sync` but exercises the SAME
+`consolidate.lib.sh` route → apply_delta → dir-move path `close.md` step 9 drives
+inline, with the close-command WIRING pinned by `specs/0025-.../verify.sh` and the lib
+MECHANICS (incl. the changelog-rides-along `mv`) by `tests/hooks/spec-consolidate.bats`.
+**Why:** It escaped the merge gate because the bats tier and `verify.sh` exercise the
+helpers/doc-contracts in isolation, and the model-tier lifecycle was credit-gated and
+deferred — exactly where it surfaced (CI run 28057150956, the spec-0026 1.6.0 push).
+This is the spec-0014 "structural over content" lesson at the level of a command's
+post-conditions: a feature that relocates a spec dir on close must be matched by the
+e2e lifecycle assertion that depended on the old post-condition, updated in lockstep.
+**Consequence:**
+- No new convention codified — the spec-0014 structural-over-content entry and the
+  spec-0025 dir-move semantics already cover the lesson; the decline-vs-confirm
+  separate-paths discipline lives in this ADR rather than as a standalone rule.
+- No `/speccraft:spec:override` needed (both files are `tests/e2e/*.sh`, ungated by
+  speccraft-guard); no Go, no bats, no new file. The spec-0025 feature files
+  (`consolidate.lib.sh`, `close.md`, `sync.md`, `memory-keeper.md`, `SKILL.md`) are
+  byte-unchanged (AC4, `git diff --name-only`). "Changelog rides along" needed no new
+  e2e assertion — it is a consequence of the wholesale `mv` already pinned by the bats
+  `consolidate_archive_dir_move` test.
+- RED→GREEN was at the credit-gated model tier (no locally-runnable test): RED = the
+  observed CI failure; GREEN = the two edits; deterministic gate now is `bash -n` +
+  structural inspection. AC3 (full lifecycle green through `[10e/13]`) is deferred to
+  the in-flight `e2e-devcontainer` CI run 28066411890 — same deferral as spec 0025's
+  model tier.
+- **Follow-up:** RCA option (3) — a distinct consolidation confirm-gate / opt-out so a
+  generic "approve all" never silently relocates a spec dir — is a real-user UX sharp
+  edge (not just a test concern) and is deferred to its own spec. A spec-0014/0020-style
+  credit-free meta-test reading `run.sh`'s live decline/non-move predicate was
+  deliberately not taken (AC4 scopes this to two files); flagged as future hardening.
+
 ## 2026-06-23 — Version bump to 1.6.0 (spec 0026)
 
 **Spec:** specs/0026-bump-version-1.6.0/

@@ -1,7 +1,7 @@
 ---
 id: "0027"
 title: "Restore e2e lifecycle green after inline-at-close consolidation"
-status: in-progress
+status: closed
 created: 2026-06-23
 authors: [claude]
 packages: []
