@@ -363,9 +363,16 @@ pass "go test passes"
 
 # ---- 10. /speccraft:spec:close ----
 echo "==> [10/13] /speccraft:spec:close"
-run_claude "/speccraft:spec:close. Approve all proposed memory updates." 10-close.log
+run_claude "/speccraft:spec:close. Approve all proposed memory updates. DECLINE / defer the spec-consolidation step (spec 0025) — do NOT fold this spec into a domain file and do NOT move its directory; leave the closed spec directory in place under specs/." 10-close.log
 exists "$SPEC_DIR/changelog.md"
 status_is "$SPEC_DIR/spec.md" "closed"
+# spec 0027: consolidation was declined above, so the closed spec dir must stay in
+# place under specs/ — NOT relocated to specs/.archive/ by inline-at-close
+# consolidation. This turns a model slip (consolidating despite the decline) into an
+# immediate, named failure here rather than the confusing downstream changelog-path
+# failure. The CONFIRM path is covered separately at [10e/13] (spec_consolidate.sh).
+[ ! -d "specs/.archive/0001-add-farewell-function" ] \
+  || fail "[10/13] consolidation moved the closed spec dir to specs/.archive/ despite decline"
 contains_regex ".speccraft/history.md" "^## 20[0-9]{2}-[0-9]{2}-[0-9]{2}"
 
 # state.json should have cleared active_spec

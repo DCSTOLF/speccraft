@@ -96,7 +96,23 @@ spec_consolidate() {
   pass "consolidation (decline) left the domain file + specs/ layout byte-unchanged"
 
   # ---- CONFIRM: 0089 folds into the domain, dir moves, archive-B written ----
-  echo "==> [cons 2/3] /speccraft:sync consolidation backfill (confirm spec 0089)"
+  #
+  # spec 0027 — inline-at-close coverage. This CONFIRM leg is the positive coverage of
+  # the INLINE-AT-CLOSE consolidation path. It drives /speccraft:sync, but that
+  # exercises the SAME consolidate.lib.sh move → merge → archive flow that
+  # commands/spec/close.md step 9 drives inline-at-close (route → consolidate_apply_delta
+  # → consolidate_archive_dir_move). The /speccraft:spec:close [10/13] step deliberately
+  # DECLINES consolidation (so its legacy path assertions hold), so this leg is where the
+  # confirm/move/merge OUTCOME is asserted in the lifecycle. The two pieces it does not
+  # re-drive are already pinned deterministically and credit-free elsewhere:
+  #   - the close-command inline WIRING (close.md sources consolidate.lib.sh and calls
+  #     the confirm-gated helper) — specs/0025-spec-consolidation-on-close/verify.sh;
+  #   - the lib MECHANICS incl. the wholesale `mv` of consolidate_archive_dir_move that
+  #     preserves ALL dir contents (so a close-written changelog.md "rides along") and
+  #     conflict record/clear — tests/hooks/spec-consolidate.bats (31 tests).
+  # So declining consolidation at [10/13] does NOT leave the inline-at-close path
+  # unverified. Structural predicates only below — never grep model prose.
+  echo "==> [cons 2/3] /speccraft:sync consolidation backfill (confirm spec 0089; inline-at-close-equivalent)"
   run_claude "/speccraft:sync. Approve the consolidation backfill for spec 0089: fold its delta (the ADD and the MODIFY) into specs/domains/state.md, archive the superseded text, and move the closed dir to specs/.archive/." cons-02-confirm.log
 
   # AC7: routed domain file carries the merged, provenance-suffixed requirement(s).
@@ -108,7 +124,7 @@ spec_consolidate() {
   # AC12 / dir-move: the closed dir moved under specs/.archive/ and is gone from specs/.
   exists "specs/.archive/0089-demo-consolidation/spec.md"
   [ ! -d "specs/0089-demo-consolidation" ] || fail "consolidated spec dir still a live silo under specs/"
-  pass "consolidation (confirm) merged into the domain, archived superseded text, moved the dir"
+  pass "consolidation (confirm) merged into the domain, archived superseded text, moved the dir (inline-at-close-equivalent path)"
 
   # ---- CONFLICT: a non-matching MODIFY locator records a conflict, never moves ----
   local SNAP_DOM2; SNAP_DOM2="$(mktemp)"; cp "$DOM" "$SNAP_DOM2"
