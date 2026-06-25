@@ -154,6 +154,19 @@ When a feature is "model-driven but partly deterministic" — a heuristic that p
 - **Test surface follows.** The seed is unit-tested at the deterministic tier (named RED→GREEN cases: from-explicit-marker, from-xref, window-entries-never-emitted, empty-without-signal); the model tier only has to honor a seed it's handed. This is the spec-0022 deterministic/model AC split applied *within* a single heuristic.
 - **Canonical reference.** `history_supersession_seed` in `commands/history/compact.lib.sh` + its bats cases (spec 0024).
 
+### Pin a credit-gated fixture's deterministic precondition at the credit-free layer
+
+Introduced by spec 0028 (the distilled lesson of the 0025 → 0027 → 0028 lineage — three consecutive fixture bugs that surfaced only on real credit-gated runs).
+
+When a credit-gated e2e fixture's correctness hinges on a DETERMINISTIC PRECONDITION — the arrangement of inputs the model is then asked to act on (e.g. the spec-consolidation fixture's per-leg backfill candidate set / corpus arrangement) — that precondition is pure, testable logic and MUST NOT be left to surface only on a credit-gated lifecycle run. Pin it twice:
+
+- **A credit-free bats meta-test that RECONSTRUCTS the exact arrangement.** Build the same inputs the fixture builds (mirror the spec's corpus/state table exactly — the bats cases should literally BE the table) and assert the deterministic helper's output equals the intended result. This catches a fixture-SEEDING/arrangement regression — not just library-logic drift — on every CI bats job, at zero credits, where the original bug class would have been caught before any credit-gated run. Include the inverse/regression case (the exact failing arrangement, reproduced cheaply). This is the primary cycle-breaker.
+- **A LOAD-BEARING in-fixture direct-invocation runtime guard.** Immediately before each model-driven step, invoke the same deterministic helper DIRECTLY on the LIVE corpus (`helper "$PWD"`) and assert it equals the intended value — never parse model logs/prose for this. This is the ONLY check that verifies the LIVE arrangement the fixture actually built matches the intended one (the bats meta-test verifies the helper on SYNTHETIC inputs; a synthetic test cannot prove the live fixture builds those inputs). It turns a seeding/ordering drift into a fast, NAMED failure at the top of the offending step rather than a confusing downstream failure. Mark it as NOT redundant-with-the-bats-test so a future cleanup does not delete it as "duplicate coverage."
+
+Prefer LAZY arrangement (build each step's precondition immediately before that step, let each step self-remove its own input) over pre-arrange-and-undo: the fragile undo/reset step between cases is exactly where the next latent bug hides.
+
+This is the spec-0014 "structural over content" and spec-0024 "deterministic seed at the cheap layer" discipline applied to a fixture's PRECONDITION rather than its assertion or a model heuristic. Canonical reference: `tests/hooks/spec-consolidate.bats`'s four spec-0028 arrangement cases (the executable per-leg corpus-state table + the skip-excludes-target regression) plus the per-leg `consolidate_backfill_candidates "$PWD"` guard in `tests/e2e/spec_consolidate.sh`.
+
 ### Sourceable command helpers: `commands/<group>/<name>.lib.sh` colocation
 
 Introduced by spec 0015.

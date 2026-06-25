@@ -2,6 +2,83 @@
 
 Append-only. Newest first.
 
+## 2026-06-25 — Pin the e2e consolidation fixture's load-bearing corpus precondition at the credit-free layer (spec 0028)
+
+**Spec:** specs/0028-e2e-consolidation-fixture-isolation/
+**Decision:** The THIRD test-harness-only fix in the 0025 → 0027 → 0028 lineage, and the
+one that BREAKS THE CYCLE. The spec-0025 consolidation e2e fixture
+(`tests/e2e/spec_consolidate.sh`) failed on its first real run: its DECLINE and CONFIRM
+legs shared one seeded spec (0089), and a `/speccraft:sync` decline writes a PERMANENT
+`consolidation-skip` marker (across-run skip-permanence, spec 0025 AC11), so once the
+DECLINE leg declined 0089 the CONFIRM leg could never consolidate it — `[cons 2/3]`'s
+`contains "$DOM" "(spec 0089)"` correctly failed. Two further isolation gaps from the same
+run: `/speccraft:sync` enumerates the WHOLE candidate corpus (so the conflict spec 0088 was
+eligible early), and the lifecycle spec `0001-add-farewell-function` leaked in (spec 0027
+made `[10/13]` decline consolidation INLINE, and an inline-close decline writes NO skip —
+only a sync decline does). The feature behaved exactly as specified; this is a
+FIXTURE-DESIGN error ("decline X then confirm X" is self-contradictory under sticky-skip),
+not a feature defect — spec-0025 feature code (`consolidate.lib.sh`, `close.md`, `sync.md`,
+`memory-keeper.md`, `SKILL.md`) is BYTE-UNCHANGED. The fix has three parts. (1) The part
+that broke all three times is the candidate-set / corpus-arrangement logic, which is PURE
+SHELL and deterministically testable WITHOUT the model, so it was promoted to FOUR
+credit-free `tests/hooks/spec-consolidate.bats` cases (suite 31 → 35): one per leg that
+RECONSTRUCTS that leg's exact corpus per the spec's corpus-state table and asserts
+`consolidate_backfill_candidates` returns exactly the intended singleton (decline→0090,
+confirm→0089, conflict→0088), plus the `skip-excludes-target` regression — the original
+0089 bug reproduced at zero credits. The three arrangement cases ARE the corpus-state table
+(CF-B), so a fixture-SEEDING regression, not just library drift, now fails on every CI bats
+job. (2) The fixture was reworked to LAZY per-leg seeding (chosen over pre-mark-and-clear):
+a new `0090-decline-source`, `0001` skip-marked ONCE at entry as a set-and-never-cleared
+isolation artifact, each source seeded immediately before its own sync, and NO marker ever
+cleared — eliminating the fragile between-legs skip-CLEAR step where a 4th latent bug would
+hide. A LOAD-BEARING per-leg AC3 guard sources `consolidate.lib.sh` and asserts
+`consolidate_backfill_candidates "$PWD"` == the leg's singleton via a DIRECT invocation
+(not log parsing) before each `run_claude`. (3) `run.sh [10/13]` now asserts an
+inline-close decline writes NO skip on 0001 — symmetric to the sync-decline-writes-skip
+leg — pinning the exact skip-semantics contrast that produced the original bug, ordered
+before `[10e/13]`'s set-once isolation skip-mark so the two never conflict.
+**Why:** The fixture's load-bearing premise — its per-leg corpus arrangement — was never
+pinned at a cheap layer, so it surfaced only on a credit-gated lifecycle run that specs
+0025 and 0027 had both deferred. This is the spec-0024 "expose the deterministic seed of a
+model heuristic at the cheap layer" lesson and the spec-0014/0020 "assertion meta-test
+reads run.sh's live predicate" lesson applied to a credit-gated fixture's PRECONDITION
+rather than its assertion: the candidate-set/corpus-arrangement that broke three times is
+pure shell, so it belongs in bats, not in a once-a-push credit-gated run. AC3's in-fixture
+direct invocation complements it — a synthetic bats arrangement cannot prove the LIVE
+fixture builds that arrangement, so the runtime guard reduces any live seeding/order drift
+to a fast, NAMED candidate-set failure at the top of the offending leg instead of a
+confusing downstream `state.md`/`contains` failure (claude-p's round-2 caveat). Two-round
+cross-model review: round 2 quorum met (claude-p approve-with-comments; codex's lone
+remaining concern was the AC8 wording contradiction, not a design flaw); four
+carry-forwards (CF-A AC8 reconciliation, CF-B executable corpus table, CF-C AC3 marked
+load-bearing-not-redundant, CF-D bats-path consistency) folded pre-flip per the
+0016/0025 precedent.
+**Consequence:**
+- New convention codified in `conventions.md` (§Bash → E2E): a credit-gated e2e fixture
+  whose correctness hinges on a deterministic precondition (the backfill candidate set /
+  corpus arrangement) must pin that precondition with a credit-free bats meta-test that
+  reconstructs the exact arrangement and asserts the helper's output, PAIRED with an
+  in-fixture direct-invocation runtime guard (load-bearing, NOT redundant). This is the
+  distilled lesson of the 0025 → 0027 → 0028 lineage.
+- No architecture change — a three-test-file harness edit; no new package, layer, or
+  boundary. The consolidation surface (spec 0025) and the SOURCED-fixture pattern (spec
+  0022, used at `[10e/13]`) are unchanged.
+- No `/speccraft:spec:override` needed (`.sh`/`.bats` are not guard-gated; no Go, no
+  feature change). Local gate: bats 35/35 green (4 new), Go untouched-green, `bash -n`
+  clean, `git diff --name-only` lists exactly the three test files.
+- Close gate is GREEN, not deferred (unlike specs 0025/0027): the credit-gated
+  `e2e-devcontainer` CI run 28071351196 (push of commit `91e7835`) completed SUCCESS — the
+  full lifecycle went green through `[10/13]` → `[10e/13]`. The 3-patch cycle is broken:
+  the candidate-set/corpus-arrangement logic is now pinned on every CI bats job, not only
+  on a credit-gated lifecycle run.
+- **Follow-ups (deferred, own specs):** RCA option (3) — a distinct consolidation
+  confirm-gate / opt-out so a generic "approve all" never silently relocates a spec dir;
+  and genuine inline-at-close e2e coverage (a real `/speccraft:spec:close` driving
+  `close.md` step 9 inside the fixture). The CONFIRM leg stays sync-driven by recorded
+  decision — a real inline close would double the most expensive credit-gated step and
+  reintroduce the sticky-skip collision; the close-command WIRING is pinned by
+  `specs/0025-.../verify.sh` and the lib MECHANICS by `tests/hooks/spec-consolidate.bats`.
+
 ## 2026-06-24 — Decline-vs-confirm: separate e2e paths for the inline-at-close consolidation gate (spec 0027)
 
 **Spec:** specs/0027-e2e-inline-consolidation-fix/

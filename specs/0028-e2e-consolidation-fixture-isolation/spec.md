@@ -1,7 +1,7 @@
 ---
 id: "0028"
 title: "Isolate the consolidation e2e fixture legs; pin decline skip-marker behavior"
-status: in-progress
+status: closed
 created: 2026-06-24
 revision: 1
 authors: [claude]
