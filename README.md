@@ -139,22 +139,11 @@ Each tool picks one defense, and most trade away something for it.
 | Ephemeral re-extraction | shipspec | deleting per-feature context, re-deriving each time | ⚠️ only within a feature's own loop |
 | Externalize entirely | specsmith | keeping nothing locally | ❌ spec frozen at generation |
 
+
 speccraft is the only tool here that keeps project memory **bounded, current, and
 enforced at the same time**: closed specs fold into consolidated domain specs instead
 of accumulating as silos, `history.md` is compacted rather than growing append-only,
 and an edit-time hook plus `/speccraft:sync` catch drift between spec and code.
-
-### One-line positioning
-
-- **speccraft** — enforcement-first, and scale-aware: test-first and cross-model
-  review are non-optional, and consolidation + compaction keep memory from degrading
-  as the codebase grows.
-- **delta-spec** — minimalism-first. No CLI, no binaries; elegant delta-merge, git as
-  the archive. Fastest to adopt, but no enforcement.
-- **shipspec** — pipeline-first. Polished PRD → SDD → TASKS with a retry-until-verified
-  loop. PM-friendly; per-feature docs don't consolidate.
-- **specsmith** — upstream-first. Turns vague ideas into structured, tracker-linked
-  specs. A spec *source* that can feed any of the above.
 
 ---
 
