@@ -78,15 +78,29 @@ assert_category "auth via HTTP 403" \
   $'status: 403 Forbidden\n' \
   "ENVIRONMENT_FAILURE: auth"
 
-# --- auth: empty ANTHROPIC_API_KEY ---
-# Subshell with env -u to fully unset the sentinel before invoking.
+# --- auth: no credential present ---
+# Subshell that unsets BOTH credentials (CLAUDE_CODE_OAUTH_TOKEN and the
+# legacy ANTHROPIC_API_KEY). The presence check fires only when neither
+# is set, so a single set var must suppress it.
 (
-  unset ANTHROPIC_API_KEY
+  unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
   got=$(printf 'some unrelated output' | classify_claude_failure)
   if [ "$got" != "ENVIRONMENT_FAILURE: auth" ]; then
-    fail "auth via empty ANTHROPIC_API_KEY: got '$got', want 'ENVIRONMENT_FAILURE: auth'"
+    fail "auth via no credential: got '$got', want 'ENVIRONMENT_FAILURE: auth'"
   fi
-  note "auth via empty ANTHROPIC_API_KEY → ENVIRONMENT_FAILURE: auth"
+  note "auth via no credential → ENVIRONMENT_FAILURE: auth"
+)
+
+# A single present credential (OAuth token only) suppresses the empty-
+# credential auth trigger for otherwise-unmatched output.
+(
+  unset ANTHROPIC_API_KEY
+  export CLAUDE_CODE_OAUTH_TOKEN="oat-test-sentinel"
+  got=$(printf 'some unrelated output' | classify_claude_failure)
+  if [ -n "$got" ]; then
+    fail "OAuth-token-only present: got '$got', want '' (no env failure)"
+  fi
+  note "OAuth token present, no ANTHROPIC_API_KEY → unmatched (no auth trigger)"
 )
 
 # --- auth: substring matchers (case-insensitive) ---

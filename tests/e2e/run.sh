@@ -171,9 +171,10 @@ classify_claude_failure() {
     return 0
   fi
 
-  # auth: HTTP 401/403, missing/empty ANTHROPIC_API_KEY, or known
-  # auth-error substrings (case-insensitive).
-  if [ -z "${ANTHROPIC_API_KEY:-}" ] \
+  # auth: HTTP 401/403, missing/empty credential (CLAUDE_CODE_OAUTH_TOKEN
+  # or the legacy ANTHROPIC_API_KEY — either satisfies the presence
+  # check), or known auth-error substrings (case-insensitive).
+  if { [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; } \
      || printf '%s' "$content" | grep -qE 'HTTP/[0-9.]+[[:space:]]+(401|403)\b' \
      || printf '%s' "$content" | grep -qE '\b(401|403)[[:space:]]+(Unauthorized|Forbidden)\b' \
      || printf '%s' "$content" | grep -qE 'status:[[:space:]]*(401|403)\b' \
