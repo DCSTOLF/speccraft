@@ -508,3 +508,79 @@ EOF
   rm -f "$sd/consolidation-skip"
   run consolidate_marker_state "$TEST_REPO/specs/.archive/0099-demo"; [ "$output" = "consolidated" ]
 }
+
+# ---- spec 0029 P1 (Fix A) — zsh-safe sourcing + exact-form BASH_SOURCE guard ----
+
+@test "Test_consolidate_lib_sources_under_real_zsh" {
+  # AC1(a)/CF-1: faithful pin via REAL zsh (a bash simulated-unset harness cannot
+  # reproduce the bug — bash re-populates BASH_SOURCE during `source`). zsh is a
+  # declared prerequisite: fail LOUD if absent, never silent-skip.
+  command -v zsh >/dev/null 2>&1 || { echo "zsh required for AC1(a) — never silent-skip"; false; }
+  # cd to an unrelated dir to prove the transitive source resolves CWD-independently.
+  run zsh -uc "cd '$TEST_REPO'; source '$LIB'; typeset -f consolidate_routing_seed >/dev/null"
+  [ "$status" -eq 0 ]
+}
+
+@test "Test_consolidate_lib_sources_under_bash_unchanged" {
+  run bash -uc "cd '$TEST_REPO'; source '$LIB'; typeset -f consolidate_routing_seed >/dev/null"
+  [ "$status" -eq 0 ]
+}
+
+@test "Test_no_lib_uses_bare_BASH_SOURCE_idiom" {
+  # AC1(b)/CF-2: exact-form guard across ALL sourceable libs. Every BASH_SOURCE[0]
+  # occurrence must be exactly the canonical `${BASH_SOURCE[0]:-$0}`. Counting via
+  # fixed-string grep avoids regex-escaping pitfalls: a bare use makes total>canon.
+  local f offenders="" total canon
+  while IFS= read -r f; do
+    total="$(grep -oF 'BASH_SOURCE[0]' "$f" | wc -l | tr -d ' ')"
+    canon="$(grep -oF '${BASH_SOURCE[0]:-$0}' "$f" | wc -l | tr -d ' ')"
+    [ "$total" -le "$canon" ] || offenders="$offenders $f($total>$canon)"
+  done < <(find "$PLUGIN_DIR/commands" -name '*.lib.sh')
+  [ -z "$offenders" ] || { echo "bare BASH_SOURCE[0] in:$offenders"; false; }
+}
+
+# ---- spec 0029 P2 (Fix B) — existing-domain enumeration + seed regression pin ----
+
+@test "Test_consolidate_existing_domains_lists_live_areas_bytewise_sorted" {
+  source "$LIB"
+  local R="$TEST_REPO/r_live"; mkdir -p "$R/specs/domains/.archive"
+  : > "$R/specs/domains/billing.md"
+  : > "$R/specs/domains/auth.md"
+  : > "$R/specs/domains/.archive/auth.md"   # archived → excluded
+  run consolidate_existing_domains "$R"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'auth\nbilling')" ]   # live areas only, bytewise-sorted
+}
+
+@test "Test_consolidate_existing_domains_empty_when_dir_absent" {
+  source "$LIB"
+  local R="$TEST_REPO/r_empty"; mkdir -p "$R"
+  run consolidate_existing_domains "$R"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "Test_consolidate_routing_seed_byte_unchanged_from_0025" {
+  # AC3 regression pin: Fix B must NOT touch the seed. Explicit domains: is
+  # authoritative; absent-domains title-slug is stable across runs.
+  source "$LIB"
+  run consolidate_routing_seed "$SPEC"          # SPEC has `domains: [guard]`
+  [ "$status" -eq 0 ]
+  [ "$output" = "guard" ]
+  local S2="$TEST_REPO/specs/0100-no-dom/spec.md"; mkdir -p "$(dirname "$S2")"
+  printf '%s\n' '---' 'id: "0100"' 'title: "Some Mixed Title"' 'status: closed' 'created: 2026-06-01' '---' > "$S2"
+  local a b; a="$(consolidate_routing_seed "$S2")"; b="$(consolidate_routing_seed "$S2")"
+  [ "$a" = "$b" ]
+  [ "$a" = "some-mixed-title" ]
+}
+
+@test "Test_consolidate_existing_domains_AC6_corpus_precondition" {
+  # AC3b: pin the AC6 e2e corpus precondition credit-free — one existing domain
+  # `core`, so a fixture-seeding regression fails on every bats job.
+  source "$LIB"
+  local R="$TEST_REPO/r_ac6"; mkdir -p "$R/specs/domains"
+  : > "$R/specs/domains/core.md"
+  run consolidate_existing_domains "$R"
+  [ "$status" -eq 0 ]
+  [ "$output" = "core" ]
+}

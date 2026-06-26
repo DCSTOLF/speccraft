@@ -81,6 +81,19 @@ Steps:
    regardless). Source the helper and reuse `memory-keeper` (Mode: consolidate) for
    the prose merge + propose/confirm:
 
+   > **Routing target & blast radius — do NOT confuse with step 4.** Consolidation
+   > routes ONLY to `specs/domains/<area>.md` (the per-domain requirement files) and
+   > NEVER writes `.speccraft/architecture.md`, `conventions.md`, or `history.md`.
+   > Those `.speccraft/` files are the step-4 `Mode: close` memory updates, which are
+   > a SEPARATE concern and are NOT a substitute for this step-9 consolidation:
+   > folding requirements into `.speccraft/architecture.md`/`conventions.md` does NOT
+   > consolidate them — the requirements must land in `specs/domains/`. A missing
+   > `delta:` or `domains:` block is **a fallback, never a skip**: with no `delta:`,
+   > `memory-keeper` proposes a confirm-gated ADD/MODIFY/REMOVE classification into
+   > the routed domain file; with no `domains:`, the seeded area (now grounded by
+   > `consolidate_existing_domains`) is presented for confirm/correct. Either way the
+   > target is `specs/domains/`, never `.speccraft/`.
+
    ```bash
    REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
    source "$CLAUDE_PLUGIN_ROOT/commands/spec/consolidate.lib.sh"
@@ -90,8 +103,12 @@ Steps:
    a. **Route.** `consolidate_routing_seed "$SPEC_DIR/spec.md"` yields the target
       area(s). An explicit frontmatter `domains:` is authoritative; otherwise the
       seeded area is PRESENTED for the developer to confirm/correct (never silent).
-      A multi-domain spec is split per-domain and the full split is shown before any
-      write.
+      Ground the proposal with the live domain set —
+      `consolidate_existing_domains "$REPO_ROOT"` — so `memory-keeper` can prefer a
+      good existing-domain match when one fits, or deliberately propose a clearly
+      named NEW domain (open-set: a confirmed new `<area>` is created by writing
+      `specs/domains/<area>.md`) when none fit. A multi-domain spec is split
+      per-domain and the full split is shown before any write.
    b. **Parse the delta.** `consolidate_parse_delta "$SPEC_DIR/spec.md"` yields the
       ordered ADD/MODIFY/REMOVE records (each MODIFY/REMOVE carrying a verbatim
       locator). With no `delta:` block, the `memory-keeper` proposes a

@@ -1,6 +1,6 @@
 {
   "name": "speccraft",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Spec-first, test-driven development with cross-model review and regex-enforced guardrails for Claude Code.",
   "author": {
     "name": "Daniel Stolf <daniel.stolf@perforce.com>",

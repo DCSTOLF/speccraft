@@ -184,5 +184,65 @@ spec_consolidate() {
   [ ! -e "specs/.archive/0089-demo-consolidation/consolidation-skip" ] || fail "AC8: unexpected skip marker on archived 0089"
   pass "[cons AC8] only 0090's (feature) and 0001's (isolation) skips persist; nothing cleared"
 
-  rm -f "$SNAP_DOM" "$SNAP_DOM2"
+  # ---- [cons AC6] spec 0029 Fix B — existing-domain-aware routing ----
+  # no-match title → propose+create a NEW domain; matching title → route into the
+  # existing domain; and consolidation NEVER writes .speccraft/ memory.
+  # Snapshot the three .speccraft/ memory files to prove the blast-radius boundary.
+  local SNAP_ARCH SNAP_CONV SNAP_HIST
+  SNAP_ARCH="$(mktemp)"; SNAP_CONV="$(mktemp)"; SNAP_HIST="$(mktemp)"
+  cp .speccraft/architecture.md "$SNAP_ARCH"
+  cp .speccraft/conventions.md  "$SNAP_CONV"
+  cp .speccraft/history.md      "$SNAP_HIST"
+  # Quiesce the lingering conflict spec (0088, still a live candidate) so each AC6
+  # sync sees exactly one eligible candidate (spec 0028 leg-isolation discipline).
+  touch "specs/0088-conflict-source/consolidation-skip"
+
+  # (AC6a) NO existing domain matches the title → a NEW specs/domains/<area>.md is created.
+  mkdir -p specs/0087-billing-webhooks
+  cat > specs/0087-billing-webhooks/spec.md <<'EOF'
+---
+id: "0087"
+title: "Billing webhooks"
+status: closed
+created: 2026-06-02
+delta:
+  - ADD: retry failed billing webhooks with capped backoff (spec 0087)
+---
+EOF
+  _assert_candidate_singleton "0087-billing-webhooks" "[cons AC6a]"
+  echo "==> [cons AC6a] /speccraft:sync (no domain matches 'Billing webhooks' → NEW domain)"
+  run_claude "/speccraft:sync. Process the consolidation backfill for spec 0087. No existing specs/domains/ file matches its title (only 'state' exists); propose and, on confirm, CREATE a new domain file (e.g. specs/domains/billing.md) and merge its ADD requirement there. Confirm." cons-ac6a.log
+  local NEWDOM
+  NEWDOM="$(ls specs/domains/*.md 2>/dev/null | grep -v '/state\.md$' | head -1 || true)"
+  [ -n "$NEWDOM" ] || fail "[cons AC6a] no NEW domain file created for a no-match title"
+  contains_regex "$NEWDOM" "$PROV_SUFFIX_RE"
+  pass "[cons AC6a] no-match title created a new domain file: $NEWDOM"
+
+  # (AC6b) title fits the existing 'state' domain → route into specs/domains/state.md.
+  local SNAP_STATE; SNAP_STATE="$(mktemp)"; cp specs/domains/state.md "$SNAP_STATE"
+  mkdir -p specs/0086-state-tracking
+  cat > specs/0086-state-tracking/spec.md <<'EOF'
+---
+id: "0086"
+title: "State tracking improvements"
+status: closed
+created: 2026-06-03
+delta:
+  - ADD: state records the active design lane (spec 0086)
+---
+EOF
+  _assert_candidate_singleton "0086-state-tracking" "[cons AC6b]"
+  echo "==> [cons AC6b] /speccraft:sync (title fits existing 'state' domain → route into it)"
+  run_claude "/speccraft:sync. Process the consolidation backfill for spec 0086. Its title fits the existing specs/domains/state.md domain; route into THAT existing file (do not create a new one) and merge its ADD requirement. Confirm." cons-ac6b.log
+  [ "$(wc -l < specs/domains/state.md)" -gt "$(wc -l < "$SNAP_STATE")" ] \
+    || fail "[cons AC6b] existing state.md domain did not gain lines"
+  pass "[cons AC6b] matching title routed into the existing state.md domain"
+
+  # AC6 blast-radius invariant: consolidation NEVER wrote .speccraft/ memory.
+  cmp -s "$SNAP_ARCH" .speccraft/architecture.md || fail "[cons AC6] consolidation wrote .speccraft/architecture.md"
+  cmp -s "$SNAP_CONV" .speccraft/conventions.md  || fail "[cons AC6] consolidation wrote .speccraft/conventions.md"
+  cmp -s "$SNAP_HIST" .speccraft/history.md      || fail "[cons AC6] consolidation wrote .speccraft/history.md"
+  pass "[cons AC6] .speccraft/{architecture,conventions,history}.md byte-unchanged by consolidation"
+
+  rm -f "$SNAP_DOM" "$SNAP_DOM2" "$SNAP_ARCH" "$SNAP_CONV" "$SNAP_HIST" "$SNAP_STATE"
 }

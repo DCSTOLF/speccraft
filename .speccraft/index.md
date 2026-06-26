@@ -35,7 +35,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-none
+specs/0029-consolidation-routing-hardening/
 
 ## Recent decisions (last 3)
 

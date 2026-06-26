@@ -21,7 +21,15 @@ set -euo pipefail
 
 # Source spec 0024's history parser for the backfill chronology (explicit
 # coupling). Resolve relative to this file so it works from any CWD.
-_CONSOLIDATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+#
+# Cross-shell correctness (spec 0029): the dirname argument is the canonical
+# ${BASH_SOURCE[0]:-$0}, never the unguarded form. Under bash, BASH_SOURCE is always
+# populated during `source`, so the :-$0 fallback never fires there; under zsh,
+# BASH_SOURCE is unset and `set -u` would abort on an unguarded reference — but zsh
+# sets $0 to the sourced file path, so $0 is exactly the right value where the
+# fallback fires. Do NOT simplify this back to the unguarded form (it breaks
+# `source` under zsh + set -u; an exact-form bats guard enforces this).
+_CONSOLIDATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=../history/compact.lib.sh
 source "$_CONSOLIDATE_LIB_DIR/../history/compact.lib.sh"
 
@@ -129,6 +137,27 @@ consolidate_routing_seed() {
   printf '%s\n' "$title" \
     | tr '[:upper:]' '[:lower:]' \
     | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+}
+
+# consolidate_existing_domains <repo-root>
+# Emit the <area> name of every LIVE specs/domains/*.md, one per line, bytewise
+# sorted (LC_ALL=C). Excludes the specs/domains/.archive/ subtree (a non-recursive
+# glob never descends into it) and emits nothing when specs/domains/ is absent.
+#
+# SEPARATE from consolidate_routing_seed (spec 0029 Fix B): the seed is byte-
+# unchanged (it slugifies the title); THIS helper enumerates the current domain set
+# so the routing PROPOSAL can prefer an existing-domain match or deliberately
+# propose a NEW domain when none fit. The "prefer-existing-else-new" judgment stays
+# model-tier and confirm-gated — this helper only supplies the deterministic list.
+consolidate_existing_domains() {
+  local root="$1" dir d base
+  dir="$root/specs/domains"
+  [ -d "$dir" ] || return 0
+  for d in "$dir"/*.md; do
+    [ -e "$d" ] || continue          # literal glob (no matches) → skip
+    base="$(basename "$d")"
+    printf '%s\n' "${base%.md}"
+  done | LC_ALL=C sort
 }
 
 # _consolidate_encode_entries  (reads archive-B entry text on stdin)

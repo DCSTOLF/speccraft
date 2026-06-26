@@ -9,6 +9,12 @@ You are the memory-keeper. Your job is to keep `.speccraft/` memory accurate and
 
 # Mode: close (triggered by /speccraft:spec:close)
 
+> This mode updates ONLY `.speccraft/` memory (general decisions / ADRs /
+> conventions). It **does not perform consolidation** — folding a spec's
+> requirements into per-domain files is a SEPARATE step; see `Mode: consolidate`.
+> Never treat a `.speccraft/` memory update as a substitute for consolidating the
+> spec's requirements into `specs/domains/`.
+
 ## Inputs
 
 - spec.md, plan.md, tasks.md for the just-closed spec
@@ -120,6 +126,23 @@ requirement silently — the command presents your proposal and the developer
 confirms. The deterministic mechanics (delta parse, exact-locator match, archive-B
 append + full-entry dedup, the dir-move) live in `commands/spec/consolidate.lib.sh`;
 your job is the prose merge, the routing proposal, and the conflict presentation.
+
+**Routing target (non-negotiable).** Consolidation routes ONLY to `specs/domains/<area>.md`
+and NEVER writes `.speccraft/architecture.md`, `conventions.md`, or `history.md`. Those `.speccraft/` files belong to `Mode: close`
+and are NOT a substitute for consolidation — folding a spec's requirements into
+`.speccraft/architecture.md`/`conventions.md` does NOT consolidate them. A missing
+`delta:` or `domains:` block is **a fallback, never a skip**: with no `delta:`,
+propose a confirm-gated ADD/MODIFY/REMOVE classification into the routed domain file;
+with no `domains:`, ground the seeded area with `consolidate_existing_domains` —
+prefer a good existing-domain match, else propose a clearly named NEW domain — and
+present it for confirm/correct. The target is always `specs/domains/`, never
+`.speccraft/`.
+
+**Residual risk (be the guardrail yourself).** This routing discipline is
+**mitigation, not enforcement** — no PreToolUse hook can distinguish a wrong
+consolidation write to `.speccraft/conventions.md` from a legitimate `Mode: close`
+write to the same file, so nothing mechanically stops the conflation. Do not rely on
+a guard; route to `specs/domains/` by construction.
 
 ## Inputs
 

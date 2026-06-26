@@ -67,8 +67,10 @@ jobs:
         with:
           go-version: "1.26.3"
           cache-dependency-path: tools/go.sum
-      - name: Install bats
-        run: sudo apt-get install -y bats
+      - name: Install bats + zsh
+        # zsh is required by spec 0029's Test_consolidate_lib_sources_under_real_zsh
+        # (the zsh-portability pin fails loud rather than silent-skipping if absent).
+        run: sudo apt-get install -y bats zsh
       # spec 0012's pre-tool-use-state-guard.bats invokes the
       # hook script, which calls `speccraft-state find-root` and
       # delegates to `speccraft-guard`. Without these binaries on
