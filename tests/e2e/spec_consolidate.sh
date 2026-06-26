@@ -211,7 +211,7 @@ delta:
 EOF
   _assert_candidate_singleton "0087-billing-webhooks" "[cons AC6a]"
   echo "==> [cons AC6a] /speccraft:sync (no domain matches 'Billing webhooks' → NEW domain)"
-  run_claude "/speccraft:sync. Process the consolidation backfill for spec 0087. No existing specs/domains/ file matches its title (only 'state' exists); propose and, on confirm, CREATE a new domain file (e.g. specs/domains/billing.md) and merge its ADD requirement there. Confirm." cons-ac6a.log
+  run_claude "/speccraft:sync. Approve and APPLY the consolidation backfill for spec 0087 now (do not wait for a separate confirmation). No existing domain matches its title (only 'state' exists), so CREATE a new domain file specs/domains/billing.md, merge its ADD requirement into it, and move the closed dir to specs/.archive/." cons-ac6a.log
   local NEWDOM
   NEWDOM="$(ls specs/domains/*.md 2>/dev/null | grep -v '/state\.md$' | head -1 || true)"
   [ -n "$NEWDOM" ] || fail "[cons AC6a] no NEW domain file created for a no-match title"
@@ -233,7 +233,7 @@ delta:
 EOF
   _assert_candidate_singleton "0086-state-tracking" "[cons AC6b]"
   echo "==> [cons AC6b] /speccraft:sync (title fits existing 'state' domain → route into it)"
-  run_claude "/speccraft:sync. Process the consolidation backfill for spec 0086. Its title fits the existing specs/domains/state.md domain; route into THAT existing file (do not create a new one) and merge its ADD requirement. Confirm." cons-ac6b.log
+  run_claude "/speccraft:sync. Approve and APPLY the consolidation backfill for spec 0086 now (do not wait for a separate confirmation). Its title fits the existing specs/domains/state.md domain, so route into THAT existing file (do not create a new one), merge its ADD requirement, and move the closed dir to specs/.archive/." cons-ac6b.log
   [ "$(wc -l < specs/domains/state.md)" -gt "$(wc -l < "$SNAP_STATE")" ] \
     || fail "[cons AC6b] existing state.md domain did not gain lines"
   pass "[cons AC6b] matching title routed into the existing state.md domain"
