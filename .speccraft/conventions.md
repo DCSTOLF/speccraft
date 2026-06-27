@@ -144,6 +144,16 @@ The language-fixture pattern above runs each fixture in a hermetic subshell — 
 - **Reuse the initialized repo; structural predicates only.** The fixture runs in `$TEST_ROOT` (already `init`-ed by the lifecycle), so it doesn't re-pay for `/speccraft:init`. It asserts only STRUCTURAL signals (frontmatter key present/absent, a state lane's `jq` value, a dated-ADR header shape, a file byte-unchanged via `cmp -s`) per the structural-over-content rule — never grep model prose. Pure sub-helpers (e.g. `section_nonempty`, which checks a `## Header` is followed by a non-blank, non-`<placeholder>` line) are unit-checkable without credits.
 - **Canonical references.** `tests/e2e/pm_to_spec_bridge.sh` (spec 0022, AC5 — the `spec:new --from`/`informed-by` bridge) and `tests/e2e/arch_close_memory.sh` (spec 0022, AC4/AC6 — `arch:close` memory-keeper routing + lane independence). Both are sourced at the top of `run.sh` and called as steps `[10b/13]`/`[10c/13]`. `tests/e2e/history_compact.sh` (spec 0024) follows the same pattern at `[10d/13]`.
 
+### A credit-gated e2e leg must instruct the model to APPLY, not propose-and-wait
+
+Introduced by spec 0029.
+
+A SOURCED e2e leg drives `claude -p` NON-interactively — there is no human to reply. A `run_claude` prompt phrased as a proposal ("propose and, on confirm, do X … Confirm.") makes the model present a plan and STOP, waiting for a confirmation that never comes; the side effect the leg asserts on (a created file, a moved dir) never happens and the leg fails — even though the model's reasoning was correct. Phrase the leg's prompt as a single-shot IMPERATIVE that both decides and acts: "Approve and APPLY … now (do not wait for a separate confirmation) … `<explicit terminal writes>`." Mirror an existing passing confirm leg's wording verbatim where possible.
+
+- This is the `run.sh`-imperative corollary of the "structural over content / model phrasing at the assertion layer" lineage (specs 0014/0017/0020): don't trust the model to volunteer the terminal action — instruct it.
+- Confirm-GATING is a separate property pinned by a DECLINE leg (e.g. "DECLINE it — do not apply"); an APPLY leg and a DECLINE leg are different tests, not the same prompt reused.
+- **Canonical reference.** `tests/e2e/spec_consolidate.sh` — the `[cons 2/3]` confirm leg ("Approve … fold … archive … move …") and the spec-0029 AC6 leg, which first failed in CI with proposal-style wording ("propose and, on confirm … Confirm.") and was fixed to the imperative "Approve and APPLY … now" form (commit `ddf38da`).
+
 ### Expose the deterministic SEED of a model heuristic at the cheap layer
 
 Introduced by spec 0024.
@@ -206,6 +216,15 @@ Canonical reference: `commands/spec/consolidate.lib.sh` (spec 0025) sources
 `.speccraft/history.md` parsing rather than two. Pinned by `tests/hooks/spec-consolidate.bats`.
 Prefer this reuse over copying a parser whenever the upstream helper is already pure
 and the two libs share a genuine data contract (here: history.md entry shape).
+
+#### Cross-shell self-location: `${BASH_SOURCE[0]:-$0}`, never a bare `${BASH_SOURCE[0]}`
+
+Introduced by spec 0029.
+
+A sourceable `*.lib.sh` that must resolve its OWN directory (e.g. to `source` a sibling lib) MUST use the canonical `"$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"`, never a bare `${BASH_SOURCE[0]}`. The `.md` command bodies `source` these libs in whatever shell the agent's Bash tool runs — which on many host machines is **zsh**, where `BASH_SOURCE` is unset; under the lib's `set -u` a bare reference aborts the `source` (`BASH_SOURCE[0]: parameter not set`) and takes the WHOLE helper down. The fallback is correct cross-shell: bash always populates `BASH_SOURCE` (so `:-$0` never fires there), and zsh sets `$0` to the sourced file path (so `$0` is exactly right where it fires).
+
+- **Pin it two ways.** (1) A REAL-zsh source test — `zsh -uc 'source <lib>'` exits 0 — because a bash "simulated-unset" harness CANNOT reproduce the bug (bash re-populates `BASH_SOURCE` during `source`, yielding a false pass); the test fails loud if zsh is absent rather than silent-skipping, and CI installs `zsh`. (2) An exact-form guard test asserting no `commands/**/*.lib.sh` contains a `${BASH_SOURCE[0]}` token that is not exactly `${BASH_SOURCE[0]:-$0}` (count fixed-string `BASH_SOURCE[0]` vs the canonical idiom; total>canon = a bare use). Keep prose/comments free of a bare `${BASH_SOURCE[0]}` token or the guard flags them.
+- **Canonical reference.** `commands/spec/consolidate.lib.sh` (the only lib that self-locates today) + `Test_consolidate_lib_sources_under_real_zsh` / `Test_no_lib_uses_bare_BASH_SOURCE_idiom` in `tests/hooks/spec-consolidate.bats` (spec 0029).
 
 ### Grep-assertion oracle for doc-only specs
 

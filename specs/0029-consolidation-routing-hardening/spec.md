@@ -1,7 +1,7 @@
 ---
 id: "0029"
 title: "Consolidation routing hardening + zsh portability fix"
-status: in-progress
+status: closed
 created: 2026-06-26
 authors: [claude]
 packages: []

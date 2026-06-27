@@ -2,6 +2,47 @@
 
 Append-only. Newest first.
 
+## 2026-06-27 — Consolidation routing hardening + zsh portability fix; released 1.6.1 (spec 0029)
+
+**Spec:** specs/0029-consolidation-routing-hardening/
+**Decision:** Fix three first-use defects in spec 0025's inline-at-close
+consolidation, surfaced when speccraft was run from scratch in another project, and
+patch-release them as 1.6.1. (A) **zsh portability:** `consolidate.lib.sh` resolved
+its own dir with a bare `${BASH_SOURCE[0]}` — under zsh + `set -u` that aborts the
+`source` (`BASH_SOURCE[0]: parameter not set`, exit 127), which took down EVERY
+consolidate function and the `/speccraft:sync` backfill, so an agent silently
+skipped consolidation. Fixed with the canonical `${BASH_SOURCE[0]:-$0}` (bash always
+populates `BASH_SOURCE` so the fallback never fires there; zsh sets `$0` to the
+sourced file, so `$0` is right exactly where it fires). (B) **routing couldn't see
+existing domains:** `consolidate_routing_seed` only slugified the title, so it could
+neither prefer a good existing domain nor deliberately propose a new one — it leaned
+entirely on the developer to correct. Added a SEPARATE deterministic
+`consolidate_existing_domains` (live-only, `.archive`-excluded, bytewise-sorted) to
+ground the proposal; the seed is byte-unchanged. (C) **docs let an agent conflate
+the two close-time mechanisms:** the observed failure was an agent folding
+requirements into `.speccraft/architecture.md`/`conventions.md` (the `Mode: close`
+memory files) and calling consolidation done — the exact files 0025's blast radius
+forbids consolidation from touching. Hardened `close.md` step 9 + `memory-keeper`
+(`Mode: consolidate` and `Mode: close`) to state consolidation routes ONLY to
+`specs/domains/`, never `.speccraft/`; that a missing `delta:`/`domains:` is a
+fallback, not a skip; and that `Mode: close` updates are not a substitute for
+consolidation.
+
+Two-tier per the established pattern: deterministic helpers + bats (a REAL-zsh
+source pin — a bash simulated-unset harness can't reproduce the bug because bash
+re-populates `BASH_SOURCE` during `source` — plus an exact-form `${BASH_SOURCE[0]:-$0}`
+guard across all 8 `*.lib.sh`); doc contracts via `specs/0029-.../verify.sh`; and a
+credit-gated AC6 e2e leg. Two new conventions codified: the cross-shell lib-sourcing
+idiom + its guard, and "a credit-gated e2e leg must instruct the model to APPLY, not
+propose-and-wait" (the AC6 leg first failed in CI because proposal-style prompt
+wording made non-interactive `claude -p` stop at "Confirm?"). `ci.yml` hooks job now
+installs `zsh`. Version bumped 1.6.0 → 1.6.1 across the five surfaces.
+
+**Deviations:** no `/speccraft:spec:override` (all ungated file types). 0029's own
+close ran NO consolidation — it has no `domains:`/`delta:` and the repo has no
+`specs/domains/` yet, a non-blocking decline. Tests: bats 138/0, go test green,
+verify.sh 0025+0029 green. Landed `0d595d7` + `ddf38da`; tag `v1.6.1`.
+
 ## 2026-06-25 — Pin the e2e consolidation fixture's load-bearing corpus precondition at the credit-free layer (spec 0028)
 
 **Spec:** specs/0028-e2e-consolidation-fixture-isolation/
