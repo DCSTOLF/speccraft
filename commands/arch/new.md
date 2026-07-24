@@ -17,8 +17,9 @@ Steps:
 
 1. **Bootstrap.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/arch/new.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   source "$PLUGIN_ROOT/commands/arch/new.lib.sh"
    ```
 
 2. **Allocate id + slug.**
@@ -41,7 +42,7 @@ Steps:
 
 5. **Set the Architect lane** (independent of `active_spec` / `active_product`):
    ```bash
-   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_design "$ID-$SLUG"
+   speccraft-state set active_design "$ID-$SLUG"
    ```
 
 6. Respond with the design id, title, and suggested next step

@@ -16,8 +16,8 @@ Steps:
 
 1. **Resolve the active design.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   ACTIVE="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" get active_design)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   ACTIVE="$(speccraft-state get active_design)"
    DESIGN="$REPO_ROOT/design/$ACTIVE/design.md"
    ```
    If `ACTIVE` is empty, error: "No active design."
@@ -39,7 +39,7 @@ Steps:
 
 5. **Clear ONLY the Architect lane:**
    ```bash
-   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_design null
+   speccraft-state set active_design null
    ```
 
 6. Confirm what was recorded (or that the user declined) and that the design

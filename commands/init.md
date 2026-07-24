@@ -12,17 +12,16 @@ Edit for modifying existing files. Do not describe steps — carry them out.
 
 Steps:
 
-1. Discover the plugin root. Run:
+1. Discover the plugin root. `speccraft-state` is on `PATH` via the plugin's
+   `bin/` (installed by the SessionStart hook before any command runs), and it
+   self-resolves the plugin's install directory:
+   ```bash
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
    ```
-   bash -c 'echo "${CLAUDE_PLUGIN_ROOT:-}"'
-   ```
-   Store the result as PLUGIN_ROOT. If the result is empty, try common locations:
-   - Look for a directory that contains both `templates/speccraft/index.md` and
-     `scripts/install-binaries.sh`. Check `~/.claude/plugins/speccraft/`,
-     `~/.claude/plugins/speccraft@speccraft/`, and any path from
-     `$CLAUDE_PLUGIN_DIR`.
-   - If still not found, error: "Cannot locate speccraft plugin root. Please
-     reinstall the plugin."
+   If this errors, the plugin install is broken — reinstall it. (Unlike
+   `$CLAUDE_PLUGIN_ROOT`, which is not reliably exported to slash-command bash,
+   `speccraft-state plugin-root` derives the root from the binary's own location
+   — see spec 0030.)
 
 2. Run `bash "$PLUGIN_ROOT/scripts/install-binaries.sh"` to ensure helper
    binaries are built. If the script exits non-zero, print a warning but
@@ -54,7 +53,7 @@ Steps:
    do **not** Write/Edit this file directly, the spec-0012 PreToolUse
    hook blocks it:
    ```bash
-   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" init
+   speccraft-state init
    ```
    `speccraft-state init` is idempotent: it writes the canonical empty
    shape (`{"version":1,"session":{"id":"","edited_test_files":[],"edited_prod_files":[]}}`)

@@ -8,7 +8,11 @@ Cross-model review of uncommitted changes (or `git diff <base>`).
 
 Steps:
 
-1. Compute the diff:
+1. Resolve the plugin root (for the prompt template path below), then compute
+   the diff:
+   ```bash
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   ```
    - Default: `git diff HEAD` (working tree + staged).
    - With `--base <ref>`: `git diff <ref>...HEAD`.
 
@@ -18,7 +22,7 @@ Steps:
    - The active spec.md (if any)
    - Relevant `.speccraft/` files (conventions.md, guardrails.md)
    - The code-review prompt from
-     `$CLAUDE_PLUGIN_ROOT/templates/prompts/review.md`
+     `$PLUGIN_ROOT/templates/prompts/review.md`
 
 3. Synthesize via the `cross-reviewer` subagent. Output to stdout (do not
    write to spec dir — this is per-iteration, not per-spec).

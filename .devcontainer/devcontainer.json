@@ -26,7 +26,12 @@
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 
     // speccraft dev knobs.
-    "SPECCRAFT_LOG_LEVEL": "debug"
+    "SPECCRAFT_LOG_LEVEL": "debug",
+
+    // Dogfooding override (spec 0030): pin the plugin root to the checked-out
+    // working tree so `speccraft-state plugin-root` resolves here, not to a
+    // stale installed cache copy that happens to be first on PATH.
+    "SPECCRAFT_PLUGIN_ROOT": "${containerWorkspaceFolder}"
   },
 
   "remoteUser": "vscode",

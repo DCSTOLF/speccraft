@@ -17,9 +17,10 @@ Steps:
 
 1. **Bootstrap.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   ACTIVE="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" get active_product)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/pm/prioritize.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   ACTIVE="$(speccraft-state get active_product)"
+   source "$PLUGIN_ROOT/commands/pm/prioritize.lib.sh"
    BRIEF="$REPO_ROOT/product/$ACTIVE/brief.md"
    ```
    If `ACTIVE` is empty, error: "No active product brief."

@@ -17,8 +17,9 @@ Steps:
 
 1. **Bootstrap.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/pm/new.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   source "$PLUGIN_ROOT/commands/pm/new.lib.sh"
    ```
 
 2. **Allocate id + slug.**
@@ -40,7 +41,7 @@ Steps:
 
 5. **Set the PM lane** (independent of `active_spec` / `active_design`):
    ```bash
-   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_product "$ID-$SLUG"
+   speccraft-state set active_product "$ID-$SLUG"
    ```
 
 6. Respond with the brief id, title, and suggested next step

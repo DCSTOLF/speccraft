@@ -42,7 +42,7 @@ Steps:
 
 6. Edit `spec.md` frontmatter to set `status: closed`. Then run:
    ```bash
-   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_spec null
+   speccraft-state set active_spec null
    ```
 
    **Do not edit `.speccraft/state.json` directly under any circumstance**
@@ -61,8 +61,9 @@ Steps:
    complete, check whether `history.md` has grown past its bound and there is
    actually something below the recent window:
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/history/compact.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   source "$PLUGIN_ROOT/commands/history/compact.lib.sh"
    HIST="$REPO_ROOT/.speccraft/history.md"
    COUNT="$(history_parse_entries "$HIST" | grep -c '^## ' || true)"
    BYTES="$(wc -c < "$HIST" | tr -d ' ')"
@@ -95,8 +96,9 @@ Steps:
    > target is `specs/domains/`, never `.speccraft/`.
 
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/spec/consolidate.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   source "$PLUGIN_ROOT/commands/spec/consolidate.lib.sh"
    SPEC_DIR="$REPO_ROOT/specs/$ACTIVE"
    ```
 

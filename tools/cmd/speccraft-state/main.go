@@ -10,7 +10,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
 
-const version = "1.6.1"
+const version = "1.7.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -35,6 +35,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintln(stdout, root)
+		return 0
+
+	case "plugin-root":
+		// Resolve the plugin's own install directory (spec 0030). Command docs
+		// call this instead of dereferencing $CLAUDE_PLUGIN_ROOT, which is not
+		// reliably exported to slash-command bash. speccraft-state is reachable
+		// via the plugin's bin/ on PATH.
+		pluginRoot, err := speccraft.ResolvePluginRoot()
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintln(stdout, pluginRoot)
 		return 0
 
 	case "init":
@@ -238,6 +251,7 @@ func usage(w io.Writer) {
 
 Usage:
   speccraft-state find-root              Find repo root (dir with .speccraft/)
+  speccraft-state plugin-root            Resolve the plugin's own install dir
   speccraft-state init                   Create empty state.json if absent (idempotent)
   speccraft-state get <field>            Read a field from state.json
   speccraft-state set <field> <value>    Write a field to state.json

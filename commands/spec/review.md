@@ -11,8 +11,12 @@ not describe steps — carry them out.
 
 Steps:
 
-1. Read `.speccraft/state.json` for `active_spec`. If none, error:
+1. Resolve the plugin root (for the prompt template path below), then read
+   `.speccraft/state.json` for `active_spec`. If none, error:
    "No active spec. Run /speccraft:spec:new first."
+   ```bash
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   ```
 
 2. Read `.speccraft/agents.toml`. Determine which agents to invoke:
    - If `--agents` flag provided, use that list (validate each exists).
@@ -23,7 +27,7 @@ Steps:
    - The relevant slice of `.speccraft/` (index.md + guardrails.md +
      architecture.md + conventions.md)
    - The review prompt template from
-     `$CLAUDE_PLUGIN_ROOT/templates/prompts/review.md`
+     `$PLUGIN_ROOT/templates/prompts/review.md`
 
    Run agents in parallel. Per-agent timeout from
    `agents.toml.defaults.review_timeout_s` (default 600s).

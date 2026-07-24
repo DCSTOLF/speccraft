@@ -14,8 +14,8 @@ Steps:
 
 1. **Resolve the active brief.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   ACTIVE="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" get active_product)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   ACTIVE="$(speccraft-state get active_product)"
    ```
    If empty, error: "No active product brief. Run /speccraft:pm:new first."
    `BRIEF="$REPO_ROOT/product/$ACTIVE/brief.md"`.

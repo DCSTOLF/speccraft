@@ -22,8 +22,9 @@ Steps:
 
 1. **Bootstrap.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/history/compact.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   source "$PLUGIN_ROOT/commands/history/compact.lib.sh"
    HIST="$REPO_ROOT/.speccraft/history.md"
    ARCHIVE="$REPO_ROOT/.speccraft/history-archive/history.md"
    N="${WINDOW:-$HISTORY_WINDOW_N}"   # default 10; honor --window N if provided

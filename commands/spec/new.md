@@ -40,8 +40,9 @@ Steps:
 
 5. **Bootstrap + scaffold via the lib.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/spec/new.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   source "$PLUGIN_ROOT/commands/spec/new.lib.sh"
    SPEC="$REPO_ROOT/specs/<id>-<slug>/spec.md"
    ```
    - **Plain (no `--from`):** `spec_new_scaffold "$SPEC" "<id>" "<title>" "$(date +%F)" "$REPO_ROOT"`.
@@ -75,7 +76,7 @@ Steps:
 
 7. Run:
    ```bash
-   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_spec <id>-<slug>
+   speccraft-state set active_spec <id>-<slug>
    ```
 
 8. Edit `.speccraft/index.md` to update the "Active spec" section to:

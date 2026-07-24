@@ -184,7 +184,7 @@ Introduced by spec 0015.
 When a slash command under `commands/<group>/<name>.md` needs Bash logic complex enough to deserve unit tests — preflight gates, file-shape parsing, snapshot/diff, multi-step state transitions — extract the helpers into a sibling `commands/<group>/<name>.lib.sh` colocated with the `.md` body. The `.md` command sources the lib at runtime; the bats suite under `tests/hooks/<name>.bats` sources the same file at test time.
 
 - **Shape.** `#!/usr/bin/env bash` + `set -euo pipefail` per the general Bash convention. Every helper is a pure function — no top-level side effects, no top-level `cd`, no global state mutations at source time. Sourcing the file from bats must be a no-op other than defining functions and any read-only constants. Functions emit human-readable errors on stderr (typically via a central `<name>_error()` envelope) and reserve stdout for structured output (drift items, diff signals, identifier tokens).
-- **Runtime sourcing.** From the `.md` body: `source "$CLAUDE_PLUGIN_ROOT/commands/<group>/<name>.lib.sh"`. The command body then becomes a thin driver that calls named functions in order, each independently testable from bats.
+- **Runtime sourcing.** From the `.md` body, resolve the plugin root once via the binary, then source through it: `PLUGIN_ROOT="$(speccraft-state plugin-root)"` then `source "$PLUGIN_ROOT/commands/<group>/<name>.lib.sh"`. Do **not** use `$CLAUDE_PLUGIN_ROOT` here — it is only reliably exported to hook subprocesses, not to the bash a slash command runs, and in the field it has resolved to the plugins *parent* directory (spec 0030). `speccraft-state` is reachable bare because the plugin's `bin/` is on `PATH`; `speccraft-state plugin-root` derives the install dir from the binary's own location. The command body then becomes a thin driver that calls named functions in order, each independently testable from bats.
 - **Test sourcing.** From the bats file: `source "$PLUGIN_DIR/commands/<group>/<name>.lib.sh"` in `setup()`. Because every helper is pure, the bats harness exercises each function in isolation with seeded fixtures — preflight error paths, identifier extraction, frontmatter integrity, snapshot diff, archive renames — at zero credit cost. Agent-dependent ACs stay in `tests/e2e/run.sh` (credit-gated); helper-mechanics ACs come back to the cheap bats layer.
 - **Why this rule matters.** Before spec 0015, `commands/spec/*` was Markdown-only — every command's mechanism prose was un-unit-testable shell embedded inside an instructions document. Spec 0015's `revise` introduced 13 distinct preflight + parsing + diff + archive helpers; pushing AC1's three status sub-cases plus AC9/AC10 (preflight error paths) into the credit-gated lifecycle job would have cost a real budget for what is purely deterministic Bash. Extracting to `revise.lib.sh` made 53 bats tests possible at zero credit cost, and the pure-function discipline is what makes those tests trivial to author — `setup()` seeds a fixture, the `@test` body sources the lib and calls one helper, the assertion checks stdout/stderr/exit. No mocks, no harness.
 - **Pairing with the e2e layer.** The bats layer covers helper mechanics; the e2e layer covers the agent-dependent integration. The split is the same as the spec-0014 "structural over content" rule generalised to layer: bats can verify "helper X returns Y for input Z" because that's deterministic; only the e2e layer can verify "the spec-reviser agent emitted `^Q-DRIFT:` on a real-change revise" because that's model-driven. Pick the cheap layer first; only escalate ACs that genuinely need `claude -p`.
@@ -225,6 +225,69 @@ A sourceable `*.lib.sh` that must resolve its OWN directory (e.g. to `source` a 
 
 - **Pin it two ways.** (1) A REAL-zsh source test — `zsh -uc 'source <lib>'` exits 0 — because a bash "simulated-unset" harness CANNOT reproduce the bug (bash re-populates `BASH_SOURCE` during `source`, yielding a false pass); the test fails loud if zsh is absent rather than silent-skipping, and CI installs `zsh`. (2) An exact-form guard test asserting no `commands/**/*.lib.sh` contains a `${BASH_SOURCE[0]}` token that is not exactly `${BASH_SOURCE[0]:-$0}` (count fixed-string `BASH_SOURCE[0]` vs the canonical idiom; total>canon = a bare use). Keep prose/comments free of a bare `${BASH_SOURCE[0]}` token or the guard flags them.
 - **Canonical reference.** `commands/spec/consolidate.lib.sh` (the only lib that self-locates today) + `Test_consolidate_lib_sources_under_real_zsh` / `Test_no_lib_uses_bare_BASH_SOURCE_idiom` in `tests/hooks/spec-consolidate.bats` (spec 0029).
+
+#### zsh-reserved parameter names are never assigned in `commands/**/*.lib.sh`
+
+Introduced by spec 0030.
+
+A `commands/**/*.lib.sh` is `source`d into the caller's shell by the `.md` command
+body — which on macOS is **zsh**, where several parameters are RESERVED (read-only,
+e.g. `status` aliases `$?`). Assigning one under `set -u` aborts the call with
+`read-only variable: <name>` and takes the whole helper down (the concrete field
+bug: `revise.lib.sh`'s bare `status` local killed `preflight_status_gate` on macOS).
+So no `commands/**/*.lib.sh` may use any of the pinned zsh-reserved parameter names
+— `status`, `pipestatus`, `path`, `cdpath`, `fignore`, `mailpath`, `manpath`,
+`fpath`, `watch`, `psvar`, `signals`, `argv`, `histchars`, `ARGC`, `HISTCHARS`
+(the zsh `RESERVED` class, `man zshparam`) — as an ASSIGNED shell variable (bare
+`NAME=`, `local`/`declare`/`typeset NAME`, `read ... NAME`, `for NAME in`). Prefer a
+prefixed name (`spec_status`, not `status`).
+
+- **This extends spec 0029's cross-shell lib-sourcing convention** (the
+  `${BASH_SOURCE[0]:-$0}` idiom above) to variable *naming*: both are "a lib sourced
+  into zsh must not assume bash semantics."
+- **Pin it two ways.** (1) A static grep guard in the spec's `verify.sh` pinning the
+  assignment grammar over the reserved set (`specs/0030-.../verify.sh` AC9). The
+  curated list is a high-risk subset, NOT a proof of exhaustiveness. (2) The
+  AUTHORITATIVE backstop is a REAL-zsh source leg —
+  `tests/hooks/lib-zsh-safety.bats` runs `zsh -uc "source <lib>"` over every lib and
+  asserts exit 0 with empty stderr — so any reserved identifier the static grep
+  misses still fails. Fail loud if zsh is absent, never silent-skip (`ci.yml`
+  installs zsh, spec 0029).
+- **Canonical reference.** `commands/spec/revise.lib.sh` (`spec_status`, renamed from
+  a bare `status`) + `tests/hooks/lib-zsh-safety.bats` (spec 0030).
+
+#### Command docs resolve the plugin root via `speccraft-state plugin-root`
+
+Introduced by spec 0030.
+
+A slash-command `.md` body runs bash on behalf of the **slash command**, not a
+hook. `CLAUDE_PLUGIN_ROOT` is only contractually exported to **hook** subprocesses
+(`hooks/hooks.json`); it is NOT reliably set for slash-command bash, and in the
+field it has resolved to the plugins *parent* directory (spec 0030), breaking every
+`bin/`/`commands/`/`templates/` path. Therefore:
+
+- **Never dereference bare `$CLAUDE_PLUGIN_ROOT` (or `${CLAUDE_PLUGIN_ROOT}`) for a
+  `bin/`, `commands/`, or `templates/` path in any `commands/**/*.md`.** Resolve the
+  root once, before the first plugin-relative access, via
+  `PLUGIN_ROOT="$(speccraft-state plugin-root)"`, and use `$PLUGIN_ROOT/...`
+  thereafter. If that resolution errors, the install is broken — fail fast.
+- **Binary calls go bare on `PATH`.** `speccraft-state`, `speccraft-guard`, and
+  `speccraft-drift` are reachable unqualified because the plugin's `bin/` is on
+  `PATH` before any command runs; write `speccraft-state find-root`, not
+  `"$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root`. `speccraft-state
+  plugin-root` derives the install dir from the binary's own location
+  (`os.Executable()` → `EvalSymlinks` → ascend to the manifest-identity-valid
+  ancestor), with precedence `SPECCRAFT_PLUGIN_ROOT` → validated
+  `CLAUDE_PLUGIN_ROOT` → self-derivation.
+- **Hooks are exempt.** Scripts under `hooks/` DO reliably receive
+  `CLAUDE_PLUGIN_ROOT` and may keep using it.
+- **Pinned by** an exact-form grep guard in the owning spec's `verify.sh`
+  (`specs/0030-.../verify.sh`: the forbidden
+  `\$\{?CLAUDE_PLUGIN_ROOT\}?/(bin|commands|templates)` pattern must be absent from
+  `commands/**/*.md`, and the positive `PLUGIN_ROOT="$(speccraft-state
+  plugin-root)"` idiom present). The §Runtime sourcing entry above is the
+  `.lib.sh`-sourcing instance of this rule; this convention generalizes it to
+  `templates/` paths and bare-binary calls.
 
 ### Grep-assertion oracle for doc-only specs
 

@@ -14,8 +14,8 @@ Steps:
 
 1. **Resolve the active design.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   ACTIVE="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" get active_design)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   ACTIVE="$(speccraft-state get active_design)"
    ```
    If empty, error: "No active design. Run /speccraft:arch:new first."
    `DESIGN="$REPO_ROOT/design/$ACTIVE/design.md"`.

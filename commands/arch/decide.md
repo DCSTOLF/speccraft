@@ -17,9 +17,10 @@ Steps:
 
 1. **Bootstrap.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   ACTIVE="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" get active_design)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/arch/decide.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   ACTIVE="$(speccraft-state get active_design)"
+   source "$PLUGIN_ROOT/commands/arch/decide.lib.sh"
    DESIGN="$REPO_ROOT/design/$ACTIVE/design.md"
    ```
    If `ACTIVE` is empty, error: "No active design."

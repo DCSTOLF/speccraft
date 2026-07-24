@@ -15,8 +15,8 @@ Steps:
 
 1. **Resolve the active brief.**
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   ACTIVE="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" get active_product)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   ACTIVE="$(speccraft-state get active_product)"
    BRIEF="$REPO_ROOT/product/$ACTIVE/brief.md"
    ```
    If `ACTIVE` is empty, error: "No active product brief."
@@ -27,7 +27,7 @@ Steps:
 
 3. **Clear ONLY the PM lane:**
    ```bash
-   "$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" set active_product null
+   speccraft-state set active_product null
    ```
 
 4. Confirm the brief is closed and note it remains the ideal `--from` source

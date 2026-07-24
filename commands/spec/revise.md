@@ -22,8 +22,9 @@ Steps:
 
 1. **Bootstrap.** Source the helper library and resolve the repo root:
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/spec/revise.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   source "$PLUGIN_ROOT/commands/spec/revise.lib.sh"
    ```
 
 2. **Preflight active-spec.** Verify `.speccraft/state.json` has a non-empty

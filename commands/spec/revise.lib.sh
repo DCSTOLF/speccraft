@@ -50,10 +50,14 @@ _revise_extract_frontmatter() {
 # ---------------------------------------------------------------------------
 preflight_status_gate() {
   local spec_md="$1"
-  local fm status
+  # NOTE: `spec_status`, not `status` — `status` is a reserved parameter in zsh
+  # (read-only: it aliases $?), and these libs are sourced into the caller's
+  # shell, which is zsh on macOS. A bare `status` local aborts the call with
+  # "read-only variable: status" (spec 0030; pinned by tests/hooks/lib-zsh-safety.bats).
+  local fm spec_status
   fm="$(_revise_extract_frontmatter "$spec_md")"
-  status="$(printf '%s\n' "$fm" | awk -F'[: ]+' '/^status:/ { print $2; exit }')"
-  case "$status" in
+  spec_status="$(printf '%s\n' "$fm" | awk -F'[: ]+' '/^status:/ { print $2; exit }')"
+  case "$spec_status" in
     draft|reviewed|planned)
       return 0
       ;;
@@ -62,7 +66,7 @@ preflight_status_gate() {
       return 1
       ;;
     *)
-      echo "preflight_status_gate: $spec_md has status '$status' which is not revisable (must be one of: draft, reviewed, planned)" >&2
+      echo "preflight_status_gate: $spec_md has status '$spec_status' which is not revisable (must be one of: draft, reviewed, planned)" >&2
       return 1
       ;;
   esac

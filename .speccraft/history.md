@@ -2,6 +2,64 @@
 
 Append-only. Newest first.
 
+## 2026-07-24 — Cross-environment command execution hardening; version 1.7.0 (spec 0030)
+
+**Spec:** specs/0030-cross-env-command-hardening/
+**Decision:** Fix two coupled command-execution defects surfaced running speccraft
+as an *installed* plugin (not dogfooded) in another project — macOS default `zsh`,
+a Python codebase — the natural sequel to spec 0029's first-use-in-another-repo
+portability lineage. (A) **Plugin-root resolution was unreliable for slash-command
+bash.** Command docs dereferenced `"$CLAUDE_PLUGIN_ROOT/{bin,commands,templates}"`,
+but `CLAUDE_PLUGIN_ROOT` is only contractually exported to **hook** subprocesses,
+not to the bash a slash command runs; in the field it resolved to the plugins
+*parent* directory, so every `bin/`/`commands/`/`templates/` path failed across
+`revise`/`review`/`plan` and, by inspection, most other commands. (B)
+**`revise.lib.sh` was not zsh-safe:** a bare `status` local (zsh reserves `status`
+read-only, aliasing `$?`) aborted the first `preflight_status_gate` call with
+`read-only variable: status` when the lib is sourced into zsh. The fix adds a new
+`speccraft-state plugin-root` subcommand (pure core
+`ResolvePluginRootFrom(speccraftRoot, claudeRoot, exePath)` +
+`IsValidPluginRoot` predicate in `tools/internal/speccraft/pluginroot.go`) with
+precedence `SPECCRAFT_PLUGIN_ROOT` (must validate or hard-error) → validated
+`CLAUDE_PLUGIN_ROOT` (the parent-dir field bug fails validation and is skipped, not
+fatal) → self-derivation (`os.Executable()` → `EvalSymlinks` → ascend to the
+nearest ancestor holding `.claude-plugin/plugin.json` + `bin/`+`commands/`+
+`templates/`, handling both `<root>/bin/` and dogfood `<root>/tools/bin/`). The 15
+command docs migrated to `PLUGIN_ROOT="$(speccraft-state plugin-root)"` (bare
+binary calls go on `PATH`); `init.md`'s empty-var fallback removed; the bare
+`status` renamed `spec_status`; version bumped `1.6.1 → 1.7.0` (additive
+subcommand = minor).
+
+Two-tier verification per the established pattern: 11 Go table tests (precedence
+a–f, symlinked-exe via a real tmp symlink, none-resolvable error naming every
+source, manifest-identity negative, subcommand wiring) + three sibling version
+tests at 1.7.0; a REAL-zsh `tests/hooks/lib-zsh-safety.bats` (`zsh -uc "source
+<lib>"` over every `commands/**/*.lib.sh`, the authoritative backstop for the
+curated reserved-name set, plus both `preflight_status_gate` fixtures and a
+bash no-regression loop); and `specs/0030-.../verify.sh` (forbidden-pattern
+absence + positive resolve idiom + convention lockstep + static reserved-id guard
++ manifest + devcontainer). `.devcontainer` exports
+`SPECCRAFT_PLUGIN_ROOT="${containerWorkspaceFolder}"` so dogfood sessions never
+self-derive to the stale `~/.claude/plugins/cache/.../1.1.0` copy first on `PATH`
+(a live, verified footgun). `go test ./...` green, bats 142/0, verify.sh green.
+Two-round cross-model review (codex + claude-p) converged in 2 rounds — the
+diff-focused re-review kept round 2 scoped to deltas.
+
+**Deviations:** THREE `/speccraft:spec:override` (the plan predicted ZERO) —
+create `pluginroot.go`, wire `case "plugin-root"`, add the `usage()` line. Root
+cause is a real guard limitation newly pinpointed: the red-candidate capture reads
+the Edit tool's `tool_input.new_string` but the RED tests were authored via the
+**Write** tool (which sends `content`), so they registered zero red-candidates —
+compounded for the new package by the compiled-language bootstrap (a brand-new
+symbol's test can't compile → `OutcomeBuildFailed`, not a valid RED). Logged as a
+new action-plan finding (guard **Write-tool blind spot**), joining the deferred
+apply-edit-in-memory red-check as the durable fix. AC11's *published-release* half
+is intentionally deferred to merge-time: the `v1.7.0` GitHub Release is produced
+automatically by `auto-tag` → `release.yml` → `verify-release.sh` when the bump
+lands on `main` (§Version bumps); source-level bump + sibling tests are done. 0030's
+own close ran NO consolidation (no `domains:`/`delta:`, no `specs/domains/` tree
+yet — non-blocking decline).
+
 ## 2026-06-27 — Consolidation routing hardening + zsh portability fix; released 1.6.1 (spec 0029)
 
 **Spec:** specs/0029-consolidation-routing-hardening/

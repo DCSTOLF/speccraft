@@ -28,8 +28,9 @@ Steps:
    `/speccraft:spec:close` runs inline, applied retroactively. Source the helper:
 
    ```bash
-   REPO_ROOT="$("$CLAUDE_PLUGIN_ROOT/bin/speccraft-state" find-root)"
-   source "$CLAUDE_PLUGIN_ROOT/commands/spec/consolidate.lib.sh"
+   PLUGIN_ROOT="$(speccraft-state plugin-root)"
+   REPO_ROOT="$(speccraft-state find-root)"
+   source "$PLUGIN_ROOT/commands/spec/consolidate.lib.sh"
    CANDIDATES="$(consolidate_backfill_candidates "$REPO_ROOT" | tr '\n' ' ')"
    ORDER="$(consolidate_backfill_order "$REPO_ROOT" "$CANDIDATES")"
    ```
