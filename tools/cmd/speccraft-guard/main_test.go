@@ -3,14 +3,41 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 	"github.com/dcstolf/speccraft/tools/internal/speccraft/runner"
 )
+
+// decodeWriteEnvelope builds a REAL Write-tool PreToolUse envelope the way the
+// harness delivers it — `tool_name: "Write"` and a `content` key (NOT
+// `new_string`) — marshals it to JSON, and decodes it into HookInput. This is
+// the spec-0031 regression boundary: a test that references a not-yet-existing
+// ToolInput.Content field would fail to COMPILE (OutcomeBuildFailed, not a valid
+// RED); routing through JSON keeps the RED compile-stable against current code
+// and failing on behavior (the `content` key is dropped until the field exists).
+func decodeEnvelope(t *testing.T, toolName, filePath, content, cwd string) HookInput {
+	t.Helper()
+	env := map[string]any{
+		"tool_name":  toolName,
+		"tool_input": map[string]any{"file_path": filePath, "content": content},
+		"cwd":        cwd,
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in HookInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
 
 // recordingRunner is a runner.Runner fake that records each Run call.
 type recordingRunner struct {
@@ -787,8 +814,10 @@ func captureCase(t *testing.T, root, testFile, diskContent, newContent string) [
 		t.Fatal(err)
 	}
 	input := HookInput{
-		// OldString empty ⇒ Write semantics: NewString is the whole post-edit file.
-		ToolInput: ToolInput{FilePath: testFile, NewString: newContent},
+		// Real Write payload: tool_name "Write" + content (NOT new_string) —
+		// the shape the harness actually delivers (spec 0031 AC5).
+		ToolName:  "Write",
+		ToolInput: ToolInput{FilePath: testFile, Content: newContent},
 		CWD:       root,
 	}
 	if err := processToolUse(input, deps{}); err != nil {
@@ -1206,5 +1235,310 @@ func Test_ProductionDeps_HasRunnerForLang(t *testing.T) {
 	}
 	if _, ok := d.runnerForLang("go", speccraft.SpeccraftConfig{}); !ok {
 		t.Error("productionDeps runnerForLang should resolve a Go adapter")
+	}
+}
+
+// --- Spec 0031: Write-tool red-candidate capture (AC3, AC4) ---
+//
+// These drive the fix at the JSON-envelope boundary (see decodeEnvelope): the
+// real Write payload carries `content`, not `new_string`. Against current code
+// the `content` key is dropped, so a Write-authored test file captures ZERO
+// red-candidates — the assertions below fail (RED) while compiling.
+
+// writeCaptured decodes a Write envelope for testFile+content, runs the guard's
+// capture path, and returns the red-candidate set recorded for that file.
+func writeCaptured(t *testing.T, root, testFile, content string) []string {
+	t.Helper()
+	in := decodeEnvelope(t, "Write", testFile, content, root)
+	if err := processToolUse(in, deps{}); err != nil {
+		t.Fatalf("Write to a test file must be allowed, got: %v", err)
+	}
+	abs, _ := filepath.Abs(testFile)
+	rc, err := speccraft.GetRedCandidates(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rc[abs]
+}
+
+func Test_WriteEnvelope_CapturesRedCandidates_Go_Create(t *testing.T) {
+	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
+	got := writeCaptured(t, root, filepath.Join(root, "pkg", "foo_test.go"),
+		"package pkg\n\nfunc TestNew(t *testing.T) {}\n")
+	if !containsStr(got, "TestNew") {
+		t.Errorf("Write-created test file must capture TestNew, got %v", got)
+	}
+}
+
+func Test_WriteEnvelope_CapturesRedCandidates_Go_Overwrite(t *testing.T) {
+	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
+	testFile := filepath.Join(root, "pkg", "foo_test.go")
+	if err := os.MkdirAll(filepath.Dir(testFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(testFile, []byte("package pkg\n\nfunc TestExisting(t *testing.T) {}\n"), 0o644)
+	got := writeCaptured(t, root, testFile,
+		"package pkg\n\nfunc TestExisting(t *testing.T) {}\n\nfunc TestNew(t *testing.T) {}\n")
+	if !containsStr(got, "TestNew") {
+		t.Errorf("Write-overwrite must capture the newly-added TestNew, got %v", got)
+	}
+	if containsStr(got, "TestExisting") {
+		t.Errorf("pre-existing TestExisting must NOT be just-added, got %v", got)
+	}
+}
+
+func Test_WriteEnvelope_CapturesRedCandidates_Python_Create(t *testing.T) {
+	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
+	got := writeCaptured(t, root, filepath.Join(root, "pkg", "test_foo.py"),
+		"def test_new():\n    assert False\n")
+	if !containsStr(got, "test_new") {
+		t.Errorf("Write-created Python test must capture test_new, got %v", got)
+	}
+}
+
+func Test_WriteEnvelope_CapturesRedCandidates_Python_Overwrite(t *testing.T) {
+	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
+	testFile := filepath.Join(root, "pkg", "test_foo.py")
+	if err := os.MkdirAll(filepath.Dir(testFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(testFile, []byte("def test_existing():\n    assert True\n"), 0o644)
+	got := writeCaptured(t, root, testFile,
+		"def test_existing():\n    assert True\n\ndef test_new():\n    assert False\n")
+	if !containsStr(got, "test_new") {
+		t.Errorf("Write-overwrite must capture test_new, got %v", got)
+	}
+	if containsStr(got, "test_existing") {
+		t.Errorf("pre-existing test_existing must NOT be just-added, got %v", got)
+	}
+}
+
+// Single JS/TS case — representative of the shared JS/TS extractor (per AC3).
+func Test_WriteEnvelope_CapturesRedCandidates_JSTS_Create(t *testing.T) {
+	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
+	got := writeCaptured(t, root, filepath.Join(root, "src", "foo.test.ts"),
+		"test('brandnew', () => {})\n")
+	if !containsStr(got, "brandnew") {
+		t.Errorf("Write-created JS/TS test must capture brandnew, got %v", got)
+	}
+}
+
+// AC4 — the spec-0030 scenario: a RED authored via the Write tool unlocks the
+// production edit WITHOUT an override. Two ordered processToolUse calls, no
+// override provisioned, runner invoked once with the captured id.
+func Test_WriteThenEditProd_NoOverride_Allows_Go(t *testing.T) {
+	root, prodFile := goRedCheckRepo(t, nil) // NOT pre-seeded — capture must come from the Write
+	sib := filepath.Join(root, "pkg", "foo_test.go")
+
+	// Call 1: Write the sibling test via a real Write envelope.
+	got := writeCaptured(t, root, sib, "package pkg\n\nfunc TestNew(t *testing.T) {}\n")
+	if !containsStr(got, "TestNew") {
+		t.Fatalf("Write envelope must capture TestNew, got %v", got)
+	}
+
+	// Call 2: Edit the production file; the runner reports TestNew failing.
+	rec := &recordingRunner{nextResult: runner.Result{
+		Outcome: runner.OutcomeAtLeastOneFailed,
+		Records: []runner.TestRecord{{TestName: "TestNew", Status: "failed"}},
+	}}
+	editIn := HookInput{
+		ToolName:  "Edit",
+		ToolInput: ToolInput{FilePath: prodFile, OldString: "package pkg\n", NewString: "package pkg\n\nfunc Foo() {}\n"},
+		CWD:       root,
+	}
+	if err := processToolUse(editIn, depsWithRunner(rec)); err != nil {
+		t.Fatalf("prod edit must be ALLOWED after a Write-authored RED (no override), got: %v", err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("runner must be invoked exactly once, got %d", len(rec.calls))
+	}
+	if rec.calls[0].FullyQualifiedTestName != "TestNew" {
+		t.Errorf("runner invoked with %q, want TestNew", rec.calls[0].FullyQualifiedTestName)
+	}
+	if s, _ := speccraft.LoadState(root); s.Session.OverridePending {
+		t.Error("override_pending must never have been provisioned on this path")
+	}
+}
+
+// AC1 — applyEdit selects post-edit content by tool name.
+
+func Test_ApplyEdit_Write_NonEmptyContent_ReturnsContent(t *testing.T) {
+	// (a) Write returns Content regardless of preContent, and a populated
+	// NewString on a Write is IGNORED (proves the branch is ToolName-keyed).
+	got := applyEdit("PRE", ToolInput{ToolName: "Write", Content: "NEW", NewString: "IGNORED"})
+	if got != "NEW" {
+		t.Errorf("applyEdit(Write) = %q, want %q", got, "NEW")
+	}
+}
+
+func Test_ApplyEdit_Write_EmptyContent_ReturnsEmpty(t *testing.T) {
+	// (b) Write with empty Content → empty string (a legitimately empty file).
+	got := applyEdit("PRE", ToolInput{ToolName: "Write", Content: ""})
+	if got != "" {
+		t.Errorf("applyEdit(Write, empty content) = %q, want %q", got, "")
+	}
+}
+
+func Test_ApplyEdit_Edit_NonEmptyOldString_Replaces(t *testing.T) {
+	// (c) Edit is a single search-and-replace.
+	got := applyEdit("a b c", ToolInput{ToolName: "Edit", OldString: "b", NewString: "X"})
+	if got != "a X c" {
+		t.Errorf("applyEdit(Edit) = %q, want %q", got, "a X c")
+	}
+}
+
+func Test_ApplyEdit_Edit_EmptyOldString_StillReplaces(t *testing.T) {
+	// (d) An Edit with empty OldString still performs a replacement (inserting at
+	// position 0) — it is NOT reclassified as a Write.
+	got := applyEdit("PRE", ToolInput{ToolName: "Edit", OldString: "", NewString: "X"})
+	if got != "XPRE" {
+		t.Errorf("applyEdit(Edit, empty old) = %q, want %q", got, "XPRE")
+	}
+}
+
+func Test_ApplyEdit_UnknownTool_ReturnsPreContent(t *testing.T) {
+	// The default branch (MultiEdit/NotebookEdit and any unmodeled tool) returns
+	// the pre-edit content unchanged → empty just-added set (AC7 anchor).
+	got := applyEdit("PRE", ToolInput{ToolName: "MultiEdit", NewString: "X", Content: "Y"})
+	if got != "PRE" {
+		t.Errorf("applyEdit(unknown tool) = %q, want %q", got, "PRE")
+	}
+}
+
+// AC2 — the Edit path is behaviorally unchanged (search-and-replace, first
+// occurrence only), across representative Edit payloads.
+func Test_ApplyEdit_Edit_RegressionUnchanged(t *testing.T) {
+	cases := []struct{ pre, old, nw, want string }{
+		{"foo bar foo", "foo", "baz", "baz bar foo"}, // first occurrence only
+		{"package pkg\n", "package pkg", "package other", "package other\n"},
+		{"unchanged", "absent", "X", "unchanged"}, // no match → unchanged
+	}
+	for _, c := range cases {
+		got := applyEdit(c.pre, ToolInput{ToolName: "Edit", OldString: c.old, NewString: c.nw})
+		want := strings.Replace(c.pre, c.old, c.nw, 1)
+		if got != want || got != c.want {
+			t.Errorf("applyEdit(Edit, %q→%q on %q) = %q, want %q", c.old, c.nw, c.pre, got, c.want)
+		}
+	}
+}
+
+// AC5 (static guard) — no Write-labeled payload in this test file may set
+// NewString without also setting Content (the mis-simulated fixture that masked
+// spec 0031). Legitimate Write payloads that set both (to prove NewString is
+// ignored) are allowed.
+func Test_NoWriteHelperSetsNewStringWithoutContent(t *testing.T) {
+	src, err := os.ReadFile("main_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	re := regexp.MustCompile(`ToolName:\s*"Write"`)
+	for _, loc := range re.FindAllStringIndex(s, -1) {
+		end := loc[0] + 220
+		if end > len(s) {
+			end = len(s)
+		}
+		window := s[loc[0]:end]
+		if strings.Contains(window, "NewString") && !strings.Contains(window, "Content") {
+			t.Errorf("a Write payload near offset %d sets NewString without Content "+
+				"(re-introduces the spec-0031 mis-simulated fixture): %q", loc[0], window)
+		}
+	}
+}
+
+// AC7 — MultiEdit/NotebookEdit are gated but their payloads (edits[], cells) are
+// unmodeled; pin the CURRENT behavior (they capture no red-candidates) so the
+// fix in reserved spec 0032 is a deliberate, observable change.
+
+func Test_MultiEditEnvelope_CapturesNoRedCandidates(t *testing.T) {
+	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
+	testFile := filepath.Join(root, "pkg", "foo_test.go")
+	if err := os.MkdirAll(filepath.Dir(testFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(testFile, []byte("package pkg\n"), 0o644)
+	env := map[string]any{
+		"tool_name": "MultiEdit",
+		"tool_input": map[string]any{
+			"file_path": testFile,
+			"edits": []map[string]string{
+				{"old_string": "package pkg", "new_string": "package pkg\n\nfunc TestX(t *testing.T) {}"},
+			},
+		},
+		"cwd": root,
+	}
+	raw, _ := json.Marshal(env)
+	var in HookInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		t.Fatal(err)
+	}
+	if err := processToolUse(in, deps{}); err != nil {
+		t.Fatalf("MultiEdit to a test file should be allowed, got: %v", err)
+	}
+	abs, _ := filepath.Abs(testFile)
+	rc, _ := speccraft.GetRedCandidates(root)
+	if len(rc[abs]) != 0 {
+		t.Errorf("MultiEdit edits[] is unmodeled (reserved spec 0032) — expected NO captured "+
+			"candidates today, got %v", rc[abs])
+	}
+}
+
+func Test_NotebookEditEnvelope_CapturesNoRedCandidates(t *testing.T) {
+	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
+	testFile := filepath.Join(root, "pkg", "test_foo.py")
+	if err := os.MkdirAll(filepath.Dir(testFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(testFile, []byte("def test_existing():\n    assert True\n"), 0o644)
+	env := map[string]any{
+		"tool_name":  "NotebookEdit",
+		"tool_input": map[string]any{"file_path": testFile, "new_source": "def test_new():\n    assert False"},
+		"cwd":        root,
+	}
+	raw, _ := json.Marshal(env)
+	var in HookInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		t.Fatal(err)
+	}
+	if err := processToolUse(in, deps{}); err != nil {
+		t.Fatalf("NotebookEdit to a test file should be allowed, got: %v", err)
+	}
+	abs, _ := filepath.Abs(testFile)
+	rc, _ := speccraft.GetRedCandidates(root)
+	if len(rc[abs]) != 0 {
+		t.Errorf("NotebookEdit new_source is unmodeled (reserved spec 0032) — expected NO "+
+			"captured candidates today, got %v", rc[abs])
+	}
+}
+
+func Test_WriteThenEditProd_NoOverride_Allows_Python(t *testing.T) {
+	root, prodFile := redCheckRepo(t, "pkg/foo.py", "pkg/test_foo.py", nil)
+	sib := filepath.Join(root, "pkg", "test_foo.py")
+
+	got := writeCaptured(t, root, sib, "def test_new():\n    assert False\n")
+	if !containsStr(got, "test_new") {
+		t.Fatalf("Write envelope must capture test_new, got %v", got)
+	}
+
+	rec := &recordingRunner{nextResult: runner.Result{
+		Outcome: runner.OutcomeAtLeastOneFailed,
+		Records: []runner.TestRecord{{TestName: "test_new", Status: "failed"}},
+	}}
+	editIn := HookInput{
+		ToolName:  "Edit",
+		ToolInput: ToolInput{FilePath: prodFile, OldString: "// prod\n", NewString: "def foo():\n    pass\n"},
+		CWD:       root,
+	}
+	if err := processToolUse(editIn, depsWithRunner(rec)); err != nil {
+		t.Fatalf("Python prod edit must be ALLOWED after a Write-authored RED, got: %v", err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("runner must be invoked exactly once, got %d", len(rec.calls))
+	}
+	if rec.calls[0].FullyQualifiedTestName != "test_new" {
+		t.Errorf("runner invoked with %q, want test_new", rec.calls[0].FullyQualifiedTestName)
+	}
+	if s, _ := speccraft.LoadState(root); s.Session.OverridePending {
+		t.Error("override_pending must never have been provisioned on this path")
 	}
 }

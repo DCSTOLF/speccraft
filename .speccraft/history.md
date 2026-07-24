@@ -2,6 +2,73 @@
 
 Append-only. Newest first.
 
+## 2026-07-24 — TDD guard Write-tool red-candidate blind spot fixed override-free; version 1.7.1 (spec 0031)
+
+**Spec:** specs/0031-guard-write-tool-red-candidate-blindspot/
+**Decision:** Fix the exact guard limitation that cost spec 0030 three
+`/speccraft:spec:override`. `speccraft-guard`'s red-candidate capture modeled a
+write-tool call's post-edit content by payload *shape*: `applyEdit` treated an empty
+`old_string` as "Write → `new_string` is the whole file." But the **Write** tool sends
+`content`, not `new_string`, and `ToolInput` had no `content` field — so a test file
+CREATED or OVERWRITTEN with Write extracted zero test IDs and captured zero
+red-candidates, after which the sibling production edit was blocked with "no failing test
+observed" despite a real RED on disk. It stayed invisible because the fixture
+(`captureCase`) mis-simulated Write via `NewString`, encoding the same wrong assumption as
+the bug — a green suite over a broken path. The fix discriminates on **tool identity, not
+payload shape**: add `ToolInput.Content` (`json:"content"`) and a `ToolName` field
+(`json:"-"`) injected once from `HookInput.ToolName` in `dispatchByLanguage`; `applyEdit`
+now switches on `ti.ToolName` — `Write` → `Content` (incl. the empty string; `new_string`
+ignored); `Edit` → `strings.Replace(pre, old, new, 1)` preserved even when `old_string`
+is empty (an Edit is never reclassified as a Write); `default` (MultiEdit/NotebookEdit/any
+other) → pre-edit content unchanged (empty just-added set), reserved for spec 0032.
+`captureCase` was corrected to the real `ToolName:"Write"`+`Content` shape, so the
+pre-existing `Test_TestFileEdit_CapturesRedCandidates_*` become AC5's behavioral proof.
+
+**The meta-payoff — the fix for the override-forcing bug shipped with ZERO overrides.**
+The change mutates an EXISTING gated package's in-package surface, so a RED that referenced
+the new `Content` field would fail to COMPILE → `OutcomeBuildFailed` → not a valid RED →
+an override (the precise trap this spec removes; contrast spec 0030's fresh-package escape).
+The plan's load-bearing move was to author every driving RED at the **JSON-envelope
+boundary**: each `json.Unmarshal`s a real `{"tool_name":"Write",...,"content":...}`
+envelope and calls `processToolUse`, so it compiles against current code (no `Content`
+token, no new signature) and fails on BEHAVIOR (the `content` key is silently dropped →
+zero candidates → assertion fails). The signature/field-referencing AC1/AC2 pins were added
+in the same GREEN edit, after the field existed, in the never-TDD-gated test file.
+
+Verification (two-tier, established pattern): 7 JSON-boundary capture tests (Write
+create+overwrite Go/Python + one JS/TS as the shared-extractor representative), two
+two-ordered-call E2E tests (`Test_WriteThenEditProd_NoOverride_Allows_{Go,Python}`) with a
+fake runner asserting the runner is invoked exactly once with the captured ID, returns
+`OutcomeAtLeastOneFailed` for it, and the prod edit returns nil with no override
+provisioned; AC1(a–d)+AC2 `applyEdit` unit pins (incl. `NewString`-ignored-on-Write and
+empty-`old_string`-still-replaces); AC5 static guard
+(`Test_NoWriteHelperSetsNewStringWithoutContent`); AC7 MultiEdit/NotebookEdit
+characterization (native envelope → zero red-candidates). `go test ./...` green, bats
+0-fail, `specs/0031-.../verify.sh` green. Version bumped `1.7.0 → 1.7.1` (guard behavior
+fix; patch) across the three `const version` + two `.claude-plugin/*.json`, sibling version
+tests renamed to `…171`/`…Const171`. Two-round cross-model review (codex + claude-p)
+converged in 2 rounds; the sole round-2 residual was a one-line `reserves-specs: ["0032"]`
+frontmatter add.
+
+**Deviations:** `applyEdit`'s SIGNATURE was NOT changed — the plan proposed a new
+`applyEdit(pre, toolName, ti)`; the shipped fix carries the tool name on
+`ToolInput.ToolName` (`json:"-"`, injected once at dispatch), a strictly smaller edit
+touching no call-site signature. The switch's empty-`ToolName` case is folded into `Edit`
+(`case "Edit", ""`), not the `default`, so older in-package fixtures omitting `ToolName`
+keep working; production Edit envelopes always carry `tool_name`. TWO red-candidate
+tracking brittleness notes surfaced (both resolved WITHOUT override): (a) a two-step edit
+to `speccraft-state/version_test.go` had its second, assertion-only edit OVERWRITE the
+file's red-candidates with empty — `SetRedCandidates` replaces per-file, and an edit adding
+no new test name clears the just-added RED — briefly blocking the const bump; fixed by a
+single-edit rename that re-registered the test; (b) one stale doc comment in
+`computeJustAddedForEdit` was left un-updated because the guard correctly refuses a
+comment-only production edit with no failing test behind it (guard behaving as designed).
+MultiEdit/NotebookEdit payload modeling is out of scope and reserved as **spec 0032**. AC6's
+published-release half is deferred to merge-time (`auto-tag → release.yml →
+verify-release.sh` on `main`); source bump + version tests + manifest oracle done. 0031's
+own close ran NO consolidation (no `domains:`/`delta:`, no `specs/domains/` tree yet —
+non-blocking decline).
+
 ## 2026-07-24 — Cross-environment command execution hardening; version 1.7.0 (spec 0030)
 
 **Spec:** specs/0030-cross-env-command-hardening/

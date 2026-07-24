@@ -14,7 +14,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft/runner"
 )
 
-const version = "1.7.0"
+const version = "1.7.1"
 
 // HookInput is the JSON payload Claude Code sends for PreToolUse hooks.
 type HookInput struct {
@@ -28,6 +28,15 @@ type ToolInput struct {
 	FilePath  string `json:"file_path"`
 	OldString string `json:"old_string"`
 	NewString string `json:"new_string"`
+	// Content is the Write tool's payload field (Write sends `content`, NOT
+	// `new_string`). Modeling it is the spec-0031 fix for the red-candidate
+	// blind spot.
+	Content string `json:"content"`
+	// ToolName is injected from the enclosing HookInput.ToolName (it is not a
+	// tool_input JSON field, hence json:"-"). applyEdit switches on it so the
+	// post-edit content is derived by the ORIGINATING TOOL, not by payload
+	// shape (`old_string == ""`) — see spec 0031.
+	ToolName string `json:"-"`
 }
 
 // deps is the injection seam for tests. Production callers pass an empty
@@ -141,6 +150,10 @@ func processToolUse(input HookInput, d deps) error {
 // IsTestFile or IsProductionGoFile/Python; the IsRustFile check is
 // first to make this explicit.
 func dispatchByLanguage(input HookInput, absPath, root string, cfg speccraft.SpeccraftConfig, d deps) error {
+	// Carry the originating tool name into ToolInput so applyEdit (reached via
+	// captureRedCandidates and computeJustAddedForEdit) models the post-edit
+	// content by tool identity, not payload shape (spec 0031).
+	input.ToolInput.ToolName = input.ToolName
 	switch {
 	case speccraft.IsRustFile(absPath):
 		return rustDispatch(input, absPath, root, cfg, d)
@@ -371,14 +384,30 @@ func extractTestIDs(absPath, content string) []string {
 	}
 }
 
-// applyEdit models Edit/Write tool semantics in memory. If OldString is
-// empty (Write tool), NewString IS the full post-edit content. If
-// OldString is non-empty (Edit tool), it's a single search-and-replace.
+// applyEdit models the post-edit content of a write-tool call in memory,
+// switching on the ORIGINATING TOOL (ti.ToolName), not on payload shape. This
+// is the spec-0031 fix: the pre-0031 code inferred "Write" from
+// `old_string == ""` and read `new_string`, but the Write tool sends `content`
+// — so Write-authored test files captured zero red-candidates.
 func applyEdit(preContent string, ti ToolInput) string {
-	if ti.OldString == "" {
-		return ti.NewString
+	switch ti.ToolName {
+	case "Write":
+		// Write delivers the whole post-edit file in `content` (including the
+		// empty string for a legitimately empty file); `new_string` is ignored.
+		return ti.Content
+	case "Edit", "":
+		// A single search-and-replace, preserved even when OldString is empty
+		// (an Edit is never reclassified as a Write by field emptiness). The ""
+		// case covers older in-package test fixtures that omit ToolName;
+		// production Edit envelopes always carry tool_name.
+		return strings.Replace(preContent, ti.OldString, ti.NewString, 1)
+	default:
+		// MultiEdit / NotebookEdit (and any other tool): their payloads
+		// (edits[], cells) are not modeled, so there is no post-edit content to
+		// derive — return pre-edit content unchanged (empty just-added set).
+		// Modeling them is reserved for spec 0032.
+		return preContent
 	}
-	return strings.Replace(preContent, ti.OldString, ti.NewString, 1)
 }
 
 func stringSet(s []string) map[string]struct{} {
