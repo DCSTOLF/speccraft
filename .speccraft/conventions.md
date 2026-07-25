@@ -61,6 +61,31 @@ edit is wrongly blocked with "no failing test observed."
   whenever `os.Executable()`-derived PATH resolution can pick up an older cached
   binary before the freshly built one.
 
+#### Keep the decisive fresh RED as the LAST sibling test-file touch before a gated prod edit
+
+Introduced by spec 0032 (extending the stale-cached-guard rule above).
+
+`SetRedCandidates` replaces the captured set PER FILE, so a NO-NEW-TEST edit to the
+sibling test file that holds your standing RED (adding an import, tweaking a comment,
+an assertion-only change) silently DISARMS it — the guard re-captures zero new test
+IDs for that file and the subsequent gated production edit is blocked with "no failing
+test observed" (spec 0031's brittleness note (a), recurred in 0032 when adding a
+`strings` import cleared the standing RED just before a comment-only `main.go` scrub).
+
+- **Order your edits so the LAST touch to the RED's sibling test file is the one that
+  ADDS or RENAMES a test** (a genuine new test ID), immediately before the gated prod
+  edit — not a subsequent no-new-test edit that overwrites the file's candidate set
+  with empty. The remedy in 0032 was to register a genuine fresh companion RED via the
+  Edit tool as the last test-file touch, which unblocked the prod edit override-free.
+- **Scope a source-scanning meta-test to its TARGET function, not the first textual
+  match.** A meta-test that greps `main.go` for a construct (e.g. the `default:`-branch
+  comment) must first anchor on the target function's body
+  (`strings.Index(src, "func applyEdit(")`) and search WITHIN it — a bare
+  `strings.Index(src, "default:")` matched an earlier unrelated `default:` in 0032 and
+  swept the new case labels into the scanned segment (false positive). Canonical
+  reference: `Test_ApplyEditDefaultComment_OmitsModeledTools` in
+  `tools/cmd/speccraft-guard/reserved_slot_test.go`.
+
 ## Version bumps
 
 Introduced by spec 0019.

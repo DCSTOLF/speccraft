@@ -14,7 +14,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft/runner"
 )
 
-const version = "1.8.0"
+const version = "1.9.0"
 
 // HookInput is the JSON payload Claude Code sends for PreToolUse hooks.
 type HookInput struct {
@@ -22,6 +22,14 @@ type HookInput struct {
 	ToolInput ToolInput `json:"tool_input"`
 	SessionID string    `json:"session_id"`
 	CWD       string    `json:"cwd"`
+}
+
+// MultiEditEntry is one search-and-replace in a MultiEdit tool call's `edits[]`
+// array. It is a named type (not an anonymous struct) so tests and other files
+// can construct and reference it — spec 0032.
+type MultiEditEntry struct {
+	OldString string `json:"old_string"`
+	NewString string `json:"new_string"`
 }
 
 type ToolInput struct {
@@ -32,6 +40,12 @@ type ToolInput struct {
 	// `new_string`). Modeling it is the spec-0031 fix for the red-candidate
 	// blind spot.
 	Content string `json:"content"`
+	// Edits is the MultiEdit tool's payload: a sequence of search-and-replace
+	// entries applied in order to the running content (spec 0032).
+	Edits []MultiEditEntry `json:"edits"`
+	// NewSource is the NotebookEdit tool's payload: the modified cell's new
+	// source, modeled as the whole post-edit content (spec 0032).
+	NewSource string `json:"new_source"`
 	// ToolName is injected from the enclosing HookInput.ToolName (it is not a
 	// tool_input JSON field, hence json:"-"). applyEdit switches on it so the
 	// post-edit content is derived by the ORIGINATING TOOL, not by payload
@@ -401,13 +415,39 @@ func applyEdit(preContent string, ti ToolInput) string {
 		// case covers older in-package test fixtures that omit ToolName;
 		// production Edit envelopes always carry tool_name.
 		return strings.Replace(preContent, ti.OldString, ti.NewString, 1)
+	case "MultiEdit":
+		// A sequence of search-and-replace entries applied in order to the
+		// running content (spec 0032).
+		return applyMultiEdit(preContent, ti.Edits)
+	case "NotebookEdit":
+		// The modified cell's new source is the whole post-edit content —
+		// including the empty string for an emptied cell, exactly as the Write
+		// case returns Content (spec 0032).
+		return ti.NewSource
 	default:
-		// MultiEdit / NotebookEdit (and any other tool): their payloads
-		// (edits[], cells) are not modeled, so there is no post-edit content to
-		// derive — return pre-edit content unchanged (empty just-added set).
-		// Modeling them is reserved for spec 0032.
+		// Any tool the guard does not model: there is no post-edit content to
+		// derive from its payload, so return the pre-edit content unchanged
+		// (an empty just-added set). New write-tools slot in as explicit cases
+		// above.
 		return preContent
 	}
+}
+
+// applyMultiEdit folds the MultiEdit edits[] over the running content: each entry
+// is a first-occurrence search-and-replace applied to the OUTPUT of the previous
+// entry, so a later entry sees an earlier entry's result. An entry with an empty
+// OldString is SKIPPED (Go's strings.Replace would otherwise prepend NewString);
+// an entry whose OldString is absent from the running content is a silent no-op.
+// Spec 0032.
+func applyMultiEdit(pre string, edits []MultiEditEntry) string {
+	out := pre
+	for _, e := range edits {
+		if e.OldString == "" {
+			continue
+		}
+		out = strings.Replace(out, e.OldString, e.NewString, 1)
+	}
+	return out
 }
 
 func stringSet(s []string) map[string]struct{} {

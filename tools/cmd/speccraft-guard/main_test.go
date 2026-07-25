@@ -1397,9 +1397,10 @@ func Test_ApplyEdit_Edit_EmptyOldString_StillReplaces(t *testing.T) {
 }
 
 func Test_ApplyEdit_UnknownTool_ReturnsPreContent(t *testing.T) {
-	// The default branch (MultiEdit/NotebookEdit and any unmodeled tool) returns
-	// the pre-edit content unchanged → empty just-added set (AC7 anchor).
-	got := applyEdit("PRE", ToolInput{ToolName: "MultiEdit", NewString: "X", Content: "Y"})
+	// The default branch (any tool the guard does not model) returns the pre-edit
+	// content unchanged → empty just-added set. MultiEdit/NotebookEdit are modeled
+	// as of spec 0032, so this pins a genuinely-unknown tool name.
+	got := applyEdit("PRE", ToolInput{ToolName: "FutureBulkEdit", NewString: "X", Content: "Y"})
 	if got != "PRE" {
 		t.Errorf("applyEdit(unknown tool) = %q, want %q", got, "PRE")
 	}
@@ -1446,11 +1447,13 @@ func Test_NoWriteHelperSetsNewStringWithoutContent(t *testing.T) {
 	}
 }
 
-// AC7 — MultiEdit/NotebookEdit are gated but their payloads (edits[], cells) are
-// unmodeled; pin the CURRENT behavior (they capture no red-candidates) so the
-// fix in reserved spec 0032 is a deliberate, observable change.
+// Spec 0032 — MultiEdit/NotebookEdit payloads are MODELED: a test file authored
+// through either tool captures the just-added test id as a red-candidate, on a par
+// with Write/Edit. (These invert the spec-0031 characterization pins, which
+// asserted zero candidates while the payloads were still a default-branch
+// fallthrough.)
 
-func Test_MultiEditEnvelope_CapturesNoRedCandidates(t *testing.T) {
+func Test_MultiEditEnvelope_CapturesRedCandidate(t *testing.T) {
 	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
 	testFile := filepath.Join(root, "pkg", "foo_test.go")
 	if err := os.MkdirAll(filepath.Dir(testFile), 0o755); err != nil {
@@ -1477,13 +1480,12 @@ func Test_MultiEditEnvelope_CapturesNoRedCandidates(t *testing.T) {
 	}
 	abs, _ := filepath.Abs(testFile)
 	rc, _ := speccraft.GetRedCandidates(root)
-	if len(rc[abs]) != 0 {
-		t.Errorf("MultiEdit edits[] is unmodeled (reserved spec 0032) — expected NO captured "+
-			"candidates today, got %v", rc[abs])
+	if !containsStr(rc[abs], "TestX") {
+		t.Errorf("MultiEdit edits[] must capture the just-added TestX as a red-candidate, got %v", rc[abs])
 	}
 }
 
-func Test_NotebookEditEnvelope_CapturesNoRedCandidates(t *testing.T) {
+func Test_NotebookEditEnvelope_CapturesRedCandidate(t *testing.T) {
 	root := makeTestRepo(t, "0031-guard-write-tool-red-candidate-blindspot", "in-progress")
 	testFile := filepath.Join(root, "pkg", "test_foo.py")
 	if err := os.MkdirAll(filepath.Dir(testFile), 0o755); err != nil {
@@ -1492,7 +1494,7 @@ func Test_NotebookEditEnvelope_CapturesNoRedCandidates(t *testing.T) {
 	os.WriteFile(testFile, []byte("def test_existing():\n    assert True\n"), 0o644)
 	env := map[string]any{
 		"tool_name":  "NotebookEdit",
-		"tool_input": map[string]any{"file_path": testFile, "new_source": "def test_new():\n    assert False"},
+		"tool_input": map[string]any{"file_path": testFile, "new_source": "def test_existing():\n    assert True\n\ndef test_new():\n    assert False\n"},
 		"cwd":        root,
 	}
 	raw, _ := json.Marshal(env)
@@ -1505,9 +1507,8 @@ func Test_NotebookEditEnvelope_CapturesNoRedCandidates(t *testing.T) {
 	}
 	abs, _ := filepath.Abs(testFile)
 	rc, _ := speccraft.GetRedCandidates(root)
-	if len(rc[abs]) != 0 {
-		t.Errorf("NotebookEdit new_source is unmodeled (reserved spec 0032) — expected NO "+
-			"captured candidates today, got %v", rc[abs])
+	if !containsStr(rc[abs], "test_new") {
+		t.Errorf("NotebookEdit new_source must capture the just-added test_new as a red-candidate, got %v", rc[abs])
 	}
 }
 

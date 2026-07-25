@@ -2,6 +2,74 @@
 
 Append-only. Newest first.
 
+## 2026-07-25 — MultiEdit/NotebookEdit payload modeling closes spec 0031's reserved slot, override-free; version 1.9.0 (spec 0032)
+
+**Spec:** specs/0032-payloads/
+**Decision:** Close the reserved slot spec 0031 left behind. Spec 0031 switched
+`speccraft-guard`'s red-candidate capture (`applyEdit`) on tool IDENTITY rather than
+payload shape, but modeled only `Write` (→ `content`) and `Edit` (→ in-place replace);
+`MultiEdit` and `NotebookEdit` fell to a `default:` fallback that returned pre-edit
+content unchanged and carried a "reserved for spec 0032" comment plus two
+characterization tests. So a test file authored via either tool captured ZERO
+red-candidates, and the sibling production edit was wrongly blocked with "no failing
+test observed" — the exact class 0031 fixed for Write. This spec models both:
+a NEW named type `MultiEditEntry{OldString,NewString}` (named, not anonymous, for
+test/future referenceability); two NEW `ToolInput` fields `Edits []MultiEditEntry`
+(`json:"edits"`) + `NewSource string` (`json:"new_source"`); and a NEW helper
+`applyMultiEdit(pre, edits)` that folds each entry as a FIRST-occurrence
+`strings.Replace` over the RUNNING content (a later entry sees the earlier entry's
+output), SKIPS an entry whose `OldString==""` (Go's `strings.Replace` would otherwise
+prepend), and no-ops on an absent target (best-effort; NOT the real tool's hard error).
+`applyEdit` gains explicit `case "MultiEdit"` (→ `applyMultiEdit`) and
+`case "NotebookEdit"` (→ `ti.NewSource`, empty string INCLUDED, mirroring Write's
+`Content`). The switch keys on `ti.ToolName`, so the empty-vs-absent `new_source`
+zero-value ambiguity is moot — a plain `string`, not `*string`, is deliberate.
+NotebookEdit models the modified cell's `new_source` only; `.ipynb` JSON is NOT parsed,
+so other cells' test IDs are unobserved (accepted, pinned limitation). The two 0031
+characterization tests were INVERTED + RENAMED (`…CapturesNoRedCandidates` →
+`…CapturesRedCandidate`) so the test NAME is itself a recurrence signal; a new
+`reserved_slot_test.go` adds a case-insensitive/whitespace-tolerant recurrence grep
+(needles from concatenated fragments, self-excluded) forbidding any surviving
+"reserved spec 0032"/"unmodeled" language, plus a `FutureEdit` fallback pin, the two
+dispatch-injection PINs (AC8 — `dispatchByLanguage` already injects ToolName, so it is a
+regression pin, not a driver), and `Test_ApplyEditDefaultComment_OmitsModeledTools`.
+Version bumped 1.8.0 → 1.9.0 across the three `const version` binaries (each via a
+renamed sibling version test) + both manifests (grep oracle). The published-verified-
+release half of AC10 is the merge-time obligation (auto-tag → release.yml →
+verify-release.sh), same as specs 0031/0034.
+
+**The meta-payoff — shipped OVERRIDE-FREE.** Every driving RED touching the new
+`Edits`/`NewSource` fields was authored at the `json.Unmarshal` envelope boundary: an
+unknown JSON key parses to the zero value, so the test COMPILES against the old struct
+and fails only on BEHAVIOR (a runtime RED), dodging the spec-0018-AC13
+build-failed-≠-RED trap that cost spec 0034 a bootstrap override. This confirms spec
+0031's envelope-boundary technique GENERALIZES from the single `Content` field to a
+struct-FIELD extension (two fields + a named nested type), not just a one-field add —
+the technique's reach is any additive JSON-decoded surface, not a special case.
+
+**Two environmental findings.** (1) **Stale-cached-guard recurrence** (the 0034
+stale-`1.1.0`-cache-on-PATH lineage): the hook ran the STALE 1.1.0 cached guard. When
+scrubbing main.go's `default:` comment (a gated comment-only prod edit), the sibling
+RED had been CLEARED by a prior NO-NEW-TEST Edit to `reserved_slot_test.go` (adding the
+`strings` import) — the documented "SetRedCandidates replaces per-file; a no-new-test
+edit clears a standing RED" behavior (spec 0031's brittleness note (a)). Remedy: a
+GENUINE fresh companion RED (`Test_ApplyEditDefaultComment_OmitsModeledTools`) was
+registered via the Edit tool, unblocking the scrub with NO override. Codified as a
+convention: keep the decisive fresh RED as the LAST sibling test-file touch before a
+gated prod edit. (2) **A source-scanning meta-test scoping bug, caught + fixed
+in-session:** the companion test's first `strings.Index(src,"default:")` matched an
+EARLIER `default:` (main.go:93), sweeping the new MultiEdit/NotebookEdit case labels
+into the scanned segment → false positive. Fixed by anchoring the scan to the
+`func applyEdit(` body FIRST, then locating `default:` within it — a source-scanning
+meta-test must scope to its TARGET function, not the first textual match.
+
+**Deviations:** none material. `tasks.md §Bypasses` is empty — ZERO
+`/speccraft:spec:override`. `go test ./...` green. AC8 and the AC9 unknown-tool fallback
+were green-on-arrival PINs (the injection line already existed), ridden in the Phase-3
+RED step kept red by the recurrence grep, so RED→GREEN framing held without a
+passing-only GREEN. 0032's own close ran NO consolidation (no `domains:`/`delta:`, no
+`specs/domains/` tree yet — non-blocking decline).
+
 ## 2026-07-25 — Stack-agnostic planning & execution: surface the config-backed test command to the authoring layer; version 1.8.0 (spec 0034)
 
 **Spec:** specs/0034-stack-agnostic-planning-execution/
