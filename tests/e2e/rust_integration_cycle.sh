@@ -88,8 +88,7 @@ EDIT_INPUT=$(cat <<JSON
   "tool_name": "Write",
   "tool_input": {
     "file_path": "$CRATE/tests/foo.rs",
-    "old_string": "",
-    "new_string": "fn it_works() {}\n"
+    "content": "fn it_works() {}\n"
   },
   "cwd": "$CRATE"
 }

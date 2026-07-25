@@ -132,7 +132,7 @@ spec_consolidate() {
   _seed_0090_decline_source
   _assert_candidate_singleton "0090-decline-source" "[cons 1/3]"
   echo "==> [cons 1/3] /speccraft:sync consolidation backfill (decline spec 0090 → no write/move)"
-  run_claude "/speccraft:sync. When the consolidation backfill proposes folding spec 0090 into specs/domains/state.md, DECLINE it — do not apply, do not move anything." cons-01-decline.log
+  run_claude "/speccraft:sync. The consolidation backfill will propose folding spec 0090 into specs/domains/state.md. DECLINE that consolidation: write the marker file specs/0090-decline-source/consolidation-skip, and do NOT move the spec directory and do NOT fold anything into the domain file. Apply this decline immediately and WITHOUT asking for confirmation. Treat any /speccraft:sync memory-audit or drift proposals as a SEPARATE matter — do not let them block, defer, or gate writing the skip marker." cons-01-decline.log
   # AC4: a sync-decline writes a consolidation-skip marker (pins spec 0025 AC11)...
   exists "specs/0090-decline-source/consolidation-skip"
   # ...and changes nothing else.

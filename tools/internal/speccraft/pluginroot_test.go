@@ -160,8 +160,19 @@ func Test_ResolvePluginRoot_SymlinkedExe_ResolvesRealInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if got != root {
-		t.Errorf("resolved = %q, want %q (EvalSymlinks must resolve the link to the real install)", got, root)
+	// Assert asymmetrically (spec 0033): normalize only the EXPECTED root through
+	// EvalSymlinks — on macOS t.TempDir() sits under /var, a symlink to
+	// /private/var — and compare the resolver's got to it directly. Do NOT
+	// normalize got: a resolver that skipped EvalSymlinks would return the
+	// un-normalized path (or ascend from the wrong dir via the through-symlink
+	// exe and error), and must still fail. On Linux EvalSymlinks(root) == root,
+	// so the assertion is unchanged.
+	want, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(root) = %v", err)
+	}
+	if got != want {
+		t.Errorf("resolved = %q, want %q (EvalSymlinks must resolve the link to the real install)", got, want)
 	}
 }
 

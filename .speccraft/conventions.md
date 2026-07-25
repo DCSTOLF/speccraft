@@ -11,6 +11,34 @@
 - Tests: `_test.go` files colocated with the code under test; table-driven for >2 cases; function names start with `Test`. <!-- enforce: regex pattern="^func Test[A-Z]" scope="tools/**/*_test.go" -->
 - Test-function naming (introduced by spec 0012): both `Test<UpperCamel>` (e.g. `TestStateRoundTrip`, `TestFarewell`) and `Test_<Subject>_<Scenario>` (e.g. `Test_SetField_ActiveSpec_NullArg_ClearsToJSONNull`) are acceptable. Prefer the underscore form for scenario-specific tests where the name encodes a concrete input → expected output, since it makes the failure line self-documenting. Prefer the camelCase form for broad round-trip / smoke tests where there is no single scenario to name. The `^func Test[A-Z]` enforce-regex above accepts both and stays as is — tightening it would force a rename of every existing camelCase test in the repo, which is out of scope.
 
+### Assert asymmetrically when pinning a normalization the product performs
+
+Introduced by spec 0033.
+
+When a test pins a canonicalization/normalization that the PRODUCT applies —
+`filepath.EvalSymlinks`, `filepath.Clean`, case-folding, a trailing-slash strip —
+normalize only the EXPECTED value, and compare the product's actual `got` to it
+directly. NEVER normalize `got` too. Normalizing both sides makes the test pass even
+when the product STOPS normalizing, silently masking exactly the regression the test
+exists to catch.
+
+- **The concrete case.** `Test_ResolvePluginRoot_SymlinkedExe_ResolvesRealInstall`
+  (`tools/internal/speccraft/pluginroot_test.go`) built its expected root via
+  `filepath.Abs(t.TempDir())`. On macOS `t.TempDir()` sits under `/var` (a symlink to
+  `/private/var`), and the resolver correctly `EvalSymlinks`-normalizes the exe path
+  (spec 0030 AC4) → `got != want`, failing on macOS only. Fixed with
+  `want, err := filepath.EvalSymlinks(root)` (fail the test on err) and `got == want`,
+  leaving `got` untouched. On Linux `EvalSymlinks(root) == root`, so the assertion is
+  unchanged there.
+- **Preserve sensitivity.** Keep an independent path that would make a
+  stopped-normalizing product FAIL rather than silently pass — here the exe is reached
+  through a symlink in a separate tempdir, so a resolver that skipped `EvalSymlinks`
+  would ascend from the wrong directory and error, not quietly match.
+- **Not-locally-reproducible is acceptable when the fix is correct by construction.**
+  The macOS failure is not reproducible on the Linux dev host; the oracle was Linux
+  `go test` staying green plus the assertion being provably macOS-correct by
+  construction, with the next macOS CI run as confirmation.
+
 ## Version bumps
 
 Introduced by spec 0019.
@@ -86,6 +114,41 @@ Introduced by spec 0005 (Rust) and codified by spec 0007 (Python). Every support
 - **Exit-code convention.** `fail()` exits 2 (assertion failure), distinct from setup failures (exit 1) and the script's own success (exit 0). Matches `tests/e2e/run.sh`'s expectations.
 - **Progress output.** Use a `note()` helper for intra-scenario progress lines (indented two spaces) and a top-level `echo "==> ..."` for scenario headers, mirroring `rust_inline_cycle.sh` and `python_cycle.sh`.
 - **Invocation from `run.sh`.** Each fixture is invoked from `tests/e2e/run.sh` in a hermetic subshell — `( bash "$RUST_E2E_DIR/<lang>_cycle.sh" ) || fail "<lang>_cycle.sh failed"` — so fixture-local `cd` and env mutations cannot leak into later steps. The step counter (`[N/M]`) is updated in the same edit that adds a new fixture.
+
+### A Write payload in ANY e2e fixture uses `content`, never `new_string`
+
+Introduced by spec 0033 (generalizing spec 0031's Go-only AC5 static guard to shell
+fixtures).
+
+A fixture that drives `speccraft-guard` with a `{"tool_name":"Write"}` envelope models
+what the Write TOOL actually sends: the file's content in `content`, NEVER in
+`new_string` (that is the Edit tool's field). A Write payload carrying `new_string`
+mis-simulates the tool — post spec 0031 the guard reads `content` for a Write, so the
+`new_string` content is dropped, the just-added test is empty, and the guard wrongly
+does not reject. This invariant holds unconditionally (a Write's `tool_input` must never
+contain `new_string`, even if `content` is also present) and applies to BOTH Go fixtures
+and `tests/e2e/*.sh`.
+
+- **Why the generalization.** Spec 0031 pinned this only over Go test files
+  (`Test_NoWriteHelperSetsNewStringWithoutContent`), so `rust_integration_cycle.sh` — a
+  shell fixture with the identical bug — slipped through and broke CI. Spec 0033 extended
+  the guard to shell fixtures.
+- **Pinned by** `Test_E2EFixtures_NoWritePayloadUsesNewString` in
+  `tools/internal/speccraft/e2e_fixture_shape_test.go`: it scans every `tests/e2e/*.sh`,
+  segments each file on the literal `"tool_name"`, and for any segment whose tool-name is
+  `Write` asserts that one envelope contains no `new_string`. Association is per-envelope
+  (up to the next `"tool_name"`), NOT a repo-wide proximity grep, so a Write block
+  followed by an unrelated Edit block does not false-positive. It runs in the normal
+  `go test ./...` job, so it is CI-visible at zero credit cost.
+- **Pinning a credit-gated leg's imperative wording, credit-free.** The same test file
+  also carries `Test_ConsolidateDeclineLeg_ImperativePrompt`, which reads the LIVE
+  `[cons 1/3]` decline prompt out of `spec_consolidate.sh` (anchored on its log filename)
+  and asserts it pins the three terminal actions (write the marker; do NOT move the
+  directory; act WITHOUT asking). This makes the spec-0029 "APPLY, not propose-and-wait"
+  wording requirement deterministic without a model run — the credit-gated
+  marker-exists/dir-unmoved post-condition remains the behavioral backstop. It is the
+  "assertion meta-test reads run.sh's live predicate" pattern applied to a credit-gated
+  PROMPT rather than an assertion.
 
 ### Reset state between scenarios
 

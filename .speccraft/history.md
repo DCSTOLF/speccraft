@@ -2,6 +2,63 @@
 
 Append-only. Newest first.
 
+## 2026-07-25 — Post-0030/0031 CI regression hardening: three fixes + a shell-fixture recurrence guard, test/fixture/prompt-only (spec 0033)
+
+**Spec:** specs/0033-ci-regression-hardening/
+**Decision:** Fix three CI failures that surfaced after shipping specs 0030 (v1.7.0)
+and 0031 (v1.7.1), and add a recurrence guard for the class that let one through —
+entirely in test files and e2e shell fixtures, with NO product code, NO version bump,
+and ZERO `/speccraft:spec:override` (all changed file classes are ungated). The
+shipped 0030/0031 behavior is correct; this spec only aligns tests/fixtures/prompts
+with it. **(1) macOS-only Go test.** `Test_ResolvePluginRoot_SymlinkedExe_ResolvesRealInstall`
+compared the resolver's `got` against a raw `filepath.Abs(t.TempDir())` root; on macOS
+`/var`→`/private/var` is a symlink and the resolver correctly `EvalSymlinks`-normalizes
+the exe (spec 0030 AC4), so `got != want` — red on macOS, green on Linux (`/tmp`
+unsymlinked). Fixed with an **asymmetric** assertion: normalize only the EXPECTED value
+(`want = filepath.EvalSymlinks(root)`), leave `got` untouched. Normalizing both sides
+would let a resolver that STOPPED calling `EvalSymlinks` pass — masking exactly the
+regression the test exists to catch; the through-symlink exe path preserves that
+sensitivity. **(2) `rust_integration_cycle.sh` Write payload.** The fixture sent a
+`{"tool_name":"Write"}` envelope with content in `new_string` — the exact 0031
+mis-simulation, now in a shell fixture. Spec 0031's `applyEdit` reads `content` for a
+Write, which was absent → empty post-edit content → no just-added test → no rejection →
+leg failed. Fixed by using `"content"`. **(3) `spec_consolidate.sh [cons 1/3]` decline
+leg** (NOT a 0030/0031 regression — a pre-existing 0025→0027→0028→0029 consolidation-
+lineage flake, bundled only because it blocks the same e2e gate): the non-imperative
+prompt let the credit-gated model propose-and-wait instead of writing the
+`consolidation-skip` marker. Fixed with an imperative prompt (write the marker, do NOT
+move the dir, act without asking, keep the memory-audit proposals separate).
+
+**The recurrence guard.** New Go test `tools/internal/speccraft/e2e_fixture_shape_test.go`.
+`Test_E2EFixtures_NoWritePayloadUsesNewString` scans every `tests/e2e/*.sh`
+per-envelope (segmenting on `"tool_name"`, associating fields within one block, not a
+repo-wide proximity grep) for the forbidden Write+`new_string` shape — extending spec
+0031's Go-ONLY AC5 static guard to SHELL fixtures, which is the exact gap that let (2)
+through. Plus `Test_ConsolidateDeclineLeg_ImperativePrompt`, a credit-free meta-test
+that reads the LIVE `[cons 1/3]` prompt (anchored on `cons-01-decline.log`) and pins its
+three terminal-action phrases, making the wording requirement deterministic without a
+model run (the credit-gated marker-exists/dir-unmoved post-condition stays the
+behavioral backstop). This is the spec-0014/0020 "meta-test reads run.sh's live
+predicate" lesson applied to a credit-gated prompt's wording.
+
+**Lessons codified as conventions.** (a) When a test pins a normalization the PRODUCT
+performs (EvalSymlinks, path cleaning), normalize only the EXPECTED value — normalizing
+both sides masks a stopped-normalizing regression. (b) A Write payload in ANY fixture
+(Go or `tests/e2e/*.sh`) must carry content in `content`, never `new_string` — the
+generalization of 0031's Go-only guard, pinned by the per-envelope Go scanner.
+
+**Deviations:** No version bump — nothing shipped in a binary, manifest, command doc,
+hook, or user-facing prompt (the `[cons 1/3]` string is test-driver input inside
+`tests/e2e/`, not a user-facing prompt); the §Version bumps trigger is behavior/API
+change, none here. AC1 is NOT reproducible on the Linux dev host — the local oracle was
+Linux `go test` staying green plus the assertion being provably macOS-correct by
+construction; real confirmation is the next macOS CI unit run. Exactly four files
+changed (`pluginroot_test.go`, `rust_integration_cycle.sh`, `spec_consolidate.sh`, new
+`e2e_fixture_shape_test.go`) plus the `.speccraft/index.md` pointer; `go test ./...` and
+`tests/hooks/*.bats` green. 0032 remains RESERVED by spec 0031; 0033 intentionally skips
+it and does NOT self-reserve (a reservation cannot name an ID below the reserving spec's
+own). 0033's own close ran no consolidation.
+
 ## 2026-07-24 — TDD guard Write-tool red-candidate blind spot fixed override-free; version 1.7.1 (spec 0031)
 
 **Spec:** specs/0031-guard-write-tool-red-candidate-blindspot/
