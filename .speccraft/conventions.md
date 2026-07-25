@@ -39,6 +39,28 @@ exists to catch.
   `go test` staying green plus the assertion being provably macOS-correct by
   construction, with the next macOS CI run as confirmation.
 
+### Registering a RED under a stale cached guard: use Edit, not a fresh Write
+
+Introduced by spec 0034.
+
+When dogfooding an in-flight guard fix, the `speccraft-guard` copy first on `PATH`
+may be a STALE cached build (spec 0030's stale-`1.1.0`-cache-on-PATH class). A
+pre-0031 cached guard has the Write blind spot: its red-candidate capture reads the
+Edit tool's `new_string` but the Write tool sends `content`, so a test file CREATED
+via the **Write** tool registers ZERO red-candidates and the sibling production
+edit is wrongly blocked with "no failing test observed."
+
+- **Introduce each decisive failing test via an Edit that adds or renames a test,
+  never a fresh Write-created test file.** The Edit tool's replace-path is what the
+  old guard models correctly, so the just-added test IDs are captured and the RED
+  is observed. (The SHIPPED 1.8.0 guard — post spec 0031 — models Write's `content`
+  correctly and does not need this workaround; the rule is for sessions running
+  against a stale cached guard on PATH.)
+- This is the operational sibling of spec 0031's fix (discriminate on tool
+  identity, not payload shape) and spec 0030's stale-cache lesson; it applies
+  whenever `os.Executable()`-derived PATH resolution can pick up an older cached
+  binary before the freshly built one.
+
 ## Version bumps
 
 Introduced by spec 0019.
@@ -84,6 +106,60 @@ never once been performed manually, so every release-asset URL 404'd and
   consumer must agree on the asset name (`checksums.txt`), and the release job must
   regenerate it `sha256sum *.tar.gz > checksums.txt` over all downloaded tarballs (the
   per-arch artifacts collide under `merge-multiple`).
+
+## Stack detection & the authoring layer
+
+Introduced by spec 0034.
+
+The plugin EXECUTES against five stacks (go, rust, python, js, ts) via already
+stack-aware runners, but its AUTHORING layer — planner prose, the four command
+docs, and the `conventions.md` it seeds — must never hardcode one language's test
+command or file layout. The single source of truth for "what is THIS repo's test
+command / test-file shape" is the detection surface, not inlined language literals.
+
+- **`speccraft-state detect-stack` is the machine surface.** It prints a versioned
+  `{"schema":1,"language":…,"test_command":…,"test_patterns":[…],"inline_tests":…}`
+  envelope from `DetectStack(root, cfg)` (`tools/internal/speccraft/detect.go`),
+  probing ONLY exact repo-root manifests. Polyglot precedence is fixed data
+  (`manifestOrder`) `go > rust > python > ts > js` and is a PUBLIC contract — a
+  compiled-language manifest is rarely mere tooling, so `package.json` ranks last;
+  `ts` refines `js` by `tsconfig.json`. Exit 0 for any resolvable root INCLUDING
+  `unknown` (`language:"unknown"`, `test_command:""`); non-zero only when no
+  `.speccraft/` root resolves. Go surfaces a SUITE command (`go test ./...`), not
+  the guard's bare per-test `cfg.TDD.Go.Command`.
+- **`speccraft-state test-command` is the effective command for docs to branch on.**
+  It emits the command as raw DATA (never shell-evaluated) and exits non-zero +
+  prints nothing when empty. Precedence: the `conventions.md` marker (below) wins
+  over detection.
+- **The `conventions.md` marker is the editable override.** One line, an HTML
+  comment so it is inert in rendered Markdown:
+  `<!-- speccraft:test-command = "pytest -q" -->`. Grammar (pinned by test): parsed
+  PER LINE with body `((?:\\.|[^"\\\n])*)` (a proper quoted string — an UNescaped
+  interior quote cannot match → malformed → detection fallback); `\"`/`\\`
+  unescape on read; empty value → treated as not-recorded → fallback; duplicate
+  markers → FIRST wins; a command with quotes or shell operators round-trips
+  verbatim. `/speccraft:init` seeds it from the detected stack via
+  `commands/init.lib.sh::seed_conventions`, which PRESERVES an existing
+  conventions.md byte-for-byte (idempotent) and writes a TODO + empty marker on an
+  unknown stack — never a wrong default. Migration is opt-in: an existing repo
+  keeps its old conventions.md until the user edits/removes it (re-init does not
+  migrate).
+- **Authoring prose stays stack-neutral, mechanically enforced.** A concrete
+  language test command (`go test`, `cargo test`/`cargo nextest`, `pytest`, `npm
+  test`/`npm run`, `jest`, `find … -name '*_test.go'`) in `agents/tdd-planner.md`
+  or `commands/spec/{plan,implement,delegate}.md` is a VIOLATION unless it either
+  sits under a labeled-example line (`^\s*(#+|>|-|\*)?\s*example\b`, case-
+  insensitive) OR invokes `speccraft-state test-command`. This rigid
+  labeled-example-or-`test-command` rule replaces subjective "mandate vs example"
+  detection. Pinned by `Test_AuthoringProse_*` in
+  `tools/internal/speccraft/authoring_prose_test.go`.
+- **The shipped template purity guardrail is now executable.**
+  `templates/speccraft/conventions.md` must contain no language-specific idiom
+  (`fmt.Errorf`, `slog`, `^func Test`, `*_test.go`, PascalCase naming rules) and no
+  `enforce:` regex bound to a language file glob. Pinned by
+  `tools/internal/speccraft/template_purity_test.go` — promoting the guardrails
+  "templates stay stack-agnostic" rule from advisory to a CI-visible check (spirit
+  of spec 0033's fixture-shape guard).
 
 ## Bash (`hooks/`, `tests/e2e/`, `scripts/`)
 

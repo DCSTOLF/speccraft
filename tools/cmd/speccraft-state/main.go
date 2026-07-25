@@ -10,7 +10,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
 
-const version = "1.7.1"
+const version = "1.8.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -142,6 +142,51 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, pct)
 		return 0
 
+	case "detect-stack":
+		// Spec 0034: surface the host repo's primary language + effective suite
+		// test command + test-file globs as a versioned JSON envelope. Exit 0 for
+		// any resolvable root INCLUDING "unknown"; non-zero only when no
+		// .speccraft/ root resolves (run outside a repo).
+		root, err := speccraft.FindRoot("")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		cfg := speccraft.ReadConfig(root)
+		st := speccraft.DetectStack(root, cfg)
+		patterns := st.TestPatterns
+		if patterns == nil {
+			patterns = []string{}
+		}
+		env := struct {
+			Schema       int      `json:"schema"`
+			Language     string   `json:"language"`
+			TestCommand  string   `json:"test_command"`
+			TestPatterns []string `json:"test_patterns"`
+			InlineTests  bool     `json:"inline_tests"`
+		}{1, st.Language, st.TestCommand, patterns, st.InlineTests}
+		out, _ := json.Marshal(env)
+		fmt.Fprintln(stdout, string(out))
+		return 0
+
+	case "test-command":
+		// Spec 0034: the effective host-repo test command (conventions.md marker
+		// wins over detection). Emit verbatim (data, not shell); exit non-zero and
+		// print nothing when no command resolves, so callers can branch.
+		root, err := speccraft.FindRoot("")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		cfg := speccraft.ReadConfig(root)
+		cmd, ok := effectiveTestCommand(root, cfg)
+		if !ok {
+			fmt.Fprintln(stderr, "no test command resolved (unknown stack and no conventions.md marker)")
+			return 1
+		}
+		fmt.Fprintln(stdout, cmd)
+		return 0
+
 	default:
 		fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[0])
 		usage(stderr)
@@ -260,5 +305,7 @@ Usage:
   speccraft-state track-edit <file>      Record a file edit in the session
   speccraft-state reset-session          Clear session.* fields (SessionStart)
   speccraft-state tasks-done-pct         % of [x] tasks in active spec's tasks.md
+  speccraft-state detect-stack           Detect repo language + test command (JSON)
+  speccraft-state test-command           Print the effective host-repo test command
   speccraft-state --version              Print version`)
 }

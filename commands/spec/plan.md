@@ -16,9 +16,13 @@ Steps:
 2. Read spec.md. Require status >= `reviewed` OR status `draft` with
    `--skip-review` flag (warn loudly if skipping review).
 
-3. List existing test files in directories matching `spec.packages`:
+3. List existing test files in directories matching `spec.packages`, using the
+   project's own test-file conventions (do not assume a language). Resolve them
+   from the detected stack:
    ```bash
-   find <pkg> -name '*_test.go' 2>/dev/null
+   speccraft-state detect-stack   # → {"language":…,"test_patterns":[…],"inline_tests":…}
+   # then list files matching each returned pattern under the packages, e.g.
+   #   find <pkg> -type f -name '<pattern>' 2>/dev/null
    ```
    Pass this inventory to the planner so it can reason about which test
    files to extend vs. create new.

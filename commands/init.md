@@ -40,9 +40,21 @@ Steps:
    - Read `$PLUGIN_ROOT/templates/speccraft/index.md`       → Write to `<repo>/.speccraft/index.md`
    - Read `$PLUGIN_ROOT/templates/speccraft/guardrails.md`  → Write to `<repo>/.speccraft/guardrails.md`
    - Read `$PLUGIN_ROOT/templates/speccraft/architecture.md`→ Write to `<repo>/.speccraft/architecture.md`
-   - Read `$PLUGIN_ROOT/templates/speccraft/conventions.md` → Write to `<repo>/.speccraft/conventions.md`
    - Read `$PLUGIN_ROOT/templates/speccraft/history.md`     → Write to `<repo>/.speccraft/history.md`
+   - **Do NOT copy `conventions.md` here** — it is seeded from the detected stack
+     in step 5a below (so a Python/JS/Rust repo does not receive Go conventions).
    - Read `$PLUGIN_ROOT/templates/speccraft/agents.toml`    → Write to `<repo>/.speccraft/agents.toml`
+
+5a. **Seed `conventions.md` from the detected stack (spec 0034).** Source the
+    colocated helper and call it — it copies the stack-agnostic template, then
+    fills the Testing-section `speccraft:test-command` marker + a detected-stack
+    note from `speccraft-state detect-stack`. It PRESERVES an existing
+    `conventions.md` byte-for-byte (idempotent), and on an unknown stack writes a
+    `TODO` placeholder + empty marker rather than a wrong default:
+    ```bash
+    source "$PLUGIN_ROOT/commands/init.lib.sh"
+    seed_conventions "<repo>" "$PLUGIN_ROOT/templates/speccraft/conventions.md"
+    ```
 
 6. Create `<repo>/specs/.gitkeep` (creating `specs/` if absent).
 

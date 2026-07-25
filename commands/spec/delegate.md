@@ -20,4 +20,5 @@ Steps:
    - If a diff: present it for user approval before applying.
    - If a written response: integrate into the conversation.
 
-4. If a diff was applied, run `go test ./...` and report results.
+4. If a diff was applied, run the project's test command
+   (`speccraft-state test-command`) and report results.

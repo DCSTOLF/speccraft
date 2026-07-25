@@ -2,6 +2,79 @@
 
 Append-only. Newest first.
 
+## 2026-07-25 — Stack-agnostic planning & execution: surface the config-backed test command to the authoring layer; version 1.8.0 (spec 0034)
+
+**Spec:** specs/0034-stack-agnostic-planning-execution/
+**Decision:** Close field finding #5 from the installed-plugin engagement (the same
+Python-repo run behind specs 0030/0031): the planning/execution PROSE was Go-shaped
+(`tdd-planner.md` rules 3/7, `plan.md`'s `find … -name '*_test.go'`,
+`implement.md`/`delegate.md`'s bare `go test ./...`) and the shipped
+`templates/speccraft/conventions.md` copied Go idioms (a `^func Test[A-Z]`
+enforce-regex, `fmt.Errorf`, `slog`, `cmd/`) into every host repo — a direct
+violation of the standing "templates stay stack-agnostic" guardrail. Crucially the
+EXECUTION substrate was already stack-aware (go/python/js/ts via
+`runner.AdapterForLanguage`+`cfg.TDD.<Lang>.Command`; rust via the SEPARATE
+`runner.AdapterFor`+`cfg.TDD.Rust.Runner`); the gap was entirely in the authoring
+layer. The fix READS those same config-backed commands and surfaces them: a new
+`DetectStack(root, cfg) Stack{Language, TestCommand, TestPatterns []string,
+InlineTests bool}` (`tools/internal/speccraft/detect.go`) probing ONLY exact
+repo-root manifests, with polyglot precedence encoded as ordered data
+(`manifestOrder`) `go > rust > python > ts > js` (compiled-lang manifests rank
+above `package.json`, which is often mere tooling; ts refines js within the
+package.json case); two `speccraft-state` subcommands (`detect-stack`, versioned
+`{"schema":1,…}` JSON, exit 0 incl. `unknown`, non-zero only outside a repo; and
+`test-command`, the effective command as raw data, non-zero when empty); a
+single-line `<!-- speccraft:test-command = "cmd" -->` conventions.md marker
+(quoted-string body regex, per-line, first-of-duplicates wins, empty/malformed →
+detection fallback, emitted verbatim never shell-evaluated) that OVERRIDES
+detection and is the editable source of truth; `/speccraft:init` seeding
+(`commands/init.lib.sh::seed_conventions` copies the neutral template and fills the
+marker from `detect-stack`, PRESERVES an existing conventions.md byte-for-byte, and
+writes a TODO + empty marker on `unknown`); the four authoring docs rewritten to
+reference the project's command; and TWO mechanical meta-guards promoting the
+guardrails template-purity rule from advisory to executable —
+`authoring_prose_test.go` (a concrete test-command must sit under an
+`^\s*(#+|>|-|\*)?\s*example\b` label OR invoke `speccraft-state test-command`) and
+`template_purity_test.go` (shipped template free of Go idioms). Version bumped
+1.7.1 → 1.8.0 (new user-facing subcommands + changed shipped command/template
+behavior); the published-verified-release half is inherited as a merge-time
+obligation (spec 0030 AC11). Two-round cross-model review converged at revision 2
+(all 10 interface-contract items folded before planning).
+
+**Two environmental findings — the honest story of this run.**
+(1) **ONE `/speccraft:spec:override` (T1), pre-authorized.** The brand-new
+`DetectStack`/`Stack` symbol hit the guardrails §AC13 new-symbol limitation: the
+Step-2 sibling `detect_test.go` cannot compile until `detect.go` exists, so the
+guard's pre-edit red-check sees `OutcomeBuildFailed`, not a valid RED. This is the
+SAME single-symbol-bootstrap spec 0031's history predicted; the JSON-envelope-
+boundary trick that gave 0031 a zero-override run does NOT apply to a wholly-new
+type. Every other step was strict RED→GREEN — including the marker parser, which
+was deliberately placed in `package main` (`testcommand.go`, reached only via the
+CLI) rather than as a SECOND new internal/speccraft symbol, precisely to avoid a
+second bootstrap.
+(2) **The hook ran the STALE 1.1.0 cached guard** — the pre-0031 Write
+blind-spot: it reads `new_string` but the Write tool sends `content`, so any test
+file CREATED via the Write tool captured ZERO red-candidates and the sibling
+production edit was wrongly blocked with "no failing test observed." Workaround
+used throughout: introduce each decisive failing test via the **Edit** tool (whose
+replace-path the old guard models correctly), NOT a fresh Write. This is the same
+stale-cache-on-PATH class spec 0030 flagged for `speccraft-state`; the SHIPPED
+1.8.0 guard is correct and its tests pass — the blind spot was only in the cached
+copy first on PATH during this dogfood session.
+
+**Deviations:** init seeding landed at the TOP-LEVEL `commands/init.md` +
+`commands/init.lib.sh` (spec/plan named `commands/spec/init.*` — `/speccraft:init`
+is not a spec-lifecycle command); `seed_conventions <root> <template_path>` takes
+the template path explicitly (init.md already resolves `$PLUGIN_ROOT`) so the
+helper needs no plugin-root resolution; the marker parser is unexported in
+`package main`, not a planned exported `internal/speccraft.EffectiveTestCommand`;
+the Go `TestCommand` surfaces a SUITE form (`go test ./...`, appending ` ./...` to
+the bare per-test `cfg.TDD.Go.Command`) distinct from the guard's per-test command.
+`go test ./...` and `tests/hooks/*.bats` green; scope contained to the AC8 file
+list plus the new detection/subcommand/meta-test/bats/init files. 0034's own close
+ran NO consolidation (no `specs/domains/` tree yet — non-blocking decline). 0032
+remains reserved by spec 0031.
+
 ## 2026-07-25 — Post-0030/0031 CI regression hardening: three fixes + a shell-fixture recurrence guard, test/fixture/prompt-only (spec 0033)
 
 **Spec:** specs/0033-ci-regression-hardening/

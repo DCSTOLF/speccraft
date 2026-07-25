@@ -18,8 +18,9 @@ Steps:
    b. Honor TDD discipline: before editing any production file, the
       corresponding test file must have been edited more recently in this
       session. The PreToolUse hook enforces this automatically.
-   c. Run `go test ./...` after each step. RED steps expect failure;
-      GREEN steps expect success.
+   c. Run the project's test command after each step — resolve it with
+      `speccraft-state test-command` (do not assume a language). RED steps
+      expect failure; GREEN steps expect success.
    d. On step completion, mark the task `[x]` in tasks.md.
 
 3. After last task, run full test suite. If green, suggest `/speccraft:spec:close`.
