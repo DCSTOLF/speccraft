@@ -2,6 +2,105 @@
 
 Append-only. Newest first.
 
+## 2026-07-26 — Diff-focused re-review scopes reviewers to the deltas since the last review; version 1.10.0 (spec 0035)
+
+**Spec:** specs/0035-re-review/
+**Decision:** Close the field finding that a re-run `/speccraft:spec:review`
+re-litigates already-settled sections every round, ballooning the round count (a
+field session took 4 rounds; a hand-built "only assess what changed + check
+regressions" brief cut it to 2). Add a `--diff` path that reviewers still receive
+the full current spec as regression context but are instructed to assess ONLY the
+deltas and sweep the unchanged, previously-approved criteria for regressions. The
+value is **re-litigation avoidance**, not merely "not reading the whole spec." The
+anchor is a **review-time snapshot** (`specs/<id>/review-snapshot.md`), NOT git
+history — review → revise → re-review all precede the first commit, so a git-diff
+anchor has nothing to compare in the common case; a self-contained snapshot is
+deterministic and reuses spec-0020's robust-noop precedent (a byte-identical
+snapshot short-circuits instead of dispatching reviewers).
+
+**Layering.** `speccraft-state` OWNS change DETECTION; the `/speccraft:spec:review`
+command OWNS the UX response + provenance gate. New Go in `tools/internal/speccraft`:
+`AtomicWriteFile(path,data,perm)` (same-directory temp + `os.Rename`, with an
+injectable package-level `atomicRename` seam for the AC2 rename-failure
+fault-injection RED — the shared durable-write primitive behind both AC1 and AC2);
+`WriteReviewSnapshot(specDir)` (copies spec.md → review-snapshot.md, returns the
+sha256 of the RAW bytes with NO CRLF/LF/BOM/trailing-newline normalization, true
+no-op — no rewrite, no mtime touch — when the on-disk snapshot is already
+byte-identical); `ReviewDiff(specDir,promote)` returning the versioned
+`ReviewEnvelope{schema:1, snapshot, changed, changed_sections, diff, fingerprint,
+base_fingerprint}` (reads spec.md ONCE; `fingerprint`=sha256 of current bytes,
+`base_fingerprint`=sha256 of the OLD snapshot or JSON `null` on first review via a
+`*string`; with `--promote` the SAME captured bytes are frozen as the new snapshot
+AFTER the envelope is computed — read-before-overwrite, AC11); `diffSections` +
+`parseSpecDoc`/`renderDiff` (`review_sections.go`) the AC5 determinism engine —
+structured `ChangedSection{kind,heading,ordinal,side}`, sections keyed
+per-document by (trimmed heading, 1-based ordinal), matched ordinal-aligned, a pair
+emitted `modified` only when bodies DIFFER, an unmatched occurrence emitted
+`added` (new-doc ordinal) / `removed` (old-doc ordinal), a byte-identical body
+NEVER emitted even under an ordinal shift, no blanket over-report, a rename =
+removed+added, `frontmatter`/`preamble` reserved kinds distinct from a literal
+`## (frontmatter)` heading (which is `kind:"section"` and never aliases);
+`WriteReviewFile(path,body,fingerprint)` the AC2 SINGLE atomic commit (strip any
+prior `reviewed_sha256:` lines, append exactly one canonical line, write the
+COMPLETE file via `AtomicWriteFile` — never an intermediate fingerprint-free write;
+on any failure the prior review.md is byte-unchanged).
+
+Three new `speccraft-state` subcommands are wired through the compile-stable
+`run()` seam (so every cmd RED is a runtime "unknown subcommand", never a build
+error): `review-snapshot write <spec-dir>`; `review-diff <spec-dir> [--promote]`
+with the AC3 exit-code matrix (read-only exits 0 whenever spec.md resolves —
+including no-snapshot AND a closed spec — non-zero only when spec.md, or a
+present-but-unreadable snapshot, cannot be read; `--promote` adds the ONE exception,
+refused non-zero on a closed spec via a new `specStatusIsClosed` frontmatter
+probe, honoring closed-spec immutability); and an UNPLANNED `review-commit
+<review-file> <fingerprint>` so the markdown/bash command can invoke AC2's atomic
+commit across the CLI boundary. New `templates/prompts/re-review.md` (AC7a) carries
+`{{DIFF}}`/`{{CHANGED_SECTIONS}}` + the regression-sweep instruction, with a
+both-polarity grep oracle scoped to the template only. New `commands/spec/review.lib.sh`
+(spec-0015 colocation): `review_reviewed_sha256` (anchored `^reviewed_sha256:
+[0-9a-f]{64}$` usability parser — zero/multiple/malformed → not usable),
+`review_classify` (the provenance gate → full-review / short-circuit / scoped),
+`review_build_payload` (sources the FROZEN review-snapshot.md, never spec.md).
+`review.md` wires the `--diff` transaction + the step-6 atomic fingerprint
+recording. `speccraft-drift` `CheckFile` now excludes the whole `specs/**` tree
+(AC10), pinned by a test calling the same `CheckFile` the drift hook invokes.
+
+**The load-bearing correctness pins (all from cross-model review, which took 9
+rounds to dual-approve — codex's adversarial passes drove out 4 real bugs
+PRE-implementation).** (1) **Baseline provenance.** The envelope exposes
+`base_fingerprint` (the OLD snapshot's sha256), and the command gates BOTH the
+scoped and short-circuit branches on the prior `review.md`'s `reviewed_sha256`
+equalling it — so a promoted-but-unreviewed baseline (a prior run that promoted
+then died before writing review.md) forces a FULL review instead of letting the
+un-reviewed delta escape. This is what makes promote-before-dispatch correct in ALL
+cases, not just the no-change retry: an edit layered on an unreviewed promoted
+snapshot cannot smuggle its earlier delta past review. (2) **Retry-safety.** Any
+`changed:false` run lacking a matching review falls back to a full review, so a
+failed promoted run is safely retryable. (3) **AC2 as a single atomic commit**, not
+a two-step append — the reviewed_sha256 line is composed in the temp file before the
+rename; success == rename succeeds. (4) **Determinism = pure ordinal-key matching**,
+replacing an earlier blanket duplicate-count over-report that contradicted the
+byte-identical rule. Version bumped 1.9.0 → 1.10.0 across the three `const version`
+binaries (each a renamed sibling version test) + both manifests (grep oracle); the
+published-verified release (auto-tag → release.yml → verify-release.sh) is the
+merge-time DoD (T31).
+
+**Deviations:** ONE `/speccraft:spec:override` (T1), the planned new-symbol
+bootstrap — AC13 budget (≤1) held. Implemented IN-PLACE in `review.go` (+
+`review_sections.go`) rather than one-file-per-function, to avoid duplicate-symbol
+deadlocks with the stub bootstrap under the guard. The optional T3 `saveStateLocked`
+refactor was SKIPPED (not AC-required) — `AtomicWriteFile` is a fresh seam and
+`saveStateLocked` was left as-is. The `review-commit` subcommand is unplanned (added
+for the CLI-boundary atomic commit). Incidental, USER-made: `.speccraft/agents.toml`
+codex cmd changed `--full-auto` → `--sandbox workspace-write` (unblocked codex for
+cross-model review), included in this diff. **Stale-1.1.0-cached-guard friction
+(recurring, the 0030/0032/0034 lineage):** decisive REDs registered via Edit (the
+Write blind spot), a fresh test-func kept as the LAST sibling touch, Bash used only
+for mechanical build-fixes (unused import / dead var), never to bypass a behaviour
+RED→GREEN; the no-new-test-edit-clears-standing-RED gotcha bit once (drift import
+fix), remedied by a fresh test func. 0035's own close ran NO consolidation (no
+`domains:`/`delta:`, no `specs/domains/` tree yet — non-blocking decline).
+
 ## 2026-07-25 — MultiEdit/NotebookEdit payload modeling closes spec 0031's reserved slot, override-free; version 1.9.0 (spec 0032)
 
 **Spec:** specs/0032-payloads/

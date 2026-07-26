@@ -143,9 +143,14 @@ func inScope(absPath, root, scope string) bool {
 
 // CheckFile scans a single file against all rules whose scope matches.
 func CheckFile(absPath, root string, rules []*Rule) ([]Violation, error) {
-	// Don't scan .speccraft/ itself.
-	if rel, _ := filepath.Rel(root, absPath); strings.HasPrefix(rel, ".speccraft/") {
-		return nil, nil
+	// Don't scan .speccraft/ (the rules' own home) or specs/ (spec artifacts —
+	// notably review-snapshot.md, which byte-copies spec prose that may include
+	// enforce: directives; spec 0035 AC10).
+	if rel, _ := filepath.Rel(root, absPath); rel != "" {
+		rel = filepath.ToSlash(rel)
+		if strings.HasPrefix(rel, ".speccraft/") || rel == "specs" || strings.HasPrefix(rel, "specs/") {
+			return nil, nil
+		}
 	}
 
 	data, err := os.ReadFile(absPath)

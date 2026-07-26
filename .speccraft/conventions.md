@@ -660,3 +660,46 @@ Concretely:
 - **Speccraft owns what speccraft writes.** Spec lifecycle, TDD gate, `state.json`, project memory under `.speccraft/`, and the templates copied into host repos are speccraft's authority. Anything else (code-intel routing, formatting rules, language-server invocation, test-runner selection beyond what `speccraft-guard` requires) is the host environment's authority.
 
 Rationale: the alternative is silent drift. The external tool's own guidance evolves on its own release cadence; speccraft's stale copy then conflicts with the live rule, and the model wastes attention resolving the conflict. The 2026-06-09 cgc + global CLAUDE.md collision that triggered spec 0011 is the concrete instance.
+
+### Review snapshot + diff-focused re-review (spec 0035)
+
+`/speccraft:spec:review --diff` runs a read-before-overwrite transaction: a single
+`speccraft-state review-diff <spec-dir> --promote` reads `spec.md` once, diffs it
+against the prior `review-snapshot.md`, and freezes the new snapshot from the same
+bytes. The command sources every reviewer payload from that frozen
+`review-snapshot.md` (never re-reading `spec.md`), classifies the round via the
+provenance gate (`commands/spec/review.lib.sh::review_classify`: full-review /
+short-circuit / scoped, gated on the prior `review.md` `reviewed_sha256` matching
+the envelope `base_fingerprint`), and records the reviewed fingerprint with a
+single atomic commit (`speccraft-state review-commit`). `changed_sections` are
+structured `{kind,heading,ordinal,side}` anchors (kind: section | frontmatter |
+preamble). `review-snapshot.md` is an inert artifact that persists in the closed
+spec dir.
+
+<!-- speccraft:note — review-snapshot.md byte-copies spec.md prose (which may
+contain enforce: directives), so `speccraft-drift` excludes the whole `specs/**`
+tree from its scan (drift.CheckFile), the same entry point the drift hook uses. -->
+
+Two reusable mechanics fell out of this and generalize beyond `--diff`:
+
+- **`speccraft.AtomicWriteFile(path, data, perm)` is the shared durable-write
+  seam.** Same-directory temp (`path+".tmp"`) + `os.Rename` — the temp MUST be on
+  the same filesystem as the target (same dir is the obvious choice) so the rename
+  is a true atomic swap, not a cross-device copy; on any pre-rename failure the
+  target is left byte-unchanged and the temp is cleaned up. Both the snapshot write
+  (AC1) and the review.md commit (AC2) go through it, and the package-level
+  `atomicRename` var is the injection point that makes the rename-failure /
+  no-fingerprint-free-artifact fault-injection REDs deterministic. Prefer this over
+  a hand-rolled write when a `.speccraft`/spec artifact must never be observed
+  half-written (`WriteReviewSnapshot`/`WriteReviewFile` are the reference callers).
+  Note: spec 0035 did NOT retrofit `saveStateLocked` onto it (the optional refactor
+  was skipped); `AtomicWriteFile` is nonetheless the go-to for new durable writes.
+- **A wholly-new `speccraft-state` subcommand is driven test-first through the
+  `run()` seam, not `main()`.** Add the `case` inside `func run(args, stdout,
+  stderr) int` and write the RED as `run([]string{"<subcmd>", …}, …)` unmarshalling
+  a LOCAL envelope struct from captured stdout (the `detect_cmd_test.go` technique).
+  Because the subcommand name is a string, the RED fails at RUNTIME with "unknown
+  subcommand" instead of a build error — so it needs NO bootstrap override, unlike a
+  brand-new exported `internal/speccraft` symbol (which does; that is the single
+  AC13-budgeted T1 override). `review-snapshot`/`review-diff`/`review-commit` are the
+  reference wirings.

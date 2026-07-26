@@ -10,7 +10,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
 
-const version = "1.9.0"
+const version = "1.10.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -187,6 +187,70 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, cmd)
 		return 0
 
+	case "review-snapshot":
+		// Spec 0035 AC1: `review-snapshot write <spec-dir>` copies spec.md to
+		// review-snapshot.md and prints the sha256 of the raw spec.md bytes.
+		if len(args) < 3 || args[1] != "write" {
+			fmt.Fprintln(stderr, "usage: speccraft-state review-snapshot write <spec-dir>")
+			return 1
+		}
+		fp, err := speccraft.WriteReviewSnapshot(args[2])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintln(stdout, fp)
+		return 0
+
+	case "review-diff":
+		// Spec 0035 AC3: emit the versioned review envelope. Read-only exits 0
+		// whenever spec.md resolves (incl. no-snapshot and closed specs); non-zero
+		// only when spec.md or a present snapshot is unreadable. --promote is the
+		// one exception: refused (non-zero, writes nothing) on a closed spec.
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: speccraft-state review-diff <spec-dir> [--promote]")
+			return 1
+		}
+		specDir := args[1]
+		promote := false
+		for _, a := range args[2:] {
+			if a == "--promote" {
+				promote = true
+			}
+		}
+		if promote && specStatusIsClosed(specDir) {
+			fmt.Fprintln(stderr, "review-diff: refusing --promote on a closed spec")
+			return 1
+		}
+		env, err := speccraft.ReviewDiff(specDir, promote)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		out, _ := json.Marshal(env)
+		fmt.Fprintln(stdout, string(out))
+		return 0
+
+	case "review-commit":
+		// Spec 0035 AC2: atomically rewrite <review-file> carrying exactly one
+		// reviewed_sha256 line, called by the command after the review workflow
+		// completes. Single atomic commit (temp + rename) via WriteReviewFile.
+		if len(args) < 3 {
+			fmt.Fprintln(stderr, "usage: speccraft-state review-commit <review-file> <fingerprint>")
+			return 1
+		}
+		reviewFile := args[1]
+		body, err := os.ReadFile(reviewFile)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := speccraft.WriteReviewFile(reviewFile, body, args[2]); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+
 	default:
 		fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[0])
 		usage(stderr)
@@ -291,6 +355,33 @@ func doRustBaseline(root string, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+// specStatusIsClosed reports whether <specDir>/spec.md declares status: closed in
+// its YAML frontmatter. Used to refuse `review-diff --promote` on a closed spec
+// (spec 0035 AC3), honoring closed-spec immutability. Unreadable spec.md → not
+// closed (ReviewDiff surfaces the read error).
+func specStatusIsClosed(specDir string) bool {
+	b, err := os.ReadFile(specDir + "/spec.md")
+	if err != nil {
+		return false
+	}
+	inFrontmatter := false
+	for _, ln := range strings.Split(string(b), "\n") {
+		t := strings.TrimSpace(ln)
+		if t == "---" {
+			if !inFrontmatter {
+				inFrontmatter = true
+				continue
+			}
+			break // end of frontmatter block
+		}
+		if inFrontmatter && strings.HasPrefix(t, "status:") {
+			v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(t, "status:")), `"'`)
+			return v == "closed"
+		}
+	}
+	return false
+}
+
 func usage(w io.Writer) {
 	fmt.Fprintln(w, `speccraft-state — speccraft runtime state helper
 
@@ -307,5 +398,9 @@ Usage:
   speccraft-state tasks-done-pct         % of [x] tasks in active spec's tasks.md
   speccraft-state detect-stack           Detect repo language + test command (JSON)
   speccraft-state test-command           Print the effective host-repo test command
+  speccraft-state review-snapshot write <spec-dir>
+                                          Snapshot spec.md → review-snapshot.md; print its sha256 (spec 0035)
+  speccraft-state review-diff <spec-dir> [--promote]
+                                          Emit the review diff envelope; --promote freezes the new snapshot (spec 0035)
   speccraft-state --version              Print version`)
 }

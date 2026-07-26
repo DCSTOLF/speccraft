@@ -11,17 +11,17 @@ import (
 	"testing"
 )
 
-func Test_Manifests_VersionIs190(t *testing.T) {
+func Test_Manifests_VersionIs1100(t *testing.T) {
 	root := findDocsRoot(t)
-	const want = `"version": "1.9.0"`
-	const stale = "1.8.0"
+	const want = `"version": "1.10.0"`
+	const stale = "1.9.0"
 	for _, rel := range []string{
 		filepath.Join(".claude-plugin", "plugin.json"),
 		filepath.Join(".claude-plugin", "marketplace.json"),
 	} {
 		src := readFile(t, filepath.Join(root, rel))
 		if !strings.Contains(src, want) {
-			t.Errorf("%s: missing %s (spec 0032 AC10 version bump)", rel, want)
+			t.Errorf("%s: missing %s (spec 0035 AC12 version bump)", rel, want)
 		}
 		if strings.Contains(src, stale) {
 			t.Errorf("%s: still contains stale version %q", rel, stale)

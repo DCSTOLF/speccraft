@@ -9,7 +9,7 @@ review_timeout_s = 600
 [[agents]]
 name = "codex"
 mode = "cli"
-cmd = ["codex", "exec", "--full-auto"]
+cmd = ["codex", "exec", "--sandbox workspace-write"]
 input = "stdin"       # "stdin" | "argv" | "file"
 strengths = ["refactoring", "review"]
 

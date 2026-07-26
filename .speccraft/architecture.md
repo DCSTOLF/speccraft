@@ -63,6 +63,7 @@ See `history.md` for full ADR-style entries. Headlines:
 - CI is split into two jobs with different cost and credential profiles: `e2e-language-only` (cheap, hermetic, every push/PR, no API key) and `e2e-devcontainer` (expensive, gated to `push` on `main`, full `claude -p` lifecycle). Lifecycle-job failures classified by `classify_claude_failure` emit `ENVIRONMENT_FAILURE: <category>` lines so log triage distinguishes environmental issues from real defects. (spec 0008)
 - Release-asset delivery is automated and self-verifying (spec 0021): a `main`-push `auto-tag` job pushes `vX.Y.Z` via a PAT (never `GITHUB_TOKEN`, whose built-in loop guard would suppress the tag-trigger), `release.yml` publishes the four platform tarballs + `checksums.txt` and self-verifies them strong-form via `verify-release.sh`, and `install-binaries.sh`'s source-build fallback is now loud + provenance-marked instead of silent.
 - `.speccraft/history.md` is **bounded, not unbounded append-only** (spec 0024): the explicit, confirm-gated `/speccraft:history:compact` keeps the newest N entries verbatim, folds older ones into a merged `## Compacted` section, and moves originals verbatim into the append-only `.speccraft/history-archive/` folder (double provenance: archive file + git). New entries are still appended newest-first by `memory-keeper` at close; compaction is a separate opt-in op nudged (non-blocking) at `spec:close`. The `speccraft-context` skill deliberately loads only `history.md` (never the archive) so compaction shrinks context rather than re-bloating it.
+- `/speccraft:spec:review` gains a **diff-focused `--diff` re-review** (spec 0035, v1.10.0): a review-time `review-snapshot.md` anchors change detection so a re-review scopes reviewers to the deltas (+ a regression sweep) instead of re-litigating settled sections. Detection is three new `speccraft-state` subcommands (`review-snapshot`/`review-diff`/`review-commit`) built on a shared `AtomicWriteFile` durable-write seam; the provenance gate (prior `reviewed_sha256` must equal the envelope `base_fingerprint`) lives in `commands/spec/review.lib.sh`. Drift now excludes `specs/**`.
 - Closed specs **consolidate into current `specs/domains/<area>.md` domain specs** at close (spec 0025), instead of accumulating as N permanent per-feature directories. Inline + confirm-gated at `/speccraft:spec:close` (never blocks close), retroactively at `/speccraft:sync`. Two clock-free archives keep originals recoverable: the closed spec dir is moved to `specs/.archive/NNNN-slug/` (status stays `closed`; location signals "consolidated") and superseded requirement text goes to `specs/domains/.archive/<area>.md` under full-entry byte-dedup. The deterministic `commands/spec/consolidate.lib.sh` reuses spec 0024's history.md parser for backfill chronology; `memory-keeper` gains a `# Mode: consolidate`.
 
 ## Boundaries
@@ -73,3 +74,29 @@ See `history.md` for full ADR-style entries. Headlines:
 ## Key boundaries (cont.)
 
 - **Spec-consolidation / domain-spec layer (spec 0025):** closing a spec folds its final requirements into current `specs/domains/<area>.md` files (open-set: a domain exists iff its file exists), via an inline, confirm-gated ADD/MODIFY/REMOVE merge at `/speccraft:spec:close` (and a retroactive backfill at `/speccraft:sync`). Two clock-free archives back recoverability: the closed spec DIRECTORY is moved wholesale to `specs/.archive/NNNN-slug/` as the last step at zero conflicts (frontmatter `status` stays `closed` — location, not a status value, signals "consolidated"; relocation is not content-modification, so closed-spec immutability holds), and superseded requirement TEXT is appended to `specs/domains/.archive/<area>.md` under full-entry byte-dedup. The deterministic tier is the pure-shell `commands/spec/consolidate.lib.sh` (sourced by both `close.md` and `sync.md`, and by `tests/hooks/spec-consolidate.bats`); `memory-keeper` is reused with a `# Mode: consolidate`. The `speccraft-context` skill loads `specs/domains/<area>.md` lazily by area and NEVER the two `.archive` trees — mirroring spec 0024's history-archive invariant so archiving cannot silently re-bloat context. No Go binary, so the surface is outside the TDD-gate boundary. **Hardened by spec 0029** (released 1.6.1): `consolidate.lib.sh` self-locates via the cross-shell `${BASH_SOURCE[0]:-$0}` (a bare reference aborted the whole helper under zsh+`set -u`); routing is grounded by a new `consolidate_existing_domains` (prefer an existing domain, else propose a new one); and `close.md`/`memory-keeper` now state — un-confusably — that consolidation routes ONLY to `specs/domains/`, never to the `.speccraft/` `Mode: close` memory files (which are NOT a substitute for it).
+- **Review-snapshot / diff-focused re-review layer (spec 0035, v1.10.0):**
+  `/speccraft:spec:review --diff` scopes reviewers to what changed since the last
+  review instead of re-litigating settled sections. DETECTION lives in
+  `speccraft-state`; the UX/provenance gate lives in the command. Three new
+  subcommands (wired through the compile-stable `run()` seam):
+  `review-snapshot write <spec-dir>` (freeze spec.md → `specs/<id>/review-snapshot.md`,
+  print the sha256 of the RAW bytes), `review-diff <spec-dir> [--promote]` (emit the
+  versioned `ReviewEnvelope{schema:1, snapshot, changed, changed_sections, diff,
+  fingerprint, base_fingerprint}`; read-only exits 0 whenever spec.md resolves incl.
+  no-snapshot and closed specs, `--promote` refused on a closed spec), and
+  `review-commit <review-file> <fingerprint>` (AC2 single atomic commit of review.md's
+  one `reviewed_sha256:` line). The Go core is in `tools/internal/speccraft/review.go`
+  + `review_sections.go` (`ReviewDiff`, `WriteReviewSnapshot`, `WriteReviewFile`,
+  `diffSections`), all built on the new shared `AtomicWriteFile` same-dir-temp+rename
+  durable-write seam (injectable `atomicRename` for fault-injection). The anchor is a
+  review-TIME snapshot, not git history (review precedes the first commit). Command
+  helpers are the pure `commands/spec/review.lib.sh` (`review_reviewed_sha256`,
+  `review_classify` provenance gate, `review_build_payload` — sources the frozen
+  snapshot, never spec.md); the scoped brief is `templates/prompts/re-review.md`.
+  `review-snapshot.md` persists as an inert artifact in the closed spec dir (like
+  review.md).
+- **Drift scan scope (extended by spec 0035):** `speccraft-drift`'s `CheckFile`
+  (`tools/internal/speccraft/drift/rules.go`) now excludes the whole `specs/**` tree
+  in addition to `.speccraft/` — a `review-snapshot.md` byte-copies spec prose that
+  may contain `enforce:` directives, which would otherwise trip drift. Pinned by a
+  test calling the same `CheckFile` the drift hook invokes.

@@ -3,6 +3,7 @@ package drift_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dcstolf/speccraft/tools/internal/speccraft/drift"
@@ -21,6 +22,87 @@ func makeRepo(t *testing.T, guardrails string) string {
 		}
 	}
 	return tmp
+}
+
+// Spec 0035 AC10 — a review-snapshot.md under specs/ byte-copies spec.md prose
+// (possibly including `enforce:` directives) and must NOT trip drift. The scan
+// scope excludes specs/**, verified via the same LoadRules+CheckAll/CheckFile the
+// speccraft-drift hook invokes.
+
+func Test_CheckFile_SpecsPath_Excluded(t *testing.T) {
+	root := makeRepo(t, `# Guardrails
+## X
+<!-- enforce: regex pattern="FORBIDDEN_TOKEN" -->
+`)
+	rules, err := drift.LoadRules(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specFile := filepath.Join(root, "specs", "0035-re-review", "review-snapshot.md")
+	if err := os.MkdirAll(filepath.Dir(specFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specFile, []byte("a snapshot line with FORBIDDEN_TOKEN inside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := drift.CheckFile(specFile, root, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 0 {
+		t.Errorf("specs/ file scanned by drift: got %d violations, want 0", len(v))
+	}
+	// Control: the same content OUTSIDE specs/ is still flagged.
+	ctrl := filepath.Join(root, "src.md")
+	if err := os.WriteFile(ctrl, []byte("FORBIDDEN_TOKEN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vc, _ := drift.CheckFile(ctrl, root, rules)
+	if len(vc) == 0 {
+		t.Errorf("control file outside specs/ should be flagged")
+	}
+}
+
+func Test_CheckAll_ExcludesSpecsTree_SnapshotEnforceProseDoesNotTrip(t *testing.T) {
+	root := makeRepo(t, `# Guardrails
+## X
+<!-- enforce: regex pattern="FORBIDDEN_TOKEN" -->
+`)
+	specFile := filepath.Join(root, "specs", "0035-re-review", "review-snapshot.md")
+	if err := os.MkdirAll(filepath.Dir(specFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specFile, []byte("FORBIDDEN_TOKEN copied from spec prose\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := drift.LoadRules(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs, err := drift.CheckAll(root, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range vs {
+		if strings.Contains(filepath.ToSlash(v.File), "/specs/") {
+			t.Errorf("drift scanned the specs/ tree: %s", v.File)
+		}
+	}
+}
+
+func Test_CheckFile_SpecsPrefix_NoViolations(t *testing.T) {
+	root := makeRepo(t, "# G\n## X\n<!-- enforce: regex pattern=\"NOPE\" -->\n")
+	rules, _ := drift.LoadRules(root)
+	f := filepath.Join(root, "specs", "0001-a", "review-snapshot.md")
+	_ = os.MkdirAll(filepath.Dir(f), 0o755)
+	_ = os.WriteFile(f, []byte("NOPE here\n"), 0o644)
+	v, err := drift.CheckFile(f, root, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v) != 0 {
+		t.Errorf("specs/ excluded: got %d, want 0", len(v))
+	}
 }
 
 func TestParseRules_BasicPattern(t *testing.T) {
