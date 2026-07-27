@@ -10,7 +10,7 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
 4. `agents/` — Markdown subagent definitions: `spec-author`, `tdd-planner`, `spec-critic`, `cross-reviewer`, `aux-delegator`, `memory-keeper`.
 5. `skills/<name>/SKILL.md` — model-loaded skills: `speccraft-context`, `spec-format`, `aux-agents`.
 6. `tools/cmd/speccraft-{state,guard,drift}` — Go entrypoints, one binary each, that hooks and commands shell out to.
-7. `tools/internal/speccraft/` — shared Go logic (state, config, files, root discovery, plugin-root resolution, drift scan, Rust static recognition, **stack detection** — `DetectStack` in `detect.go`, spec 0034).
+7. `tools/internal/speccraft/` — shared Go logic (state, config, files, root discovery, plugin-root resolution, drift scan, Rust static recognition, **stack detection** — `DetectStack` in `detect.go`, spec 0034, **revision/frontmatter-writer core** — `ComputeRevisionState`, `setFrontmatterField`, `SetStatus`, `SetRevision` in `revision.go`, spec 0036).
 8. `tools/internal/speccraft/runner/` — language-neutral test-runner invocation primitive (Outcome enum, TestRecord, Runner interface, AdapterFor + AdapterForLanguage factories, crate fingerprint, pre-edit gate). Per-language adapters live here; Rust was the first concrete implementation (cargo + nextest). Spec 0018 extended the primitive to Go (`go test`), Python (`pytest`), and JS/TS (one shared `JSTSAdapter` driven by a configured command), so the red→green invariant is a real observed-failure check for all four languages — superseding spec 0005's original Rust-only validation boundary.
 9. `tools/internal/speccraft/rusttok/` — Rust string/comment-aware tokenizer + `fn`-name extractor. Used by the Rust static-classification code in `tools/internal/speccraft/rust_*.go`.
 10. `tools/internal/delegate/` — auxiliary-agent delegation config parsing (`agents.toml`).
@@ -100,3 +100,33 @@ See `history.md` for full ADR-style entries. Headlines:
   in addition to `.speccraft/` — a `review-snapshot.md` byte-copies spec prose that
   may contain `enforce:` directives, which would otherwise trip drift. Pinned by a
   test calling the same `CheckFile` the drift hook invokes.
+- **Revision / frontmatter-writer layer (spec 0036, v1.11.0):** one
+  revision-and-artifact-numbering contract plus the SOLE sanctioned byte-safe
+  frontmatter-field writer — the spec.md analogue of `speccraft-state` being the sole
+  writer of `state.json`. The frontmatter `revision: N` counter is canonical; archived
+  `*-r<N>.md` artifacts are forward-only reconciliation evidence
+  (`Effective = hasArchived ? max(fmRev, maxArchived+1) : fmRev`). Go core in
+  `tools/internal/speccraft/revision.go`: `ComputeRevisionState(specDir)` →
+  `RevisionState{FrontmatterRevision, MaxArchived, Effective, HasArchived}` (ordinal
+  scan via `listArchivedOrdinals`); the SINGLE unexported `parseFrontmatterBlock`
+  grammar both the reader (`ComputeRevisionState`, `currentStatusClosed`) and the writer
+  route through; the unexported byte-safe `setFrontmatterField` (first-match-only,
+  BOM/per-line-terminator/EOF-newline preserving, no `.bak`) on the spec-0035
+  `AtomicWriteFile` seam; and the ONLY exported ops `SetStatus` (enum-validated) /
+  `SetRevision` (monotonic-forward, refuses demotion), both enforcing closed-spec
+  immutability IN the exported op (no `--force`). Five new `speccraft-state`
+  subcommands over the `run()` seam: `effective-revision`, `set-status`, `set-revision`,
+  `reconcile-revision` (heal-only), `archive-artifact`. The archive MOVE lives
+  deliberately in the cmd package (`tools/cmd/speccraft-state/archive.go`, NOT
+  `internal`) — `moveArtifactNoReplace` with injectable `linkNoReplace`/`unlinkFile`
+  seams, genuine no-replace via `link(2)`-EEXIST (never stat-then-rename), and
+  `os.SameFile` inode-identity recovery on an interrupted link-ok/unlink-fail move
+  (NOT byte-equality) — so its fault-injection test rides the cmd RED and keeps the
+  override budget at 1. `commands/spec/revise.lib.sh` now DELEGATES archiving/status/
+  counter to `speccraft-state`: `preflight_archive_collisions` deleted;
+  `archive_rename` self-heals to the free `A = effective-revision` slot; `bump_revision`
+  is a thin `reconcile-revision` → `set-status draft` helper (fixed order archive →
+  counter → status-LAST); `close.md` uses `set-status … closed`. NEW SEMANTICS:
+  within-draft edits keep the same revision by design — the counter advances only via
+  the archive path. The AC10 meta-guard `tests/hooks/frontmatter-writer-guard.bats`
+  forbids raw in-place `status:`/`revision:` rewrites in `commands/**`.

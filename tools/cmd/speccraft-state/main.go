@@ -10,7 +10,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
 
-const version = "1.10.0"
+const version = "1.11.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -251,6 +251,86 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 
+	case "effective-revision":
+		// Spec 0036 AC2: print the reconciled Effective revision of <spec-dir>.
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: speccraft-state effective-revision <spec-dir>")
+			return 1
+		}
+		st, err := speccraft.ComputeRevisionState(args[1])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintln(stdout, st.Effective)
+		return 0
+
+	case "set-status":
+		// Spec 0036 AC8/AC9: the sanctioned status writer (enum-validated,
+		// refuses an already-closed spec, byte-safe).
+		if len(args) < 3 {
+			fmt.Fprintln(stderr, "usage: speccraft-state set-status <spec.md> <status>")
+			return 1
+		}
+		if err := speccraft.SetStatus(args[1], args[2]); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+
+	case "set-revision":
+		// Spec 0036 AC9/AC14/§C: the sanctioned, monotonic-forward revision writer.
+		if len(args) < 3 {
+			fmt.Fprintln(stderr, "usage: speccraft-state set-revision <spec.md> <N>")
+			return 1
+		}
+		n, ok := parseUintArg(args[2])
+		if !ok {
+			fmt.Fprintln(stderr, "set-revision: invalid revision "+args[2]+" (want a uint64)")
+			return 1
+		}
+		if err := speccraft.SetRevision(args[1], n); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+
+	case "reconcile-revision":
+		// Spec 0036 AC5: heal the live counter forward to Effective (no-op when it
+		// already leads; SetRevision's monotonic skip-write makes this idempotent).
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: speccraft-state reconcile-revision <spec-dir>")
+			return 1
+		}
+		st, err := speccraft.ComputeRevisionState(args[1])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := speccraft.SetRevision(args[1]+"/spec.md", st.Effective); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+
+	case "archive-artifact":
+		// Spec 0036 AC3/AC4: no-clobber archive of a disposable artifact to the
+		// caller-computed (self-healed) ordinal. spec.md is never archived.
+		if len(args) < 4 {
+			fmt.Fprintln(stderr, "usage: speccraft-state archive-artifact <spec-dir> <kind> <ordinal>")
+			return 1
+		}
+		ord, ok := parseUintArg(args[3])
+		if !ok {
+			fmt.Fprintln(stderr, "archive-artifact: invalid ordinal "+args[3])
+			return 1
+		}
+		if err := moveArtifactNoReplace(args[1], args[2], ord); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+
 	default:
 		fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[0])
 		usage(stderr)
@@ -382,6 +462,29 @@ func specStatusIsClosed(specDir string) bool {
 	return false
 }
 
+// parseUintArg parses a base-10 uint64 CLI argument with an explicit overflow
+// guard. Non-digit (incl. a leading '-'), empty, or over-domain input ⇒ ok=false,
+// so set-revision rejects negative / non-integer / over-uint64 values (AC14)
+// without needing a strconv import in this file.
+func parseUintArg(s string) (uint64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	var n uint64
+	const maxU64 = ^uint64(0)
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		d := uint64(c - '0')
+		if n > (maxU64-d)/10 {
+			return 0, false // would overflow uint64
+		}
+		n = n*10 + d
+	}
+	return n, true
+}
+
 func usage(w io.Writer) {
 	fmt.Fprintln(w, `speccraft-state — speccraft runtime state helper
 
@@ -402,5 +505,15 @@ Usage:
                                           Snapshot spec.md → review-snapshot.md; print its sha256 (spec 0035)
   speccraft-state review-diff <spec-dir> [--promote]
                                           Emit the review diff envelope; --promote freezes the new snapshot (spec 0035)
+  speccraft-state effective-revision <spec-dir>
+                                          Print the reconciled Effective revision (spec 0036)
+  speccraft-state set-status <spec.md> <status>
+                                          Sanctioned byte-safe status writer; refuses a closed spec (spec 0036)
+  speccraft-state set-revision <spec.md> <N>
+                                          Sanctioned monotonic-forward revision writer (spec 0036)
+  speccraft-state reconcile-revision <spec-dir>
+                                          Heal the revision counter forward to Effective (spec 0036)
+  speccraft-state archive-artifact <spec-dir> <kind> <ordinal>
+                                          No-clobber archive of review/plan/tasks to <kind>-r<ordinal>.md (spec 0036)
   speccraft-state --version              Print version`)
 }

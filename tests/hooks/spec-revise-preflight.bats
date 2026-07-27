@@ -15,6 +15,9 @@
 setup() {
   PLUGIN_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
   REVISE_LIB="$PLUGIN_DIR/commands/spec/revise.lib.sh"
+  # Spec 0036: archive_rename/bump_revision now shell out to speccraft-state;
+  # the freshly built bin/ must win over any stale cached copy on PATH.
+  export PATH="$PLUGIN_DIR/bin:$PATH"
   TEST_REPO="$(mktemp -d)"
   mkdir -p "$TEST_REPO/.speccraft" "$TEST_REPO/specs"
   # Empty state.json so default tests don't surface unrelated active-spec state.
@@ -223,55 +226,9 @@ JSON
 # or tasks-r<N>.md already exists. AC9 + claude-p symmetric variant.
 # ---------------------------------------------------------------------------
 
-@test "preflight_archive_collisions reviewed r0 review-archive conflict" {
-  spec_dir="$(seed_spec reviewed 0)"
-  touch "$spec_dir/review.md" "$spec_dir/review-r0.md"
-  load_lib
-  run preflight_archive_collisions "$spec_dir" reviewed 0
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"review-r0.md"* ]]
-}
-
-@test "preflight_archive_collisions planned r2 plan-archive conflict" {
-  spec_dir="$(seed_spec planned 2)"
-  touch "$spec_dir/review.md" "$spec_dir/plan.md" "$spec_dir/tasks.md" "$spec_dir/plan-r2.md"
-  load_lib
-  run preflight_archive_collisions "$spec_dir" planned 2
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"plan-r2.md"* ]]
-}
-
-@test "preflight_archive_collisions planned r2 tasks-archive conflict" {
-  spec_dir="$(seed_spec planned 2)"
-  touch "$spec_dir/review.md" "$spec_dir/plan.md" "$spec_dir/tasks.md" "$spec_dir/tasks-r2.md"
-  load_lib
-  run preflight_archive_collisions "$spec_dir" planned 2
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"tasks-r2.md"* ]]
-}
-
-@test "preflight_archive_collisions clean reviewed exits zero" {
-  spec_dir="$(seed_spec reviewed 0)"
-  touch "$spec_dir/review.md"
-  load_lib
-  run preflight_archive_collisions "$spec_dir" reviewed 0
-  [ "$status" -eq 0 ]
-}
-
-@test "preflight_archive_collisions clean planned exits zero" {
-  spec_dir="$(seed_spec planned 2)"
-  touch "$spec_dir/review.md" "$spec_dir/plan.md" "$spec_dir/tasks.md"
-  load_lib
-  run preflight_archive_collisions "$spec_dir" planned 2
-  [ "$status" -eq 0 ]
-}
-
-@test "preflight_archive_collisions draft source has nothing to check" {
-  spec_dir="$(seed_spec draft 0)"
-  load_lib
-  run preflight_archive_collisions "$spec_dir" draft 0
-  [ "$status" -eq 0 ]
-}
+# preflight_archive_collisions tests were REMOVED in spec 0036: the function is
+# deleted (self-healing archiving replaces the fail-closed refusal). The
+# deadlock-free archive is now pinned in tests/hooks/spec-revise-selfheal.bats.
 
 # ---------------------------------------------------------------------------
 # preflight_source_artifacts — verifies review.md / plan.md / tasks.md exist
@@ -846,16 +803,20 @@ EOF
 # AC3/AC4/AC5 depend on these helpers.
 # ---------------------------------------------------------------------------
 
-@test "bump_revision increments N to N+1 (5 to 6)" {
+# Spec 0036: bump_revision no longer standalone-increments; it heals the counter
+# to the post-archive Effective. An archive at N present ⇒ Effective = N+1.
+@test "bump_revision heals N to post-archive Effective (r5 archived -> 6)" {
   spec_dir="$(seed_spec reviewed 5)"
+  : > "$spec_dir/review-r5.md"
   load_lib
   run bump_revision "$spec_dir/spec.md" reviewed
   [ "$status" -eq 0 ]
   grep -qE '^revision: 6$' "$spec_dir/spec.md"
 }
 
-@test "bump_revision increments N from 0 to 1" {
+@test "bump_revision heals N from 0 with an r0 archive to 1" {
   spec_dir="$(seed_spec reviewed 0)"
+  : > "$spec_dir/review-r0.md"
   load_lib
   run bump_revision "$spec_dir/spec.md" reviewed
   [ "$status" -eq 0 ]
@@ -878,14 +839,14 @@ EOF
   grep -qE '^status: draft$' "$spec_dir/spec.md"
 }
 
-@test "bump_revision leaves status: draft on draft source" {
+@test "bump_revision keeps revision on draft source (within-draft edits don't advance)" {
   spec_dir="$(seed_spec draft 2)"
   load_lib
   run bump_revision "$spec_dir/spec.md" draft
   [ "$status" -eq 0 ]
   grep -qE '^status: draft$' "$spec_dir/spec.md"
-  # Sanity: revision still bumped to 3.
-  grep -qE '^revision: 3$' "$spec_dir/spec.md"
+  # Spec 0036: no archive ⇒ Effective == fmRev ⇒ counter unchanged (stays 2).
+  grep -qE '^revision: 2$' "$spec_dir/spec.md"
 }
 
 @test "archive_rename reviewed renames only review.md" {

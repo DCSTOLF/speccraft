@@ -2,8 +2,8 @@ package main
 
 import "testing"
 
-func Test_DriftCmd_Version_Const1100(t *testing.T) {
-	if version != "1.10.0" {
-		t.Errorf("version = %q, want %q", version, "1.10.0")
+func Test_DriftCmd_Version_Const1110(t *testing.T) {
+	if version != "1.11.0" {
+		t.Errorf("version = %q, want %q", version, "1.11.0")
 	}
 }

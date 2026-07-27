@@ -50,10 +50,11 @@ Steps:
    N_OLD="$(grep -E '^revision:' "$SPEC_MD" | head -1 | awk '{print $2}')"
    ```
 
-5. **Preflight archive collisions and source artifacts.** Refuse to proceed
-   if archive targets already exist or source files are missing:
+5. **Preflight source artifacts.** Refuse to proceed if the source files are
+   missing. Archive-target collisions are NOT preflighted: the self-healing
+   archive (spec 0036) advances past any pre-existing `*-r<N>.md` instead of
+   refusing, so the old `preflight_archive_collisions` deadlock is gone.
    ```bash
-   preflight_archive_collisions "$SPEC_DIR" "$SOURCE_STATUS" "$N_OLD" || exit 1
    preflight_source_artifacts "$SPEC_DIR" "$SOURCE_STATUS" || exit 1
    ```
 
@@ -111,9 +112,9 @@ Steps:
 12. **Real-change branch.** Archive stale artifacts, bump revision, flip
     status to draft, then suggest the next step:
     ```bash
-    archive_rename "$SPEC_DIR" "$SOURCE_STATUS" "$N_OLD" || exit 1
+    archive_rename "$SPEC_DIR" "$SOURCE_STATUS" || exit 1
     bump_revision "$SPEC_MD" "$SOURCE_STATUS" || exit 1
-    echo "Spec returned to draft at revision $((N_OLD + 1))."
+    echo "Spec returned to draft at revision $(speccraft-state effective-revision "$SPEC_DIR")."
     echo "Next step: /speccraft:spec:review"
     ```
 

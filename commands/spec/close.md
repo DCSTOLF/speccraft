@@ -40,10 +40,17 @@ Steps:
    contains "approve all" or similar blanket approval, apply all changes
    automatically.
 
-6. Edit `spec.md` frontmatter to set `status: closed`. Then run:
+6. Set the spec's status to `closed` via the sanctioned byte-safe writer (spec
+   0036 — never a hand-edit / raw `sed` on the frontmatter), then clear the active
+   spec:
    ```bash
+   speccraft-state set-status "$SPEC_MD" closed
    speccraft-state set active_spec null
    ```
+   `set-status` is the only sanctioned path for the `status:` field; it refuses to
+   mutate an already-closed spec, so this is the one place the close transition
+   flips it. (This is the last write to that spec.md — the closed-spec-immutability
+   guardrail applies thereafter.)
 
    **Do not edit `.speccraft/state.json` directly under any circumstance**
    — even to "fix" a value the binary just produced. The only sanctioned

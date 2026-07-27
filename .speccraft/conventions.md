@@ -86,6 +86,124 @@ test observed" (spec 0031's brittleness note (a), recurred in 0032 when adding a
   reference: `Test_ApplyEditDefaultComment_OmitsModeledTools` in
   `tools/cmd/speccraft-guard/reserved_slot_test.go`.
 
+### Avoid a NEW import to dodge the import-then-use guard deadlock
+
+Introduced by spec 0036.
+
+Adding a fresh `import` to a Go file that already carries a standing RED can deadlock
+the TDD gate: the import line alone is a build-failing edit (`imported and not used`)
+until the using code lands, but the guard can't observe a valid runtime RED across a
+build failure — the spec-0018-AC13 trap in miniature. When the ONLY reason to reach
+for a new import is a trivial helper, prefer a local, dependency-free construct:
+
+- **A local string-error type instead of `fmt`/`errors`.** Spec 0036 introduced
+  `type revErr string` + `func (e revErr) Error() string { return string(e) }` in
+  `revision.go` so the writer/boundary ops could return typed errors without pulling
+  in `fmt` (which would have forced an import-then-use edit under the guard). Use it
+  as `return revErr("…")`.
+- **Manual parsing instead of `strconv`.** Where the value space is small and
+  well-defined (digit-only revision literals), a hand-rolled `isAllDigits` +
+  accumulate-with-checked-overflow avoids a `strconv` import and gives exact control
+  over the AC14 over-domain error boundary.
+- This is a companion to the stale-cached-guard workarounds above: both are about
+  keeping every edit either a clean runtime RED or a clean GREEN, never a transient
+  build failure the guard misreads.
+
+### Place fault-injectable logic in the cmd package to ride the `run()` seam (override budget = 1)
+
+Introduced by spec 0036 (generalizing spec 0035's `run()`-seam subcommand pattern).
+
+A brand-new EXPORTED symbol in `tools/internal/speccraft` costs one
+`/speccraft:spec:override` — its first test cannot compile until the symbol exists
+(build-failure ≠ runtime RED, spec-0018-AC13). When new logic needs its OWN
+fault-injection seam and unit test, putting it in the `speccraft-state` (cmd) package
+instead of `internal` lets it ride the compile-stable `run()` seam (every cmd RED is a
+runtime "unknown subcommand", never a build error) at ZERO additional override.
+
+- **Spec 0036's archive move** (`moveArtifactNoReplace` + `var linkNoReplace = os.Link`
+  / `var unlinkFile = os.Remove` + `os.SameFile` inode recovery) lives in
+  `tools/cmd/speccraft-state/archive.go`, NOT `internal`, precisely so its AC15
+  link-ok/unlink-fail fault-injection test sits as a same-package sibling under the
+  cmd `run()`-seam RED. Placing it in `internal` would have required a from-scratch
+  internal RED that cannot compile → a second override.
+- **Budget discipline.** Concentrate ALL from-scratch exported-symbol bootstrapping
+  into ONE override edit (spec 0036's T1: `RevisionState` + `ComputeRevisionState` +
+  `SetStatus` + `SetRevision` as stubs paired with their first REDs); every later
+  symbol rides an existing runtime RED (unexported helpers added while editing an
+  already-red exported function; new subcommands via the `run()` seam). A later spec
+  MAY relocate cmd-package logic into `internal` once an internal RED anchor exists.
+
+### One shared parser entrypoint, pinned by a source-scan assertion
+
+Introduced by spec 0036.
+
+When a reader and a writer must agree byte-for-byte on the same grammar (which field a
+check READS must be the same line a write REWRITES), implement ONE unexported
+entrypoint and route both paths through it — never a second parser that can drift.
+
+- **Spec 0036's `parseFrontmatterBlock`** (BOM-tolerant, per-line CR, column-0
+  `^key:`, first-wins) is the sole grammar for both `ComputeRevisionState` /
+  `currentStatusClosed` (reader) and `setFrontmatterField` (writer). Guard against a
+  second parser accreting with a source-scan test that asserts exactly one
+  `func parseFrontmatterBlock(` exists AND that both paths call it —
+  `frontmatter_writer_test.go` uses `strings.Count(src, "func parseFrontmatterBlock(") == 1`.
+- This is the spec-0032 source-scanning-meta-test discipline applied to a
+  single-entrypoint invariant: the assertion reads the LIVE source, so it fails the
+  moment someone hand-rolls a parallel scan.
+
+### Fixture-first, per-tool meta-guard matching regime
+
+Introduced by spec 0036 (spirit of the spec-0030 grep-oracle and spec-0032 recurrence grep).
+
+A meta-guard that forbids a class of dangerous edits (spec 0036: raw in-place
+`status:`/`revision:` frontmatter rewrites in `commands/**`) must be **fixture-first**
+— curated FORBIDDEN and PERMITTED fixtures asserted before the live-repo scan is
+trusted — and must match **per tool**, because the "target file" argument lives in a
+different position for each tool:
+
+- **`sed -i` / `perl -i` / `perl -pi -e`:** the target is the LAST positional (non-flag)
+  argument. **`awk`:** the target is the OUTPUT-REDIRECTION target (`awk … > FILE`), NOT a
+  positional. A single uniform "last arg" rule false-negatives on awk.
+- **Scope conservatively IN, never silently skip.** A variable / command-substituted
+  target (`sed -i "$SPEC_MD"`) whose value isn't a trivially-resolvable literal is
+  treated AS a `specs/*/spec.md` target and flagged — a guard that skipped
+  non-literal targets would be trivially evadable.
+- **Curate BOTH polarities** so the guard neither false-positives nor no-ops:
+  forbidden (anchored `^status:` and unanchored `status: draft` alike; the awk-redirect
+  form; the scoped-in variable target) AND permitted (read-only `sed -n '/^status:/p'`,
+  `grep -E '^status:'`, printing status to stderr, `awk`-to-tmp, unrelated `sed -i`).
+  Assert flags-and-passes on the fixtures, THEN assert the live tree clean.
+- **Canonical reference.** `tests/hooks/frontmatter-writer-guard.bats` (spec 0036).
+
+## Revision & artifact numbering
+
+Introduced by spec 0036.
+
+The frontmatter `revision: N` counter is the CANONICAL revision and the sole authority
+in steady state; on-disk archived `*-r<N>.md` artifacts are forward-only reconciliation
+evidence, never a peer authority (they can only HEAL a lagged counter up, never demote
+it). `Effective = hasArchived ? max(fmRev, maxArchived+1) : fmRev`.
+
+- **Within-draft edits keep the same revision by design.** A revision corresponds to a
+  completed review cycle (an archive), NOT to every keystroke, so the
+  review→edit→re-review loop within one draft does not advance the counter. The counter
+  advances ONLY through the archive path; `speccraft-state reconcile-revision` is
+  heal-only (raises a counter that has fallen behind provable archives; a no-op when the
+  counter already leads). Do NOT auto-bump on in-place edits.
+- **`status:` / `revision:` are mutated ONLY through the sanctioned writer** —
+  `speccraft-state set-status <spec.md> <status>` / `set-revision <spec.md> <N>`, backed
+  by the exported `SetStatus` / `SetRevision` (which enforce status-enum, `uint64`
+  domain, monotonic-forward, and closed-spec immutability IN the exported op) over the
+  unexported byte-safe `setFrontmatterField`. Command libs never hand-roll a `sed -i`
+  frontmatter edit (enforced by the AC10 meta-guard above). This is the
+  `state.json`-single-writer discipline extended to spec.md frontmatter.
+- **Archiving is self-healing, not fail-closed.** `archive_rename` computes
+  `A = effective-revision` (provably free) once, archives the disposable set
+  (`review`, plus `plan`/`tasks` for `planned` source) via `archive-artifact` with
+  no-clobber `link(2)`-then-unlink semantics, then heals the counter, then flips
+  `status: draft` LAST (fixed order archive → counter → status, interruption-safe). A
+  stray `review-r<N>.md` can no longer deadlock revise.
+
 ## Version bumps
 
 Introduced by spec 0019.

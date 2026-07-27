@@ -2,6 +2,92 @@
 
 Append-only. Newest first.
 
+## 2026-07-27 — One revision-and-artifact-numbering contract + a single sanctioned byte-safe frontmatter writer; version 1.11.0 (spec 0036)
+
+**Spec:** specs/0036-revision-counter-artifact-numbering-contract/
+**Decision:** Close the field finding that speccraft had TWO uncoordinated numbering
+systems and no sanctioned frontmatter writer. The frontmatter `revision: N` counter
+(spec 0015) and the archived `*-r<N>.md` files could drift, and when they did the old
+`preflight_archive_collisions` HARD-REFUSED ("archive target … already exists") with
+nothing ever advancing `N` past the occupied slot — a permanent deadlock a single
+stray `review-r<N>.md` could trigger. Within-draft edits were invisible to the
+counter, and `bump_revision`'s hand-rolled `sed -i.bak 's/^status:…/'` ate a newline
+in the field. Establish one **Authority model** — the counter is canonical; archived
+artifacts are forward-only reconciliation evidence, never a peer authority — with
+`Effective = hasArchived ? max(fmRev, maxArchived+1) : fmRev`, and one sanctioned
+byte-safe frontmatter-field writer analogous to how `speccraft-state` is the sole
+writer of `state.json`. The revise path is now self-healing (archive lands in the
+provably-free `A = Effective` slot and the counter advances past the collision)
+instead of deadlock-prone. **New declared semantics:** within-draft edits keep the
+same revision by design (a revision = a completed review cycle / an archive, not a
+keystroke); the counter advances ONLY via the archive path, and `reconcile-revision`
+is heal-only.
+
+**Layering.** New Go core in `tools/internal/speccraft/revision.go`:
+`ComputeRevisionState(specDir)` → `RevisionState{FrontmatterRevision, MaxArchived,
+Effective, HasArchived}` (ordinal scan factored into `listArchivedOrdinals`, the
+single source of on-disk layout; classification matrix in `parseRevisionValue` —
+absent/non-numeric ⇒ 0, over-uint64 ⇒ error, missing-dir/unreadable-spec ⇒ error held
+distinct from a malformed `revision:` line). The SINGLE unexported
+`parseFrontmatterBlock` grammar (BOM-tolerant, per-line CR, column-0 `^key:`,
+first-wins) is the sole entrypoint BOTH the reader (`ComputeRevisionState`,
+`currentStatusClosed`) and the writer (`setFrontmatterField`) route through — pinned
+by a source-scan asserting exactly one `func parseFrontmatterBlock(`. The unexported
+byte-safe `setFrontmatterField` (first-match-only, per-line terminator + BOM +
+EOF-newline preservation via `splitRawLines`/`joinRawLines`, deterministic
+inserted-line terminator, skip-write no-op, no `.bak`) rides the spec-0035
+`AtomicWriteFile` seam. The ONLY exported ops are `SetStatus` (enum-validated, AC8)
+and `SetRevision` (monotonic-forward — REFUSES demotion, AC14/§C), both enforcing
+closed-spec immutability IN the exported op (AC9 — no `--force` escape hatch; a local
+`revErr` string-error type avoids an `fmt` import under the guard). Five new
+`speccraft-state` subcommands via the spec-0035 `run()` seam: `effective-revision`,
+`set-status`, `set-revision`, `reconcile-revision`, `archive-artifact`. The archive
+move lives DELIBERATELY in the `speccraft-state` (cmd) package
+(`tools/cmd/speccraft-state/archive.go`), not `internal` — so `moveArtifactNoReplace`
++ its `linkNoReplace`/`unlinkFile` seams and the AC15 fault-injection unit test ride
+the cmd `run()`-seam RED and keep the override budget at 1. The move is a genuine
+no-replace primitive (`os.Link` fails EEXIST if the target exists, then unlink source
+— never a racy stat-then-rename) with `os.SameFile` inode-identity recovery on an
+interrupted link-ok/unlink-fail move (retry unlinks the source instead of duplicating;
+fails safe with no same-inode sibling) — NOT byte-equality. `commands/spec/revise.lib.sh`
+now delegates: `preflight_archive_collisions` DELETED; `archive_rename` computes
+`A=effective-revision` once and archives the disposable set (`review`, plus
+`plan`/`tasks` for `planned` source) under one ordinal via `archive-artifact`;
+`bump_revision` is a thin `reconcile-revision` → `set-status draft` helper in the fixed
+order archive → counter → status-LAST; `close.md` step 6 uses `set-status … closed`.
+AC10 meta-guard `tests/hooks/frontmatter-writer-guard.bats` is fixture-first with a
+per-tool matching regime (sed/perl last positional; awk redirect target) forbidding
+raw in-place `status:`/`revision:` rewrites in command libs. Version 1.10.0 → 1.11.0
+across the three `const version` binaries + both manifests (renamed sibling oracles).
+
+**The 5-round cross-model review payoff.** Five rounds (codex `gpt-5.6-sol` +
+claude-p) converged dual-verdict at round 5, driving out real defects
+PRE-implementation: (1) the authority contradiction ("disk wins" vs "frontmatter sole
+authority") → the forward-only Authority model; (2) the `--force` closed-spec escape
+hatch flagged as a **guardrail violation** → removed, enforced in the exported op so no
+Go caller bypasses it; (3) archiving `spec.md` would leave nothing to counter-bump →
+only the disposable `review`/`plan`/`tasks` set is archived, `spec.md` stays live;
+(4) the `A+1`-vs-heal contradiction (a retry minting a spurious extra revision) → one
+unified rule (counter = `Effective` recomputed AFTER the moves, so fresh and retry both
+land on the same value); (5) interrupted-move data-safety (byte-equality could delete
+a live source matching an unrelated archive) → `os.SameFile` inode identity + fail-safe
+(AC15).
+
+**Deviations:** ONE `/speccraft:spec:override` (T1, the AC12 new-symbol bootstrap —
+budget ≤1 held). `parseFrontmatterBlock` lives IN `revision.go`, not its own file (AC13
+text said "its own file"); the TESTED single-routed-entrypoint property holds and the
+split was deferred to avoid a duplicate-symbol guard deadlock. T9/T10 collapsed — the
+T8 writer already satisfied every byte-safety edge, so T9 pinned green with no fake RED
+manufactured. `SetRevision` over-domain rejection sits at the CLI arg parse
+(`parseUintArg`) since the Go signature is `uint64`; over-domain on-disk `revision:` is
+a `ComputeRevisionState` error. Recurring stale-1.1.0-cached-guard friction (the
+0030/0032/0034/0035 lineage): decisive REDs via Edit with a fresh test-func as the LAST
+sibling touch, Bash only for mechanical build-fixes (import-then-use deadlock + three
+literal-BOM-in-source breaks), and a re-registered companion RED on the version bump
+(the no-new-test-edit-clears-standing-RED trap bit once). Cross-links:
+[[dogfood-stale-cached-guard-on-path]]. 0036's own close ran NO consolidation (no
+`domains:`/`delta:`, no `specs/domains/` tree yet — non-blocking decline).
+
 ## 2026-07-26 — Diff-focused re-review scopes reviewers to the deltas since the last review; version 1.10.0 (spec 0035)
 
 **Spec:** specs/0035-re-review/

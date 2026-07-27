@@ -134,50 +134,10 @@ ensure_revision_field() {
   mv "$tmp" "$spec_md"
 }
 
-# ---------------------------------------------------------------------------
-# preflight_archive_collisions <spec dir> <source status> <N_old>
-#
-# Verifies that the archive target paths the revise command would write to
-# do not already exist on disk. For source status `reviewed`, checks
-# review-r<N_old>.md. For `planned`, additionally checks plan-r<N_old>.md
-# and tasks-r<N_old>.md. For `draft`, exits zero (nothing to archive).
-# Errors with a stderr message naming the conflicting path. Implements
-# spec 0015 §Mechanism step 4 and AC9.
-# ---------------------------------------------------------------------------
-preflight_archive_collisions() {
-  local spec_dir="$1"
-  local source_status="$2"
-  local n_old="$3"
-  local conflict=""
-  case "$source_status" in
-    reviewed)
-      if [ -e "$spec_dir/review-r${n_old}.md" ]; then
-        conflict="$spec_dir/review-r${n_old}.md"
-      fi
-      ;;
-    planned)
-      if [ -e "$spec_dir/review-r${n_old}.md" ]; then
-        conflict="$spec_dir/review-r${n_old}.md"
-      elif [ -e "$spec_dir/plan-r${n_old}.md" ]; then
-        conflict="$spec_dir/plan-r${n_old}.md"
-      elif [ -e "$spec_dir/tasks-r${n_old}.md" ]; then
-        conflict="$spec_dir/tasks-r${n_old}.md"
-      fi
-      ;;
-    draft)
-      return 0
-      ;;
-    *)
-      echo "preflight_archive_collisions: unknown source status '$source_status' (expected: draft, reviewed, planned)" >&2
-      return 1
-      ;;
-  esac
-  if [ -n "$conflict" ]; then
-    echo "preflight_archive_collisions: archive target $conflict already exists; refusing to overwrite" >&2
-    return 1
-  fi
-  return 0
-}
+# preflight_archive_collisions was DELETED in spec 0036: the self-healing archive
+# ordinal (speccraft-state effective-revision → archive-artifact, no-clobber via
+# link(2)) makes a pre-existing *-r<N>.md a non-event rather than a deadlock, so
+# the old fail-closed refusal is obsolete. See archive_rename below.
 
 # ---------------------------------------------------------------------------
 # preflight_source_artifacts <spec dir> <source status>
@@ -514,28 +474,23 @@ bump_revision() {
   local spec_md="$1"
   local source_status="$2"
   [ -f "$spec_md" ] || { echo "bump_revision: $spec_md not found" >&2; return 1; }
-  local current new_rev
-  current="$(grep -E '^revision:[[:space:]]*[0-9]+' "$spec_md" | head -1 | sed -E 's/^revision:[[:space:]]*([0-9]+).*/\1/')"
-  if [ -z "$current" ]; then
-    echo "bump_revision: $spec_md has no revision: N field (run ensure_revision_field first)" >&2
-    return 1
-  fi
-  new_rev=$((current + 1))
-  sed -i.bak -E "s/^revision:[[:space:]]*[0-9]+/revision: ${new_rev}/" "$spec_md"
-  rm -f "${spec_md}.bak"
-  # Flip status to draft (idempotent for draft-source). `source_status` is
-  # accepted as a documentation hint for callers; the flip itself is
-  # status-blind to keep the helper simple.
   case "$source_status" in
-    draft|reviewed|planned)
-      sed -i.bak -E 's/^status:[[:space:]]*(draft|reviewed|planned)/status: draft/' "$spec_md"
-      rm -f "${spec_md}.bak"
-      ;;
+    draft | reviewed | planned) : ;;
     *)
       echo "bump_revision: unknown source status '$source_status' (expected: draft, reviewed, planned)" >&2
       return 1
       ;;
   esac
+  local spec_dir
+  spec_dir="$(dirname "$spec_md")"
+  # Spec 0036 §B fixed order: the archive already ran (archive_rename); now (2) heal
+  # the counter forward to the post-archive Effective, then (3) flip status LAST.
+  # Both go through the sanctioned byte-safe writers — NO raw sed on the fields
+  # (that eaten-newline class is the whole reason for this spec).
+  speccraft-state reconcile-revision "$spec_dir" ||
+    { echo "bump_revision: reconcile-revision failed for $spec_dir" >&2; return 1; }
+  speccraft-state set-status "$spec_md" draft ||
+    { echo "bump_revision: set-status draft failed for $spec_md" >&2; return 1; }
   return 0
 }
 
@@ -552,22 +507,25 @@ bump_revision() {
 archive_rename() {
   local spec_dir="$1"
   local source_status="$2"
-  local n_old="$3"
+  local a
   case "$source_status" in
-    reviewed)
-      mv "$spec_dir/review.md" "$spec_dir/review-r${n_old}.md" \
-        || { echo "archive_rename: failed to rename review.md" >&2; return 1; }
-      ;;
-    planned)
-      mv "$spec_dir/review.md" "$spec_dir/review-r${n_old}.md" \
-        || { echo "archive_rename: failed to rename review.md" >&2; return 1; }
-      mv "$spec_dir/plan.md" "$spec_dir/plan-r${n_old}.md" \
-        || { echo "archive_rename: failed to rename plan.md" >&2; return 1; }
-      mv "$spec_dir/tasks.md" "$spec_dir/tasks-r${n_old}.md" \
-        || { echo "archive_rename: failed to rename tasks.md" >&2; return 1; }
-      ;;
     draft)
       return 0
+      ;;
+    reviewed | planned)
+      # Self-healing ordinal A = Effective (computed ONCE before the moves), so a
+      # pre-existing *-r<N>.md never deadlocks — A lands in a free slot. The whole
+      # disposable set is archived under the same A (spec 0036 AC3/AC4/§B).
+      a="$(speccraft-state effective-revision "$spec_dir")" ||
+        { echo "archive_rename: effective-revision failed for $spec_dir" >&2; return 1; }
+      speccraft-state archive-artifact "$spec_dir" review "$a" ||
+        { echo "archive_rename: failed to archive review.md" >&2; return 1; }
+      if [ "$source_status" = planned ]; then
+        speccraft-state archive-artifact "$spec_dir" plan "$a" ||
+          { echo "archive_rename: failed to archive plan.md" >&2; return 1; }
+        speccraft-state archive-artifact "$spec_dir" tasks "$a" ||
+          { echo "archive_rename: failed to archive tasks.md" >&2; return 1; }
+      fi
       ;;
     *)
       echo "archive_rename: unknown source status '$source_status' (expected: draft, reviewed, planned)" >&2
