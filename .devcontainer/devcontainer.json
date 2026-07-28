@@ -53,7 +53,7 @@
 
   // Useful when iterating on the plugin: rebuild binaries on every container
   // start (cheap; <2s if cache is warm).
-  "postStartCommand": "bash scripts/install-binaries.sh || true",
+  "postStartCommand": "bash scripts/install-binaries.sh || true && bash scripts/dev/refresh-plugin-binaries.sh || true",
 
   // Forward nothing by default. Speccraft has no network services.
   "forwardPorts": [],
