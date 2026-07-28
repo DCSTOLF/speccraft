@@ -2,6 +2,17 @@
 
 Append-only. Newest first.
 
+## 2026-07-28 — Conductor primitives ship: ledger.md read/write + reconcile rollup (spec 0038)
+
+**Spec:** specs/0038-conductor-ledger-reconcile/ (Spec B slice 1 of design 0001; status: closed). Test-first — 22 new test cases, full `go test ./...` green, `go vet` clean, ONE `/speccraft:spec:override`.
+**Decision:** Ship the Go/testable core the conductor (Spec 0039, `/speccraft:arch:orchestrate`) will stand on, before any orchestration — mirroring how 0037 shipped the topology primitives. New `tools/internal/speccraft/ledger.go`: `ParseLedger`/`SetLedgerField` over a constrained `## design`/`### member` block grammar (first-`:` split preserving interior `: `, BOM/CRLF tolerance, `# Ledger` preamble, first-wins, 11 `ledger.md:`-prefixed parse-error classes); a **canonical writer** on `AtomicWriteFile` with an injectable `ledgerNow` clock seam (same-value set = byte-identical no-op; `updated` is conductor-managed, never a settable field); and a **pure `Reconcile`** taking an INJECTED status resolver so it keys on the member's `spec.md` frontmatter (proven by a disagreement test AND a source-scan that the impl never references `last_completed_phase`) — classifying Blocked→Closed→InProgress with `blocked`-overlay precedence, `Done` iff all Closed. Two `run()`-seam subcommands (`ledger-set`, `reconcile`) at zero override; the ledger is a history.md-class memory file, NEVER `state.json` (behavioral + source-scan guards).
+
+**Override budget.** ONE (T1 bootstrap of the exported inventory), exactly as planned. The load-bearing move: a shared `resolveSpecStatus` (dual live/`.archive`, tri-state outcome) was extracted from 0037's `get-status` and `get-status` refactored onto it at ZERO override — the pure refactor rode the standing failing `reconcile`/`ledger-set` cmd REDs (author cmd REDs first, land the refactor while they stand). 0037's get-status regression stayed green.
+
+**Dogfood friction (anticipated by the plan).** (1) A second Write of a test file with unchanged test names disarmed its red-candidates (`SetRedCandidates` replaces per file) → re-armed via an Edit adding a fresh RED. (2) A literal BOM in Go source (from a `﻿` fixture) was fixed mechanically via Bash `perl` — the sanctioned path for a build-break the guard misreads. (3) The AC3 source-scan first caught `state.json` in a ledger.go comment; reworded.
+
+**Deferred.** Consolidation → `/speccraft:sync`; no version bump (Spec 0039 — the orchestrate command — completes Spec B and carries the release). Aux-config nit logged in the spec's review.md: `.speccraft/agents.toml` codex `cmd` should split `--sandbox workspace-write` into two tokens.
+
 ## 2026-07-28 — Workspace topology foundation ships: kind field, FindWorkspaceRoot, workspace.yml membership, and the get-status/get-frontmatter/list-members readers (spec 0037)
 
 **Spec:** specs/0037-workspace-topology-foundation/ (Spec A of design 0001; status: closed). Implemented test-first — 44 new test cases, full `go test ./...` green, `go vet` clean.

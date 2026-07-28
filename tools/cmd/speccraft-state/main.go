@@ -348,6 +348,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return getFrontmatter(args[1], args[2], stdout, stderr)
 
+	case "ledger-set":
+		if len(args) < 5 {
+			fmt.Fprintln(stderr, "usage: speccraft-state ledger-set <design-id> <member-path> <field> <value>")
+			return 1
+		}
+		return ledgerSetCmd(args[1], args[2], args[3], args[4], stdout, stderr)
+
+	case "reconcile":
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: speccraft-state reconcile <design-id>")
+			return 1
+		}
+		return reconcileCmd(args[1], stdout, stderr)
+
 	default:
 		fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[0])
 		usage(stderr)
@@ -536,5 +550,8 @@ Usage:
   speccraft-state get-status <spec-ref>  Print a spec's status; resolves specs/ then specs/.archive/ (spec 0037)
   speccraft-state get-frontmatter <spec.md> <key>
                                           Print a spec.md frontmatter field value (spec 0037)
+  speccraft-state ledger-set <design-id> <member-path> <field> <value>
+                                          Upsert a member field in the workspace ledger.md (spec 0038)
+  speccraft-state reconcile <design-id>  Roll up a design's member spec statuses (spec 0038)
   speccraft-state --version              Print version`)
 }

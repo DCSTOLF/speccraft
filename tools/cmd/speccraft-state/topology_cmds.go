@@ -44,30 +44,57 @@ func listMembers(stdout, stderr io.Writer) int {
 // resolve the NNNN-slug ref to specs/<ref>/spec.md, else specs/.archive/<ref>/
 // spec.md (live wins), read status via ReadFrontmatterField, and print the bare
 // value + newline. Not found / no status field → non-zero, nothing on stdout.
-func getStatus(ref string, stdout, stderr io.Writer) int {
-	root, err := speccraft.FindRoot("")
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
+// resolveOutcome distinguishes the three spec-resolution results so both
+// get-status (which prints distinct messages) and reconcile (which collapses
+// everything but "resolved" to found==false) can share one resolver.
+type resolveOutcome int
+
+const (
+	resolveResolved resolveOutcome = iota
+	resolveNotFound
+	resolveNoStatus
+	resolveReadErr
+)
+
+// resolveSpecStatus resolves a spec-ref to its frontmatter status via the dual
+// specs/<ref> → specs/.archive/<ref> lookup (live wins), returning the resolved
+// spec.md path and outcome. Shared by get-status and reconcile (spec 0038).
+func resolveSpecStatus(root, ref string) (status, specMd string, outcome resolveOutcome, err error) {
 	live := filepath.Join(root, "specs", ref, "spec.md")
 	archived := filepath.Join(root, "specs", ".archive", ref, "spec.md")
-	var specMd string
 	switch {
 	case fileExists(live):
 		specMd = live // live wins
 	case fileExists(archived):
 		specMd = archived
 	default:
-		fmt.Fprintf(stderr, "spec %q not found in specs/ or specs/.archive/\n", ref)
-		return 1
+		return "", "", resolveNotFound, nil
 	}
 	v, ok, rerr := speccraft.ReadFrontmatterField(specMd, "status")
 	if rerr != nil {
-		fmt.Fprintln(stderr, rerr)
-		return 1
+		return "", specMd, resolveReadErr, rerr
 	}
 	if !ok {
+		return "", specMd, resolveNoStatus, nil
+	}
+	return v, specMd, resolveResolved, nil
+}
+
+func getStatus(ref string, stdout, stderr io.Writer) int {
+	root, err := speccraft.FindRoot("")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	v, specMd, outcome, rerr := resolveSpecStatus(root, ref)
+	switch outcome {
+	case resolveNotFound:
+		fmt.Fprintf(stderr, "spec %q not found in specs/ or specs/.archive/\n", ref)
+		return 1
+	case resolveReadErr:
+		fmt.Fprintln(stderr, rerr)
+		return 1
+	case resolveNoStatus:
 		fmt.Fprintf(stderr, "no status field in %s\n", specMd)
 		return 1
 	}
