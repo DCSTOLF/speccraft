@@ -331,6 +331,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 
+	case "list-members":
+		return listMembers(stdout, stderr)
+
+	case "get-status":
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: speccraft-state get-status <spec-ref>")
+			return 1
+		}
+		return getStatus(args[1], stdout, stderr)
+
+	case "get-frontmatter":
+		if len(args) < 3 {
+			fmt.Fprintln(stderr, "usage: speccraft-state get-frontmatter <spec.md> <key>")
+			return 1
+		}
+		return getFrontmatter(args[1], args[2], stdout, stderr)
+
 	default:
 		fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[0])
 		usage(stderr)
@@ -515,5 +532,9 @@ Usage:
                                           Heal the revision counter forward to Effective (spec 0036)
   speccraft-state archive-artifact <spec-dir> <kind> <ordinal>
                                           No-clobber archive of review/plan/tasks to <kind>-r<ordinal>.md (spec 0036)
+  speccraft-state list-members           List workspace members from workspace.yml as <present|missing>\t<path> (spec 0037)
+  speccraft-state get-status <spec-ref>  Print a spec's status; resolves specs/ then specs/.archive/ (spec 0037)
+  speccraft-state get-frontmatter <spec.md> <key>
+                                          Print a spec.md frontmatter field value (spec 0037)
   speccraft-state --version              Print version`)
 }

@@ -130,3 +130,49 @@ See `history.md` for full ADR-style entries. Headlines:
   within-draft edits keep the same revision by design — the counter advances only via
   the archive path. The AC10 meta-guard `tests/hooks/frontmatter-writer-guard.bats`
   forbids raw in-place `status:`/`revision:` rewrites in `commands/**`.
+- **Workspace topology & architect-as-conductor (design 0001, DECIDED — not yet
+  shipped; delivered as two specs, A then B):** the architect graduates from an
+  advisory design-writer into a **conductor** that sequences the existing per-spec
+  lifecycle (`new → answer-questions → (review → revise)* → plan → implement →
+  validate`) across N repos — never bypassing the per-spec commands or the TDD
+  red→green guard, only sequencing them one member repo at a time. **Topology:**
+  `.speccraft/` frontmatter gains `kind: repo | workspace` (absent ⇒ `repo` ⇒ full
+  backward compatibility; a monorepo is a single `repo`-kind member with one
+  repo-wide spec stream, NOT per-package roots). A `kind: workspace` root is a
+  parent dir over ≥2 repos holding the `design/` tree and the ledger but **no specs
+  of its own**; its `workspace.yml` `members:` list is the **authoritative
+  membership** — filesystem ancestry resolves only WHICH workspace root you are
+  under, never membership (a repo physically present but unlisted is ignored; a
+  listed-but-missing `path:` is a `blocked` overlay, not a hard error). A new
+  resolver **`find-workspace-root`** (nearest `kind: workspace` ancestor, else
+  fall back to repo-root — a lone repo is "a workspace of one") is a **peer of
+  `FindRoot`, layered ABOVE it and consumed ONLY by the `arch:*` commands and the
+  conductor**; hooks and `speccraft-guard` keep calling `FindRoot` exclusively, so
+  the "no change to the Edit/Write hot path" invariant holds by construction.
+  **Lifecycle orchestration:** a new `/speccraft:arch:orchestrate` command (peer of
+  `arch:decide`/`arch:close`) drives the state machine, with two mandatory
+  human-in-the-loop checkpoints (max review↔revise iterations exhausted; and after
+  `plan`, before `implement`) and a `--straight-through` flag. Each phase spawns the
+  existing subagent with **cwd scoped to the member repo** (the `aux-delegator`
+  precedent) so each member's own `FindRoot` lands artifacts in its own
+  `.speccraft/` — nothing threads an explicit `--root`. **Ledger:** `ledger.md` is
+  a markdown **history.md-class memory file** at the workspace `.speccraft/`,
+  DELIBERATELY OUTSIDE the `state.json` single-writer rule (written directly by the
+  conductor, like `history.md`), holding only conductor-owned fields per member
+  (`last_completed_phase` single pointer + `in_flight` + a `blocked` overlay); it
+  does NOT cache spec `status`. **Reconcile:** `arch:close`/`sync` are the sole
+  authority for the design ROLLUP status (read-only) — they read each child spec's
+  real status from its **`spec.md` frontmatter**, never from `state.json` (which
+  holds only the active-spec pointer + TDD session state) and never from the ledger
+  pointer, with **dual live/archive location resolution** (`specs/NNNN-slug/spec.md`
+  OR `specs/.archive/NNNN-slug/spec.md`, per spec 0025's consolidation move); a
+  design is done when every child is `closed` (or `archived`). This requires a new
+  read-only **`speccraft-state get-status <spec.md>`** reader (the counterpart to
+  the existing `set-status` writer). **Two-stage delivery:** Spec A ships the
+  topology foundation (`kind:` field, `workspace.yml` parsing, `find-workspace-root`,
+  `get-status`, the `design:` back-reference convention — all Go/table-testable,
+  fully backward-compatible) and validates BEFORE any orchestration exists; Spec B
+  builds the conductor (state machine, `ledger.md`, decomposition/dispatch,
+  reconcile, `/speccraft:arch:orchestrate`) on that foundation. Advisory throughout:
+  the conductor never gates a member's spec flow or the TDD guard; one `blocked`
+  member never stalls siblings.

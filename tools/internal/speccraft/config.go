@@ -15,6 +15,11 @@ var ErrInvalidConfig = errors.New("invalid speccraft.toml")
 // SpeccraftConfig holds settings from .speccraft/speccraft.toml.
 type SpeccraftConfig struct {
 	TDD TDDConfig
+
+	// Kind is the repo topology: "repo" (default) or "workspace" (spec 0037).
+	// Absent ⇒ "repo". A monorepo is a single "repo"-kind member. Non-strict
+	// ReadConfig coerces an unknown value to "repo"; ReadConfigStrict errors.
+	Kind string
 }
 
 type TDDConfig struct {
@@ -69,6 +74,20 @@ type TSConfig struct {
 // Missing file → zero-value config with defaults applied (no error).
 // Parse errors are silently skipped.
 func ReadConfig(root string) SpeccraftConfig {
+	cfg := readConfigRaw(root)
+	// Non-strict: an unknown kind coerces to repo, so a bad value can never
+	// silently promote a repo to a workspace (spec 0037 AC1). ReadConfigStrict
+	// instead validates the raw value and errors.
+	if cfg.Kind != "repo" && cfg.Kind != "workspace" {
+		cfg.Kind = "repo"
+	}
+	return cfg
+}
+
+// readConfigRaw parses speccraft.toml and applies defaults WITHOUT coercing an
+// unknown kind value — the shared base for ReadConfig (which coerces) and
+// ReadConfigStrict (which validates the raw value).
+func readConfigRaw(root string) SpeccraftConfig {
 	var cfg SpeccraftConfig
 	data, err := os.ReadFile(filepath.Join(root, ".speccraft", "speccraft.toml"))
 	if err == nil {
@@ -79,6 +98,9 @@ func ReadConfig(root string) SpeccraftConfig {
 }
 
 func applyDefaults(cfg *SpeccraftConfig) {
+	if cfg.Kind == "" {
+		cfg.Kind = "repo"
+	}
 	if cfg.TDD.Rust.Runner == "" {
 		cfg.TDD.Rust.Runner = "cargo"
 	}
@@ -102,7 +124,7 @@ var allowedRustRunners = []string{"cargo", "nextest"}
 // offending key, the offending value, and the allowed alternatives.
 // Missing file is not an error — defaults apply.
 func ReadConfigStrict(root string) (SpeccraftConfig, error) {
-	cfg := ReadConfig(root)
+	cfg := readConfigRaw(root)
 	if err := validate(&cfg); err != nil {
 		return SpeccraftConfig{}, err
 	}
@@ -110,6 +132,12 @@ func ReadConfigStrict(root string) (SpeccraftConfig, error) {
 }
 
 func validate(cfg *SpeccraftConfig) error {
+	if cfg.Kind != "repo" && cfg.Kind != "workspace" {
+		return fmt.Errorf(
+			"speccraft.toml: kind = %q: allowed values are %q, %q: %w",
+			cfg.Kind, "repo", "workspace", ErrInvalidConfig,
+		)
+	}
 	runner := cfg.TDD.Rust.Runner
 	if !isAllowed(runner, allowedRustRunners) {
 		return fmt.Errorf(
@@ -141,6 +169,11 @@ func parseSpeccraftTOML(content string, cfg *SpeccraftConfig) {
 			continue
 		}
 		switch section {
+		case "":
+			// Top-level keys (before any [section]).
+			if strings.HasPrefix(line, "kind") {
+				cfg.Kind = parseTOMLStringValue(line)
+			}
 		case "[tdd]":
 			if strings.HasPrefix(line, "test_roots") {
 				cfg.TDD.TestRoots = parseTOMLStringArray(line)

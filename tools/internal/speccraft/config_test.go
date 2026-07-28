@@ -1,6 +1,7 @@
 package speccraft_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,5 +215,43 @@ func Test_ReadConfigStrict_EmptyJSCommandIsNotError(t *testing.T) {
 	writeConfig(t, root, "[tdd.javascript]\ncommand = \"\"\n")
 	if _, err := speccraft.ReadConfigStrict(root); err != nil {
 		t.Errorf("empty JS command must be valid at parse (fail-closed is a runtime concern), got: %v", err)
+	}
+}
+
+// --- spec 0037: workspace topology (kind) ---
+
+func Test_ReadConfig_KindAbsent_DefaultsRepo(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, "[tdd]\ntest_roots = [\"tests\"]\n")
+	if got := speccraft.ReadConfig(root).Kind; got != "repo" {
+		t.Errorf("Kind = %q, want %q (absent kind defaults to repo)", got, "repo")
+	}
+}
+
+func Test_ReadConfig_KindWorkspace_Parsed(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, "kind = \"workspace\"\n")
+	if got := speccraft.ReadConfig(root).Kind; got != "workspace" {
+		t.Errorf("Kind = %q, want %q", got, "workspace")
+	}
+}
+
+// Adjacent pair: the SAME unknown value coerces to repo under non-strict
+// ReadConfig but errors under ReadConfigStrict — a bad value can never silently
+// promote a repo to a workspace (spec 0037 AC1).
+func Test_ReadConfig_UnknownKind_CoercesRepo(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, "kind = \"bogus\"\n")
+	if got := speccraft.ReadConfig(root).Kind; got != "repo" {
+		t.Errorf("Kind = %q, want %q (unknown coerces to repo)", got, "repo")
+	}
+}
+
+func Test_ReadConfigStrict_UnknownKind_ReturnsError(t *testing.T) {
+	root := t.TempDir()
+	writeConfig(t, root, "kind = \"bogus\"\n")
+	_, err := speccraft.ReadConfigStrict(root)
+	if !errors.Is(err, speccraft.ErrInvalidConfig) {
+		t.Errorf("ReadConfigStrict error = %v, want wrapped ErrInvalidConfig", err)
 	}
 }
