@@ -7,6 +7,9 @@ bin/*
 # Runtime state — machine state, not project intent
 .speccraft/state.json
 
+# Claude Code local settings — machine-local permission allowlists, not project intent
+.claude/
+
 # Devcontainer local env (auth tokens, secrets)
 .env.devcontainer
 
