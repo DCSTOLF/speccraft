@@ -1,0 +1,9 @@
+# Domain: cross-env-portability
+
+Executing correctly outside the dev devcontainer: plugin-root self-resolution and zsh-safe sourcing of `commands/**/*.lib.sh`.
+
+- Every `commands/**/*.lib.sh` that resolves its own directory uses the single canonical cross-shell idiom `${BASH_SOURCE[0]:-$0}` so it sources under bash and real zsh with `set -u`; an exact-form grep guard rejects any other `${BASH_SOURCE[0]}` use, and a real-`zsh -uc 'source …'` leg (zsh is a declared test prerequisite, never silently skipped) pins it (spec 0029)
+- `speccraft-state plugin-root` prints and validates the plugin's own install directory; a directory is a valid root iff it contains all of `.claude-plugin/plugin.json` (the identity anchor), `bin/`, `commands/`, and `templates/` (spec 0030)
+- Resolution precedence is: `$SPECCRAFT_PLUGIN_ROOT` (must validate or hard-error), then `$CLAUDE_PLUGIN_ROOT` if set and valid, then self-derivation via `os.Executable()` → `filepath.EvalSymlinks` → ascend to the nearest validating ancestor (handling installed and dogfood layouts), else exit non-zero naming each source tried (spec 0030)
+- Command docs resolve `PLUGIN_ROOT="$(speccraft-state plugin-root)"` once before their first plugin-relative access (failing fast on error), replacing every `$CLAUDE_PLUGIN_ROOT/{bin,commands,templates}` dereference; `hooks/` are exempt (they reliably receive the env var) and this repo's `.devcontainer` exports `SPECCRAFT_PLUGIN_ROOT` at the working tree so dogfood never resolves to a stale cache copy on `PATH` (spec 0030)
+- No zsh-reserved identifier (`status`, `path`, `pipestatus`, …) is assigned as a shell variable in any `commands/**/*.lib.sh`, enforced by an exact-form grep guard plus an authoritative real-`zsh -uc "source <lib>"` backstop leg with empty stderr (spec 0030)
