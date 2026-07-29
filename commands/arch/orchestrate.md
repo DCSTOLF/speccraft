@@ -47,15 +47,51 @@ members_briefs="$(orch_parse_decomposition "$WS_ROOT/.speccraft/decomposition.ts
 `orch_parse_decomposition` rejects a tab-less line, empty member/brief, a duplicate
 member, or a member-path outside `^[A-Za-z0-9._/-]+$`.
 
-## 3. Seed member rows (rows only — no dispatch here)
+## 3. Seed member rows — idempotent, create-if-absent (rows only)
 
-For each confirmed member, record the row in the ledger. **Do NOT dispatch
+For each confirmed member, record its row in the ledger. **Do NOT dispatch
 `spec:new` at seeding** — that happens once, in the `new` phase, so `new` is never
-double-dispatched:
+double-dispatched. Seeding is **create-if-absent**: seed the row **only when the
+member is not already in the ledger for this design**. On a re-run you must
+**never re-`ledger-set … spec ""`** on an existing row — that would erase a `spec`
+ref captured before a restart and break re-entry for every later phase.
 
 ```bash
-speccraft-state ledger-set "$DESIGN" "$member" spec ""   # seed the row
+# create-if-absent: only seed when the member has no row yet for $DESIGN
+if ! speccraft-state reconcile "$DESIGN" | grep -q $'\t'"$member"$'\t'; then
+  speccraft-state ledger-set "$DESIGN" "$member" spec ""   # seed the row once
+fi
 ```
+
+## 3b. Crash-safe re-entry (spec 0040) — resolve BEFORE dispatch
+
+Before dispatching a member's next phase, resolve re-entry so a phase that
+**succeeded but crashed before the ledger advanced** is never re-run (no
+double-allocate, no re-close). Read the member's `in_flight` and status:
+
+```bash
+phase="$(orch_in_flight_phase "$in_flight")"          # bare or phase=… ; empty if idle
+status="$(cd "$member_dir" && speccraft-state get-status "$ref" 2>/dev/null || true)"
+```
+
+Precedence is **`new`-first** (its key is the artifact's *existence* + the ref must
+be captured):
+
+- **`new` phase** (resuming `in_flight=new` **or** a fresh start):
+  `ref="$(orch_find_member_spec "$member_dir" "$DESIGN")"`.
+  - non-empty → **adopt**: `ledger-set … spec "$ref"` **then**
+    `ledger-set … last_completed_phase new`, clear `in_flight`/`blocked` — **no
+    `spec:new` dispatch** (captures the ref a crash dropped; the ledger `spec` is
+    never left empty).
+  - empty → **reattempt**: dispatch `spec:new` **once**, then write the returned ref
+    (`ledger-set … spec <ref>`) **as soon as it is known**.
+- **any other phase** with non-empty `in_flight`: `case "$(orch_reentry "$phase"
+  "$status")"` — **adopt** → `ledger-set … last_completed_phase "$(orch_status_token
+  "$status")"`, clear `in_flight`/`blocked` (**no re-dispatch**); **reattempt** →
+  clear `in_flight`, re-run the phase.
+
+For the `review → revise` loop, write `in_flight` in the **structured form**
+`phase=review iteration=<n>` so an escalation/crash resumes with its iteration count.
 
 ## 4. Drive each member — resume, dispatch, apply
 

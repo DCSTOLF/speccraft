@@ -158,3 +158,104 @@ orch_apply_result() {
   fi
   set_ledger in_flight ""
 }
+
+# ==== spec 0040: crash-safe re-entry helpers ====
+
+# orch_status_ordinal <status> — rank a member-spec status for re-entry comparison
+# ("" / blocked never reach a completion ordinal). Unknown non-empty → error.
+orch_status_ordinal() {
+  case "${1-}" in
+    "")              echo -1 ;;
+    blocked)         echo -1 ;;
+    draft)           echo 0 ;;
+    reviewed)        echo 1 ;;
+    planned)         echo 2 ;;
+    in-progress)     echo 3 ;;
+    closed|archived) echo 4 ;;
+    *)               orchestrate_error "unknown status: '${1-}'" ;;
+  esac
+}
+
+# orch_status_token <status> — the ledger token a completion status implies (adopt
+# jumps the pointer here). "" / blocked / unknown → error (only called on adopt).
+orch_status_token() {
+  case "${1-}" in
+    draft)           echo new ;;
+    reviewed)        echo reviewed ;;
+    planned)         echo planned ;;
+    in-progress)     echo implemented ;;
+    closed|archived) echo validated ;;
+    *)               orchestrate_error "no ledger token for status: '${1-}'" ;;
+  esac
+}
+
+# orch_phase_completion_status <phase> — the status that proves a phase completed.
+orch_phase_completion_status() {
+  case "${1-}" in
+    new)       echo draft ;;
+    review)    echo reviewed ;;
+    plan)      echo planned ;;
+    implement) echo in-progress ;;
+    validate)  echo closed ;;
+    *)         orchestrate_error "unknown phase: '${1-}'" ;;
+  esac
+}
+
+# orch_reentry <in_flight_phase> <member_status> — echo `adopt` when the member's
+# status ordinal >= the phase's completion ordinal, else `reattempt`. "" / blocked
+# (ordinal -1) never adopt.
+orch_reentry() {
+  local phase="${1-}" st="${2-}" member_ord comp_status comp_ord
+  member_ord="$(orch_status_ordinal "$st")" || return 1
+  comp_status="$(orch_phase_completion_status "$phase")" || return 1
+  comp_ord="$(orch_status_ordinal "$comp_status")" || return 1
+  if [ "$member_ord" -ge "$comp_ord" ]; then
+    echo adopt
+  else
+    echo reattempt
+  fi
+}
+
+# orch_in_flight_phase <in_flight_value> — extract the phase: a bare token (no `=`)
+# is the phase; a structured value yields the first `phase=<p>` token (any position,
+# first-wins); `=` tokens without `phase=`, or empty, → error.
+orch_in_flight_phase() {
+  local val="${1-}" tok
+  case "$val" in
+    "") orchestrate_error "empty in_flight value" ;;
+    *=*)
+      for tok in $val; do
+        case "$tok" in phase=*) echo "${tok#phase=}"; return 0 ;; esac
+      done
+      orchestrate_error "in_flight has no phase= token: '$val'"
+      ;;
+    *) echo "$val" ;;
+  esac
+}
+
+# orch_find_member_spec <member-root> <design-id> — crash-safe adoption key for the
+# `new` phase: echo the NNNN-slug of the member spec whose `informed-by` frontmatter
+# names `design/<design-id>` (what `spec:new --from design/<id>` writes). Scans
+# specs/* then specs/.archive/*. Zero → empty, exit 0. ≥2 → error (ambiguous — the
+# very double-allocate this prevents). A get-frontmatter READ failure on any
+# candidate → error (never a false zero-match).
+orch_find_member_spec() {
+  local root="${1-}" design="${2-}" spec fm d
+  local -a matches=()
+  for d in "$root"/specs/*/ "$root"/specs/.archive/*/; do
+    spec="${d}spec.md"
+    [ -f "$spec" ] || continue
+    if fm="$(speccraft-state get-frontmatter "$spec" informed-by 2>/dev/null)"; then
+      case "$fm" in
+        *"design/$design"*) matches+=("$(basename "$d")") ;;
+      esac
+    else
+      orchestrate_error "get-frontmatter read failure on '$spec'"; return 1
+    fi
+  done
+  case "${#matches[@]}" in
+    0) : ;;
+    1) echo "${matches[0]}" ;;
+    *) orchestrate_error "ambiguous adoption: ${#matches[@]} member specs back-reference design/$design"; return 1 ;;
+  esac
+}

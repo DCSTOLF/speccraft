@@ -277,3 +277,188 @@ ls_() {
   grep -q 'ledger-set' "$md"
   grep -q 'reconcile' "$md"
 }
+
+# ==== spec 0040: crash-safe re-entry ====
+
+# --- AC1: status ordinal / token / phase-completion (direct) ---
+
+@test "orch_status_ordinal: maps the status vocabulary to ordinals" {
+  source "$ORCH_LIB"
+  run orch_status_ordinal "";            [ "$output" = "-1" ]
+  run orch_status_ordinal blocked;       [ "$output" = "-1" ]
+  run orch_status_ordinal draft;         [ "$output" = "0" ]
+  run orch_status_ordinal reviewed;      [ "$output" = "1" ]
+  run orch_status_ordinal planned;       [ "$output" = "2" ]
+  run orch_status_ordinal in-progress;   [ "$output" = "3" ]
+  run orch_status_ordinal closed;        [ "$output" = "4" ]
+  run orch_status_ordinal archived;      [ "$output" = "4" ]
+}
+
+@test "orch_status_ordinal: non-empty unknown status errors (stderr, non-zero)" {
+  source "$ORCH_LIB"
+  run orch_status_ordinal bogus
+  [ "$status" -ne 0 ]; [[ "$output" == *"orchestrate:"* ]]
+}
+
+@test "orch_status_token: maps a completion status to its ledger token" {
+  source "$ORCH_LIB"
+  run orch_status_token draft;        [ "$output" = "new" ]
+  run orch_status_token reviewed;     [ "$output" = "reviewed" ]
+  run orch_status_token planned;      [ "$output" = "planned" ]
+  run orch_status_token in-progress;  [ "$output" = "implemented" ]
+  run orch_status_token closed;       [ "$output" = "validated" ]
+  run orch_status_token archived;     [ "$output" = "validated" ]
+}
+
+@test "orch_status_token: empty, blocked, unknown all error (non-zero)" {
+  source "$ORCH_LIB"
+  run orch_status_token "";      [ "$status" -ne 0 ]
+  run orch_status_token blocked; [ "$status" -ne 0 ]
+  run orch_status_token bogus;   [ "$status" -ne 0 ]
+}
+
+@test "orch_phase_completion_status: maps each phase to its proving status" {
+  source "$ORCH_LIB"
+  run orch_phase_completion_status new;       [ "$output" = "draft" ]
+  run orch_phase_completion_status review;    [ "$output" = "reviewed" ]
+  run orch_phase_completion_status plan;      [ "$output" = "planned" ]
+  run orch_phase_completion_status implement; [ "$output" = "in-progress" ]
+  run orch_phase_completion_status validate;  [ "$output" = "closed" ]
+}
+
+@test "orch_phase_completion_status: unknown phase errors (non-zero)" {
+  source "$ORCH_LIB"
+  run orch_phase_completion_status bogus; [ "$status" -ne 0 ]
+}
+
+# --- AC2: re-entry decision ---
+
+@test "orch_reentry: load-bearing rows" {
+  source "$ORCH_LIB"
+  run orch_reentry validate closed;      [ "$output" = "adopt" ]      # no re-close
+  run orch_reentry new "";               [ "$output" = "reattempt" ]  # no spec yet
+  run orch_reentry review draft;         [ "$output" = "reattempt" ]
+  run orch_reentry implement in-progress;[ "$output" = "adopt" ]
+  run orch_reentry review closed;        [ "$output" = "adopt" ]      # out-of-band jump
+}
+
+@test "orch_reentry: adopt iff member ordinal >= phase completion ordinal" {
+  source "$ORCH_LIB"
+  run orch_reentry plan planned;    [ "$output" = "adopt" ]
+  run orch_reentry plan reviewed;   [ "$output" = "reattempt" ]   # 1 < 2
+  run orch_reentry validate in-progress; [ "$output" = "reattempt" ] # 3 < 4
+}
+
+@test "orch_reentry: unresolved or blocked member never adopts" {
+  source "$ORCH_LIB"
+  run orch_reentry new "";        [ "$output" = "reattempt" ]
+  run orch_reentry validate "";   [ "$output" = "reattempt" ]
+  run orch_reentry new blocked;   [ "$output" = "reattempt" ]
+  run orch_reentry validate blocked; [ "$output" = "reattempt" ]
+}
+
+# --- AC4: in_flight parse ---
+
+@test "orch_in_flight_phase: bare phase token echoed verbatim (0039 compat)" {
+  source "$ORCH_LIB"
+  run orch_in_flight_phase review;    [ "$output" = "review" ]
+  run orch_in_flight_phase implement; [ "$output" = "implement" ]
+}
+
+@test "orch_in_flight_phase: extracts phase= from any position, first wins on dup" {
+  source "$ORCH_LIB"
+  run orch_in_flight_phase "phase=review iteration=2 awaiting_human=1"; [ "$output" = "review" ]
+  run orch_in_flight_phase "iteration=2 phase=review";                  [ "$output" = "review" ]
+  run orch_in_flight_phase "phase=review phase=plan";                   [ "$output" = "review" ]
+}
+
+@test "orch_in_flight_phase: '=' tokens without phase=, and empty, each error" {
+  source "$ORCH_LIB"
+  run orch_in_flight_phase "iteration=2 awaiting_human=1"; [ "$status" -ne 0 ]
+  run orch_in_flight_phase ""; [ "$status" -ne 0 ]
+}
+
+# --- AC3: crash-safe new adoption (orch_find_member_spec) ---
+
+mk_member_spec() {  # <root> <ref> <informed-by-value> [archive]
+  local root="$1" ref="$2" ib="$3" sub="specs"
+  [ "${4:-}" = "archive" ] && sub="specs/.archive"
+  local p="$root/$sub/$ref/spec.md"
+  mkdir -p "$(dirname "$p")"
+  printf -- '---\nid: "%s"\ninformed-by: [%s]\n---\n# %s\n' "$ref" "$ib" "$ref" > "$p"
+}
+
+@test "orch_find_member_spec: returns the ref whose informed-by names design/<id> (specs/)" {
+  source "$ORCH_LIB"
+  mk_member_spec "$TEST_REPO" 0007-a "design/0001-demo"
+  run orch_find_member_spec "$TEST_REPO" 0001-demo
+  [ "$status" -eq 0 ]; [ "$output" = "0007-a" ]
+}
+
+@test "orch_find_member_spec: also scans specs/.archive/" {
+  source "$ORCH_LIB"
+  mk_member_spec "$TEST_REPO" 0009-c "design/0001-demo" archive
+  run orch_find_member_spec "$TEST_REPO" 0001-demo
+  [ "$status" -eq 0 ]; [ "$output" = "0009-c" ]
+}
+
+@test "orch_find_member_spec: zero back-references -> empty output, exit 0" {
+  source "$ORCH_LIB"
+  mk_member_spec "$TEST_REPO" 0007-a "design/0002-other"
+  run orch_find_member_spec "$TEST_REPO" 0001-demo
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+}
+
+@test "orch_find_member_spec: two matches error (ambiguous key)" {
+  source "$ORCH_LIB"
+  mk_member_spec "$TEST_REPO" 0007-a "design/0001-demo"
+  mk_member_spec "$TEST_REPO" 0008-b "design/0001-demo"
+  run orch_find_member_spec "$TEST_REPO" 0001-demo
+  [ "$status" -ne 0 ]; [[ "$output" == *"orchestrate:"* ]]
+}
+
+@test "orch_find_member_spec: a get-frontmatter read failure errors (no false zero)" {
+  source "$ORCH_LIB"
+  [ "$(id -u)" -ne 0 ] || skip "chmod 000 does not deny read as root"
+  mk_member_spec "$TEST_REPO" 0007-a "design/0001-demo"
+  chmod 000 "$TEST_REPO/specs/0007-a/spec.md"
+  run orch_find_member_spec "$TEST_REPO" 0001-demo
+  chmod 644 "$TEST_REPO/specs/0007-a/spec.md" 2>/dev/null || true
+  [ "$status" -ne 0 ]
+}
+
+@test "orch_find_member_spec: 0001 vs 0001-slug informed-by form mismatch is a miss" {
+  source "$ORCH_LIB"
+  mk_member_spec "$TEST_REPO" 0007-a "design/0001"
+  run orch_find_member_spec "$TEST_REPO" 0001-demo
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+}
+
+# --- AC5: orchestrate.md re-entry contract (grep, spec 0040) ---
+
+@test "orchestrate.md: documents idempotent create-if-absent seeding" {
+  local md="$PLUGIN_DIR/commands/arch/orchestrate.md"
+  grep -qi 'create-if-absent' "$md"
+}
+
+@test "orchestrate.md: resume reads in_flight via orch_in_flight_phase" {
+  local md="$PLUGIN_DIR/commands/arch/orchestrate.md"
+  grep -q 'orch_in_flight_phase' "$md"
+}
+
+@test "orchestrate.md: branches on orch_reentry with adopt via orch_status_token" {
+  local md="$PLUGIN_DIR/commands/arch/orchestrate.md"
+  grep -q 'orch_reentry' "$md"
+  grep -q 'orch_status_token' "$md"
+}
+
+@test "orchestrate.md: new-first adoption via orch_find_member_spec" {
+  local md="$PLUGIN_DIR/commands/arch/orchestrate.md"
+  grep -q 'orch_find_member_spec' "$md"
+}
+
+@test "orchestrate.md: structured in_flight for the review loop" {
+  local md="$PLUGIN_DIR/commands/arch/orchestrate.md"
+  grep -q 'phase=review' "$md"
+  grep -qi 'iteration' "$md"
+}

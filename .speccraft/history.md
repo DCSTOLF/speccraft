@@ -2,6 +2,17 @@
 
 Append-only. Newest first.
 
+## 2026-07-29 — Crash-safe conductor re-entry completes the design-0001 arc (spec 0040)
+
+**Spec:** specs/0040-conductor-crash-safe-reentry/ (crash-safety follow-up to the 0039 MVP; status: closed). Additive shell + markdown (extends orchestrate.lib.sh/.md + the hermetic e2e). ZERO `/speccraft:spec:override`; full `tests/hooks/` (215) + `go test ./...` green.
+**Decision:** Close the crash window design 0001 named — a phase whose delegated command SUCCEEDED but crashed before the ledger advanced — so re-entry never double-allocates a spec or re-closes a closed one. On resume, before re-dispatching an `in_flight` member, inspect the member's real `spec.md` status and **adopt** (jump the pointer to the artifact's token) or **reattempt**. Six new pure lib helpers: `orch_status_ordinal`/`orch_status_token`/`orch_phase_completion_status` (the status↔ordinal↔token maps), `orch_reentry` (adopt iff member-ordinal ≥ phase-completion-ordinal; `""`/`blocked` never adopt; adopt jumps to `orch_status_token(status)` so an out-of-band `review`+`closed` lands on `validated`, not a partial replay), `orch_find_member_spec` (crash-safe `new` adoption keyed on the **`informed-by: [design/<id>]`** frontmatter `spec:new` actually writes — NOT a `design:` field; ≥2 matches or a get-frontmatter read failure → error, never a false zero), and `orch_in_flight_phase` (bare 0039 token or first `phase=<p>`; malformed → error). Runbook gains create-if-absent seeding (never re-`spec ""` on an existing row — the restart-clobber fix), a `new`-first re-entry resolution, and structured `phase=review iteration=<n>`. Three hermetic e2e crash legs (each a fresh workspace) prove it DIRECTLY: no-re-close (validate-mock dispatch sentinel == 0), no-double-allocate (`new`-mock sentinel == 0 + dir-count + non-empty ledger spec), restart-safety.
+
+**Divergence (honest).** Literal spec-id-BEFORE-dispatch is infeasible without changing `spec:new`'s allocation contract (member repos number independently); superseded by post-hoc `orch_find_member_spec` adoption + write-ref-asap. This closes the crash window; it does not deliver id-before-dispatch.
+
+**Review.** Cross-model (codex changes-requested → resolved; claude-p approve-with-comments; both invoked cleanly after the agents.toml fix) caught the load-bearing `design:`→`informed-by` key error, the seeding-clobbers-ref-on-restart bug, and the missing `new`-dispatch sentinel; the self-check caught the adopt-by-one multi-phase bug (→ jump to artifact token) and the `in_flight=new` ref-drop (→ `new`-first precedence).
+
+**Arc complete.** 0037 topology → 0038 ledger+reconcile → 0039 orchestrate command → 0040 crash-safe re-entry. The design-0001 conductor is buildable, resumable, failure-isolated, and crash-idempotent. Deferred: concurrent-conductor locking; a release bump can now bundle 0037–0040.
+
 ## 2026-07-29 — Architect conductor ships: /speccraft:arch:orchestrate drives the per-member lifecycle (spec 0039)
 
 **Spec:** specs/0039-arch-orchestrate-conductor/ (Spec B orchestration surface of design 0001; status: closed). Shell + markdown (not Go): a pure `commands/arch/orchestrate.lib.sh` + a `commands/arch/orchestrate.md` runbook. 28 new bats tests (`tests/hooks/arch-orchestrate.bats`); full `tests/hooks/` (192) + `go test ./...` green. **ZERO `/speccraft:spec:override`** — shell/markdown are ungated by the TDD guard; bats supplied RED-before-GREEN.

@@ -55,12 +55,17 @@ mock_phase() {
   spec="$root/specs/$ref/spec.md"
   case "$action" in
     new)
+      # File-based dispatch sentinel (mocks run in a subshell, so a var counter
+      # would not survive). Stamp `informed-by: [design/<DESIGN>]` — what real
+      # spec:new writes and what orch_find_member_spec keys on.
+      echo n >> "${SENTINEL_NEW:-/dev/null}"
       mkdir -p "$(dirname "$spec")"
-      printf -- '---\nid: "%s"\nstatus: draft\n---\n# %s\n' "$ref" "$ref" > "$spec" ;;
+      printf -- '---\nid: "%s"\ninformed-by: [design/%s]\nstatus: draft\n---\n# %s\n' "$ref" "$DESIGN" "$ref" > "$spec" ;;
     review)    speccraft-state set-status "$spec" reviewed ;;
     plan)      speccraft-state set-status "$spec" planned ;;
     implement) speccraft-state set-status "$spec" in-progress ;;
     validate)
+      echo v >> "${SENTINEL_VALIDATE:-/dev/null}"
       if [ "$fail_validate" = "1" ]; then return 1; fi   # tests-gate fails
       speccraft-state set-status "$spec" closed ;;
     *) return 1 ;;
@@ -120,5 +125,101 @@ echo "$recon" | grep -q '^done: true$'          || fail "reconcile should be don
 echo "$recon" | grep -qE '^closed'$'\t''\./web'  || fail "web should be closed after retry"
 grep -q 'blocked: validate failed' "$WS/.speccraft/ledger.md" && fail "web blocked must be cleared on clean retry"
 note "web retry cleared blocked + closed; design rolled up to done:true"
+
+# ---- 6. Crash-safe re-entry (spec 0040) — each leg in its own fresh workspace ----
+
+# read_ledger_field <ws> <member> <field> — echo a member row's field from ledger.md.
+read_ledger_field() {
+  local ledger="$1/.speccraft/ledger.md"
+  [ -f "$ledger" ] || { printf ''; return 0; }
+  awk -v member="### $2" -v key="$3" '
+    $0 == member { inb=1; next }
+    /^### / || /^## / { inb=0 }
+    inb && index($0, key ":") == 1 { v=substr($0, length(key)+2); sub(/^ /,"",v); print v; exit }
+  ' "$ledger"
+}
+
+# reentry_resolve <ws> <design> <member> <ref> — mirror the runbook's re-entry:
+# new-first adoption via orch_find_member_spec; other phases via orch_reentry with
+# the adopt pointer from orch_status_token; reattempt re-runs the mocked phase.
+reentry_resolve() {
+  local ws="$1" design="$2" member="$3" ref="$4"
+  local dir="$ws/${member#./}" in_flight phase found st decision
+  in_flight="$(read_ledger_field "$ws" "$member" in_flight)"
+  [ -n "$in_flight" ] || return 0
+  phase="$(orch_in_flight_phase "$in_flight")"
+  if [ "$phase" = "new" ]; then
+    found="$(orch_find_member_spec "$dir" "$design")"
+    if [ -n "$found" ]; then
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" spec "$found" )
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" last_completed_phase new )
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" in_flight "" )
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" blocked "" )
+    else
+      ( cd "$dir" && mock_phase new "$ref" 0 )
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" spec "$ref" )
+      orch_apply_result "$ws" "$design" "$member" new 0
+    fi
+  else
+    st="$(cd "$dir" && speccraft-state get-status "$ref" 2>/dev/null || true)"
+    decision="$(orch_reentry "$phase" "$st")"
+    if [ "$decision" = "adopt" ]; then
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" last_completed_phase "$(orch_status_token "$st")" )
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" in_flight "" )
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" blocked "" )
+    else
+      ( cd "$ws" && speccraft-state ledger-set "$design" "$member" in_flight "" )
+      ( cd "$dir" && mock_phase "$phase" "$ref" 0 )
+      orch_apply_result "$ws" "$design" "$member" "$phase" 0
+    fi
+  fi
+}
+
+new_crash_ws() {  # echo a fresh kind=workspace with a member ./m repo
+  local ws; ws="$(mktemp -d -t orch-crash.XXXXXX)"
+  mkdir -p "$ws/.speccraft" "$ws/m/.speccraft"
+  printf 'kind = "workspace"\n' > "$ws/.speccraft/speccraft.toml"
+  printf '%s' "$ws"
+}
+
+echo "==> Crash leg 1: no-re-close (in_flight=validate, spec already closed)..."
+WS1="$(new_crash_ws)"; SENTINEL_VALIDATE="$WS1/sentinel_validate"; : > "$SENTINEL_VALIDATE"
+mkdir -p "$WS1/m/specs/0001-m"
+printf -- '---\nid: "0001-m"\ninformed-by: [design/%s]\nstatus: closed\n---\n' "$DESIGN" > "$WS1/m/specs/0001-m/spec.md"
+( cd "$WS1" && speccraft-state ledger-set "$DESIGN" ./m spec 0001-m )
+( cd "$WS1" && speccraft-state ledger-set "$DESIGN" ./m last_completed_phase implemented )
+( cd "$WS1" && speccraft-state ledger-set "$DESIGN" ./m in_flight validate )
+reentry_resolve "$WS1" "$DESIGN" ./m 0001-m
+[ "$(read_ledger_field "$WS1" ./m last_completed_phase)" = "validated" ] || fail "leg1: pointer must adopt to validated"
+[ ! -s "$SENTINEL_VALIDATE" ] || fail "leg1: validate mock must NOT be re-dispatched (no re-close)"
+( cd "$WS1" && speccraft-state reconcile "$DESIGN" ) | grep -q '^done: true$' || fail "leg1: reconcile must be done:true"
+note "leg1: adopted in_flight=validate → validated; done:true; validate never re-dispatched"
+rm -rf "$WS1"; unset SENTINEL_VALIDATE
+
+echo "==> Crash leg 2: no-double-allocate (in_flight=new, design-linked spec exists)..."
+WS2="$(new_crash_ws)"; SENTINEL_NEW="$WS2/sentinel_new"; : > "$SENTINEL_NEW"
+mkdir -p "$WS2/m/specs/0003-existing"
+printf -- '---\nid: "0003-existing"\ninformed-by: [design/%s]\nstatus: draft\n---\n' "$DESIGN" > "$WS2/m/specs/0003-existing/spec.md"
+( cd "$WS2" && speccraft-state ledger-set "$DESIGN" ./m spec "" )
+( cd "$WS2" && speccraft-state ledger-set "$DESIGN" ./m in_flight new )
+before_dirs="$(find "$WS2/m/specs" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+reentry_resolve "$WS2" "$DESIGN" ./m 0003-existing
+after_dirs="$(find "$WS2/m/specs" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+[ "$(read_ledger_field "$WS2" ./m spec)" = "0003-existing" ] || fail "leg2: ledger spec must be captured (non-empty)"
+[ "$before_dirs" = "$after_dirs" ] || fail "leg2: no second specs/ dir may be created"
+[ ! -s "$SENTINEL_NEW" ] || fail "leg2: spec:new must NOT be re-dispatched"
+note "leg2: adopted existing 0003-existing; ledger spec captured; no double-allocate; spec:new not re-dispatched"
+rm -rf "$WS2"; unset SENTINEL_NEW
+
+echo "==> Crash leg 3: restart-safety (idempotent re-seed preserves the captured ref)..."
+WS3="$(new_crash_ws)"
+( cd "$WS3" && speccraft-state ledger-set "$DESIGN" ./m spec 0005-cap )   # a ref captured pre-restart
+# runbook's create-if-absent seed: the row exists → must NOT re-`spec ""`.
+if ! ( cd "$WS3" && speccraft-state reconcile "$DESIGN" ) | grep -q $'\t''\./m'$'\t'; then
+  ( cd "$WS3" && speccraft-state ledger-set "$DESIGN" ./m spec "" )
+fi
+[ "$(read_ledger_field "$WS3" ./m spec)" = "0005-cap" ] || fail "leg3: create-if-absent re-seed must preserve the captured ref"
+note "leg3: idempotent re-seed preserved the captured spec ref"
+rm -rf "$WS3"
 
 echo "==> arch_orchestrate_cycle.sh: ALL PASSED"
