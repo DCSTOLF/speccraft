@@ -148,6 +148,11 @@ run_helper_unit_tests() {
   ( bash "$E2E_DIR/arch_orchestrate_cycle.sh" ) \
     || fail "arch_orchestrate_cycle.sh failed"
   pass "arch_orchestrate_cycle.sh"
+  # spec 0042 — init --workspace end-to-end (hermetic: real init.lib.sh workspace
+  # helpers + speccraft-state readers scaffold a fresh workspace root).
+  ( bash "$E2E_DIR/workspace_init_cycle.sh" ) \
+    || fail "workspace_init_cycle.sh failed"
+  pass "workspace_init_cycle.sh"
 }
 
 # ---- assertion helpers ----

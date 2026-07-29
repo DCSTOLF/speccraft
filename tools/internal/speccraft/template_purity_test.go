@@ -35,3 +35,38 @@ func Test_ShippedTemplate_ConventionsIsStackAgnostic(t *testing.T) {
 		}
 	}
 }
+
+// Spec 0042 AC5 — the workspace index template must carry the structural marker
+// + a ## Members header (a grep-able structural signal, not model prose) and
+// stay stack-agnostic like every shipped template.
+func Test_ShippedTemplate_WorkspaceIndex_HasMarkerMembersHeaderAndStackAgnostic(t *testing.T) {
+	root := findDocsRoot(t)
+	tmpl := readFile(t, filepath.Join(root, "templates", "speccraft", "index.workspace.md"))
+
+	if !strings.Contains(tmpl, "<!-- speccraft:kind = workspace -->") {
+		t.Errorf("index.workspace.md is missing the structural marker %q (spec 0042 AC5)",
+			"<!-- speccraft:kind = workspace -->")
+	}
+	if !strings.Contains(tmpl, "## Members") {
+		t.Errorf("index.workspace.md is missing the ## Members header (spec 0042 AC5)")
+	}
+
+	// Language idioms + repo-index (code-repo) leakage that a workspace-coordination
+	// root must not carry.
+	forbidden := []string{
+		"fmt.Errorf",
+		"slog",
+		"^func Test",
+		"*_test.go",
+		"PascalCase",
+		"internal/domain/",
+		"internal/store/",
+		"HTTP handlers",
+	}
+	for _, tok := range forbidden {
+		if strings.Contains(tmpl, tok) {
+			t.Errorf("index.workspace.md contains stack/repo-specific token %q; "+
+				"the shipped workspace template must stay stack-agnostic (spec 0042 AC5 / guardrails §Template purity)", tok)
+		}
+	}
+}

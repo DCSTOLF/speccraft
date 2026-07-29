@@ -10,7 +10,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
 
-const version = "1.12.0"
+const version = "1.13.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -334,6 +334,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "list-members":
 		return listMembers(stdout, stderr)
 
+	case "config-kind":
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: speccraft-state config-kind <dir>")
+			return 1
+		}
+		return configKind(args[1], stdout, stderr)
+
+	case "find-workspace-root":
+		return findWorkspaceRoot(stdout, stderr)
+
 	case "get-status":
 		if len(args) < 2 {
 			fmt.Fprintln(stderr, "usage: speccraft-state get-status <spec-ref>")
@@ -553,5 +563,7 @@ Usage:
   speccraft-state ledger-set <design-id> <member-path> <field> <value>
                                           Upsert a member field in the workspace ledger.md (spec 0038)
   speccraft-state reconcile <design-id>  Roll up a design's member spec statuses (spec 0038)
+  speccraft-state config-kind <dir>      Print the strict config kind of <dir> (repo|workspace) (spec 0042)
+  speccraft-state find-workspace-root    Print the nearest workspace-root ancestor of cwd (spec 0042)
   speccraft-state --version              Print version`)
 }

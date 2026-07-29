@@ -116,6 +116,42 @@ func getFrontmatter(specMd, key string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// configKind implements `speccraft-state config-kind <dir>` (spec 0042): print
+// the STRICT config kind of <dir> ("repo"|"workspace"). It first requires
+// <dir>/.speccraft/ to exist — otherwise ReadConfigStrict would coerce a missing
+// config to kind=repo, wrongly marking any bare directory a member candidate.
+// A strict-invalid kind is a non-zero error naming the offending value. This is
+// the per-child oracle ws_detect_members consults and the AC1 kind round-trip
+// check.
+func configKind(dir string, stdout, stderr io.Writer) int {
+	if !fileExists(filepath.Join(dir, ".speccraft")) {
+		fmt.Fprintf(stderr, "no .speccraft/ at %s\n", dir)
+		return 1
+	}
+	cfg, err := speccraft.ReadConfigStrict(dir)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, cfg.Kind)
+	return 0
+}
+
+// findWorkspaceRoot implements `speccraft-state find-workspace-root` (spec 0042):
+// print FindWorkspaceRoot(cwd) — the nearest kind=workspace ancestor, else the
+// plain repo root. It is the AC1 oracle that discriminates a workspace root from
+// a repo root (list-members cannot: its FindWorkspaceRoot falls back to FindRoot
+// and exits 0 for both kinds).
+func findWorkspaceRoot(stdout, stderr io.Writer) int {
+	root, err := speccraft.FindWorkspaceRoot("")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprintln(stdout, root)
+	return 0
+}
+
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil

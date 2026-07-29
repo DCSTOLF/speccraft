@@ -1,6 +1,6 @@
 ---
 description: "Bootstrap speccraft in this repository"
-argument-hint: "[--force]"
+argument-hint: "[--workspace] [--force]"
 allowed-tools: ["Bash", "Read", "Write", "Edit"]
 ---
 
@@ -31,13 +31,36 @@ Steps:
    containing `.git`. If none, error with: "No git repository found. Initialize
    one with `git init` first."
 
-4. If `.speccraft/` already exists and `$1` is not `--force`, refuse:
-   ".speccraft/ already exists. Use `/speccraft:init --force` to overwrite."
+3a. **Parse the mode flags (spec 0042).** Source the lib and normalize the
+    arguments — this recognizes `--workspace`/`--force` order-independently and
+    rejects any unknown flag or stray positional:
+    ```bash
+    source "$PLUGIN_ROOT/commands/init.lib.sh"
+    FLAGS="$(ws_arg_parse "$@")" || { echo "$FLAGS"; exit 1; }
+    grep -qx workspace <<<"$FLAGS" && MODE=workspace || MODE=repo
+    grep -qx force     <<<"$FLAGS" && FORCE=1        || FORCE=0
+    ```
+
+4. If `.speccraft/` already exists and `$FORCE` is not `1`, refuse:
+   ".speccraft/ already exists. Use `/speccraft:init [--workspace] --force` to overwrite."
+
+4a. **Workspace migration refusal (spec 0042 AC7).** When `MODE=workspace` and a
+    `.speccraft/` already exists (a `--force` re-init), read its current kind:
+    ```bash
+    KIND="$(speccraft-state config-kind "<repo>" 2>/dev/null || echo unknown)"
+    ```
+    If `KIND` is `repo`, REFUSE: "This root is a repo-kind speccraft project;
+    in-place migration to a workspace is out of scope. Create a workspace in a
+    fresh root instead." (Do not overwrite the repo config — this refusal takes
+    precedence over the `--force` overwrite matrix.) `KIND=workspace` proceeds
+    idempotently; a fresh root (no `.speccraft/`) has no migration question.
 
 5. Create `<repo>/.speccraft/` if it does not exist. Then copy each template
    by reading from PLUGIN_ROOT and writing to the repo:
 
-   - Read `$PLUGIN_ROOT/templates/speccraft/index.md`       → Write to `<repo>/.speccraft/index.md`
+   - **index.md — mode-dependent (spec 0042 AC5):**
+     - `MODE=repo`: Read `$PLUGIN_ROOT/templates/speccraft/index.md` → Write to `<repo>/.speccraft/index.md`
+     - `MODE=workspace`: Read `$PLUGIN_ROOT/templates/speccraft/index.workspace.md` → Write to `<repo>/.speccraft/index.md` (it carries the `<!-- speccraft:kind = workspace -->` marker + `## Members` header)
    - Read `$PLUGIN_ROOT/templates/speccraft/guardrails.md`  → Write to `<repo>/.speccraft/guardrails.md`
    - Read `$PLUGIN_ROOT/templates/speccraft/architecture.md`→ Write to `<repo>/.speccraft/architecture.md`
    - Read `$PLUGIN_ROOT/templates/speccraft/history.md`     → Write to `<repo>/.speccraft/history.md`
@@ -73,8 +96,9 @@ Steps:
    exists, so re-running `/speccraft:init` cannot silently nuke session
    state.
 
-8a. **Detect Python test roots.** Check whether `tests/` or `test/` exists at the
-    repo root (in that order). If found, ask the user:
+8a. **Detect Python test roots.** _(repo mode only — skip this step entirely when
+    `MODE=workspace`; a workspace root holds no code.)_ Check whether `tests/` or
+    `test/` exists at the repo root (in that order). If found, ask the user:
 
     ```
     Detected test directory: <name>/
@@ -91,6 +115,35 @@ Steps:
       `speccraft.toml` (same-directory sibling behaviour applies by default).
     - If both `tests/` and `test/` exist, prefer `tests/` and mention both in
       the prompt so the user can correct it manually if needed.
+
+8b. **Scaffold the workspace artifacts (spec 0042).** _(workspace mode only — run
+    only when `MODE=workspace`.)_ Discover candidate members, get approval, then
+    write the manifest + workspace kind via the lib (`init.lib.sh` is already
+    sourced from step 3a):
+
+    1. **Preserve a curated manifest.** If `<repo>/workspace.yml` already exists,
+       leave it untouched and SKIP member detection/approval entirely (AC6) — the
+       curated member list wins. Otherwise continue.
+    2. **Detect candidates** deterministically:
+       ```bash
+       CANDIDATES="$(ws_detect_members "<repo>")"   # sorted repo-kind children
+       ```
+    3. **Approve per candidate.** For each line in `$CANDIDATES`, ask the user
+       "Add `<child>/` as a workspace member? [Y/n]"; collect the approved
+       basenames into `MEMBERS` (space-separated). No candidates ⇒ empty set.
+    4. **Write the artifacts** in the AC9-mandated order (manifest first, then the
+       toml flip; the ledger is never created — AC4):
+       ```bash
+       ws_write_root "<repo>" $MEMBERS || { echo "workspace scaffold failed"; exit 1; }
+       ```
+       This writes `<repo>/workspace.yml` (canonical shape, members parse via
+       `speccraft-state list-members`) and flips `<repo>/.speccraft/speccraft.toml`
+       to `kind = "workspace"` (verify with `speccraft-state config-kind "<repo>"`
+       ⇒ `workspace` and `speccraft-state find-workspace-root` ⇒ `<repo>`). Add
+       `workspace.yml` and `speccraft.toml` to the printed file list in step 12.
+
+    Do NOT emit `kind = "workspace"` or a `workspace.yml` in repo mode — these
+    artifacts are produced only under this `--workspace` branch (AC8).
 
 9. Gather the following information from the user. If the user's message
    already contains pre-provided answers (e.g. `project='X'`, `stack='Y'`,
