@@ -2,6 +2,17 @@
 
 Append-only. Newest first.
 
+## 2026-07-29 — Architect conductor ships: /speccraft:arch:orchestrate drives the per-member lifecycle (spec 0039)
+
+**Spec:** specs/0039-arch-orchestrate-conductor/ (Spec B orchestration surface of design 0001; status: closed). Shell + markdown (not Go): a pure `commands/arch/orchestrate.lib.sh` + a `commands/arch/orchestrate.md` runbook. 28 new bats tests (`tests/hooks/arch-orchestrate.bats`); full `tests/hooks/` (192) + `go test ./...` green. **ZERO `/speccraft:spec:override`** — shell/markdown are ungated by the TDD guard; bats supplied RED-before-GREEN.
+**Decision:** Ship the conductor that *sequences* the existing `/speccraft:spec:*` commands across a `kind: workspace`'s member repos, cwd-scoped per member (never `--root`), resuming from the ledger pointer and rolling up via 0038's `reconcile`. Deterministic core = bats-tested lib helpers: `orch_next_phase`/`orch_completed_token` (the token machine `new→reviewed→planned→implemented→validated`, `revise` loops within `review` and never advances), `orch_should_pause` (checkpoint a: after `planned`, before `implement`; suppressed by `--straight-through`), `orch_review_verdict` (pass/revise/escalate — checkpoint b), `orch_parse_decomposition` (first-tab split, indented-`#` comments, safe member-path charset `^[A-Za-z0-9._/-]+$` rejecting a literal `'`), `orch_dispatch` (`(cd '<m>' && /speccraft:spec:<...>)`, six pinned commands incl. `validate→spec:close`, single-quoted, never `--root`), `orch_validate` (`sh -c` tests gate), and `orch_apply_result` (failure-isolated ledger transition via `ledger-set`). The runbook seeds member ROWS only (no double-`new`), resumes, dispatches, gates validate→`spec:close`, reconciles.
+
+**Design fold + scope honesty.** `answer-questions` is folded into `spec:new` (so tokens are five, not six); `validate` culminates in `/speccraft:spec:close` (the step that writes the `closed` status 0038's reconcile keys `Done` on — the self-check's critical catch). Cross-model review reframed this from "final slice" to the orchestration **MVP**: it ships resume-at-pointer + `in_flight` visibility (cleared on EVERY completed attempt) + blocked-set/clear, and **explicitly defers full crash-window idempotency to a follow-up (0040)** — design 0001 itself lists crash-safety as mechanism spikes #1/#4, not a settled contract.
+
+**Dogfood.** No guard gymnastics (not Go) — bats is the RED oracle; behavioral AC6 tests build `./bin/speccraft-state` and drive a real `kind=workspace` ledger. The zsh/bats-reserved `status` name is never assigned in the lib. Two aux-config nits logged (agents.toml: codex `--sandbox workspace-write` one-token; claude-p argv payload overflow → use stdin).
+
+**Deferred.** Full crash-safety → spec 0040; real-subagent e2e (mock-agent harness) + spike #1 runtime FindRoot → follow-up e2e; consolidation → `/speccraft:sync`; no version bump (a release step can now bundle 0037–0039, the whole design-0001 arc).
+
 ## 2026-07-28 — Conductor primitives ship: ledger.md read/write + reconcile rollup (spec 0038)
 
 **Spec:** specs/0038-conductor-ledger-reconcile/ (Spec B slice 1 of design 0001; status: closed). Test-first — 22 new test cases, full `go test ./...` green, `go vet` clean, ONE `/speccraft:spec:override`.
