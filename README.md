@@ -92,6 +92,23 @@ specs, and `/speccraft:history:compact` keeps history bounded. **Full reference,
 including the illustrated lifecycle, aux-agent setup, and convention enforcement:
 [docs/commands.md](./docs/commands.md).**
 
+### Architect: orchestrate a multi-repo workspace
+
+When a change spans several repos, the Architect lane coordinates a **workspace** — a
+single root that drives the spec lifecycle across member repos:
+
+```
+/speccraft:init --workspace              # scaffold a workspace root (speccraft.toml + workspace.yml)
+/speccraft:arch:new "Cross-repo auth"    # draft a technical design under design/<id>/
+/speccraft:arch:orchestrate <design-id>  # decompose → drive each member new→…→closed → reconcile
+```
+
+The conductor *sequences* the normal `/speccraft:spec:*` commands inside each member
+(never bypassing the TDD guard), tracks progress in a `.speccraft/ledger.md`, resumes
+after a crash, and isolates a blocked member so its siblings keep moving. A lone repo
+is a "workspace of one" — you never need this until you do. Full guide:
+**[docs/commands.md § Multi-repo workspaces](./docs/commands.md#multi-repo-workspaces--the-architect-conductor).**
+
 ---
 
 ## How speccraft compares

@@ -36,6 +36,112 @@ can ignore them entirely and go straight to specs.
 | `/speccraft:arch:decide` | Mark the active design decided (draft → decided). |
 | `/speccraft:arch:review` | arch-critic self-check, then cross-model review of the design. |
 | `/speccraft:arch:close` | Route durable decisions through memory-keeper; clear the Architect lane. |
+| `/speccraft:arch:orchestrate <design-id>` | Drive the spec lifecycle across a workspace's member repos (see below). |
+
+For single-repo work these lanes are entirely optional. The Architect
+**conductor** (`arch:orchestrate`) is the one piece that needs a workspace — covered
+next.
+
+## Multi-repo workspaces & the Architect conductor
+
+Most projects are a single repo, and everything above works without ever thinking
+about workspaces. When a change spans **several repos**, speccraft models that with a
+*workspace*: one coordination root that drives the ordinary per-repo spec lifecycle
+across each member. Nothing about the member repos changes — the conductor only
+*sequences* the same `/speccraft:spec:*` commands inside each one, and never bypasses
+the TDD guard or the review gates.
+
+### Topology: `repo` vs `workspace`
+
+A repo's kind is declared in `.speccraft/speccraft.toml`:
+
+```toml
+kind = "workspace"   # absent ⇒ "repo" (a monorepo is a single repo-kind member)
+```
+
+Only the `arch:*` commands and the conductor ever resolve the *workspace* root; the
+hot-path hook/guard only ever resolve the nearest *repo* root, so member repos behave
+exactly as standalone speccraft projects. A lone repo with no workspace ancestor is
+treated as a "workspace of one".
+
+### Bootstrapping a workspace — `/speccraft:init --workspace`
+
+```
+/speccraft:init --workspace
+```
+
+This scaffolds a workspace root: a `speccraft.toml` with `kind = "workspace"`, a
+`workspace.yml` member manifest, and the standard `.speccraft/` set with a
+workspace-flavored `index.md`. During init, speccraft scans the root's immediate
+child directories, proposes each one that is already a speccraft repo as a member for
+your approval, and writes only the approved entries. It never creates a ledger eagerly
+(that appears on first orchestration), never clobbers a curated `workspace.yml` on a
+`--force` re-init, and refuses to migrate an existing `repo`-kind root in place.
+
+`workspace.yml` is a deliberately tiny, non-YAML-dependent manifest at the workspace
+root:
+
+```yaml
+# speccraft workspace manifest — members orchestrated by /speccraft:arch:orchestrate
+members:
+  - path: api
+  - path: web
+#  - path: relative/child-repo
+```
+
+Each `path` is a repo-root-relative directory. Membership is authoritative and
+presence-preserving: a listed-but-missing member is warned, never dropped. Inspect it
+with `speccraft-state list-members` (`<present|missing>\t<path>` per line).
+
+### The conductor lifecycle — `/speccraft:arch:orchestrate <design-id>`
+
+The conductor turns a **technical design** into coordinated per-member specs. The
+usual flow:
+
+1. **Draft the design.** `/speccraft:arch:new "Cross-repo auth"` scaffolds
+   `design/<id>/design.md` and sets the Architect lane; iterate with
+   `/speccraft:arch:review`, settle with `/speccraft:arch:decide`.
+2. **Orchestrate.** `/speccraft:arch:orchestrate <design-id>` runs at the workspace
+   root and:
+   - **Decomposes** the design into a `<member-path> → one-line brief` mapping,
+     drafted by the model and **confirmed/edited by you** before anything runs.
+   - **Seeds** one ledger row per member (create-if-absent; a captured spec ref is
+     never erased on a re-run).
+   - **Drives each member** through the ordered phases
+     `new → reviewed → planned → implemented → validated`, dispatching each phase with
+     the working directory scoped **inside that member** — so its specs land in
+     `<member>/specs/`, resolved by the member's own repo root. `new` runs the
+     Socratic interview; `review` loops with `revise` under the cross-model verdict;
+     `validate` gates on the member's test command, then closes the member spec.
+   - **Reconciles** at the end: `speccraft-state reconcile <design-id>` rolls the
+     design up across members — done only when *every* member spec is `closed`.
+
+### The ledger
+
+Progress lives in `<workspace-root>/.speccraft/ledger.md` — a `history.md`-class
+markdown memory file (never `state.json`), keyed `## design <id>` → `### <member>` →
+fields (`spec`, `last_completed_phase`, `in_flight`, `blocked`, `updated`). It is the
+conductor's source of truth for resume, and you can read it directly.
+
+### Two human checkpoints
+
+The conductor stops only when a decision is genuinely yours:
+
+- **After `planned`, before `implement`** — approve the plan before code lands.
+  Suppress with `--straight-through`.
+- **On a stuck review loop** — when revisions hit the escalation ceiling, it
+  summarizes the sticking points and waits for your input.
+
+### Resilience: crash-safe resume & blocked isolation
+
+- **Resume-at-pointer.** Re-running `arch:orchestrate` picks up from each member's
+  ledger pointer. Before re-dispatching an in-flight phase it inspects the member's
+  real `spec.md` status and *adopts* an already-completed result rather than re-running
+  it — so a crash between "command succeeded" and "ledger advanced" never
+  double-allocates a spec or re-closes a closed one.
+- **Failure isolation.** A member whose phase fails is marked `blocked` (and its
+  `in_flight` cleared) while its siblings keep advancing; a clean re-attempt clears
+  `blocked`. One member's problem never stalls the workspace.
 
 ## Memory maintenance
 
