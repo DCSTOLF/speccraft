@@ -143,6 +143,11 @@ run_helper_unit_tests() {
   ( bash "$E2E_DIR/release_yml_asset_contract_test.sh" ) \
     || fail "release_yml_asset_contract_test.sh failed"
   pass "release_yml_asset_contract_test.sh"
+  # spec 0039 — architect conductor end-to-end (hermetic: real orchestrate.lib.sh
+  # + speccraft-state across a real 2-member workspace; discharges design spike #1).
+  ( bash "$E2E_DIR/arch_orchestrate_cycle.sh" ) \
+    || fail "arch_orchestrate_cycle.sh failed"
+  pass "arch_orchestrate_cycle.sh"
 }
 
 # ---- assertion helpers ----
