@@ -1,7 +1,7 @@
 ---
 id: "0001"
 title: "speccraft v1"
-status: in-progress
+status: closed
 created: 2026-05-09
 authors: [claude]
 packages: ["tools/cmd/speccraft-state", "tools/cmd/speccraft-guard", "tools/cmd/speccraft-drift", "tools/internal/speccraft", "tools/internal/delegate"]

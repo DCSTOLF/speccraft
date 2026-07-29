@@ -2,6 +2,10 @@
 
 Append-only. Newest first.
 
+## 2026-07-29 — Retroactively closed the genesis spec 0001 (speccraft v1)
+
+**Spec:** specs/0001-speccraft-v1/ (status: in-progress → closed; status reconciliation, no code change). The project-genesis spec that bootstrapped the plugin (hooks, the three Go binaries, commands, subagents, `.speccraft/` memory, e2e harness) had sat at `in-progress` since 2026-05-09 with 58/69 tasks done — the 11 open ones all manual-verification / early-phase-e2e placeholders, long since superseded by the shipped `tests/e2e/run.sh` harness, the release/verify pipeline (spec 0021), and the mock-agent e2e. Closed to reflect reality (`active_spec` was already null; v1 shipped and was hardened by the 40 specs through 0040). Retrospective changelog at specs/0001-speccraft-v1/changelog.md.
+
 ## 2026-07-29 — Crash-safe conductor re-entry completes the design-0001 arc (spec 0040)
 
 **Spec:** specs/0040-conductor-crash-safe-reentry/ (crash-safety follow-up to the 0039 MVP; status: closed). Additive shell + markdown (extends orchestrate.lib.sh/.md + the hermetic e2e). ZERO `/speccraft:spec:override`; full `tests/hooks/` (215) + `go test ./...` green.
