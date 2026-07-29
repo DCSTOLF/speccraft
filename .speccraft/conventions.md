@@ -638,7 +638,7 @@ Without this, any mock that reads stdin (e.g. `INPUT="$(cat)"`) blocks forever w
 - **Slash commands (`commands/**.md`):** YAML frontmatter with `description:`, `argument-hint:`, and `allowed-tools:`. Fully qualified command names live in the filename path (e.g. `commands/spec/new.md` becomes `/speccraft:spec:new`). The `argument-hint:` field may be `""` for commands that take no positional arguments (e.g. `commands/spec/close.md`, `commands/spec/revise.md`); it MUST still be present as a key so the contract is uniform. `allowed-tools:` is a YAML list of the tools the command body uses. See "Markdown frontmatter contract tightening" below.
 - **Subagents (`agents/*.md`):** YAML frontmatter with `name:`, `description:`, `tools:`, and `model:`. The `tools:` list is a YAML list of tool names the agent is permitted to call; `model:` is a non-empty model identifier (e.g. `opus`, `sonnet`). See "Markdown frontmatter contract tightening" below.
 - **Skills (`skills/<name>/SKILL.md`):** YAML frontmatter with `name:` and `description:`.
-- **Specs (`specs/NNNN-<slug>/spec.md`):** YAML frontmatter with `id`, `title`, `status`, `created`. `plan.md` and `tasks.md` mirror `id`. `changelog.md` is appended by `/speccraft:spec:close`.
+- **Specs (`specs/NNNN-<slug>/spec.md`):** YAML frontmatter with `id`, `title`, `status`, `created`. `plan.md` and `tasks.md` mirror `id`. `changelog.md` is appended by `/speccraft:spec:close`. An optional `informed-by: [<ref>, …]` list records provenance — a PM brief or a `design/<id>` the spec was stamped from (written by `spec:new --from`). The conductor's crash-safe `new`-adoption resolves a member spec by matching `informed-by: [design/<id>]`; there is NO `design:` field.
 
 ### Markdown frontmatter contract tightening
 

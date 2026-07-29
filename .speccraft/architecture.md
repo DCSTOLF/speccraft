@@ -6,7 +6,7 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
 
 1. `.claude-plugin/plugin.json` + root `marketplace.json` — packaging entry exposed via the `dcstolf-tools` marketplace. Helper binaries are delivered as GitHub Release assets (never committed). Since spec 0021 this is automated and self-verifying: a `main`-push `auto-tag` job (`ci.yml`) creates+pushes `vX.Y.Z` when `plugin.json`'s version is untagged, which triggers `release.yml` to build, publish, and `verify-release.sh`-self-verify the four platform tarballs + `checksums.txt`. See the §"Release / distribution pipeline" boundary below.
 2. `hooks/` — Bash hook scripts (`session-start.sh`, `prompt-submit.sh`, `pre-tool-use.sh`, `post-tool-use.sh`, `stop.sh`) registered through `hooks/hooks.json`. Hooks are the only layer that runs without explicit user invocation.
-3. `commands/` — Markdown slash commands. Top-level: `init.md`, `sync.md`. Spec lifecycle: `commands/spec/{new,plan,implement,review,review-code,delegate,close,override,revise}.md`. A command may colocate a sourceable Bash helper alongside its `.md` body using the `commands/<group>/<name>.lib.sh` pattern (introduced by spec 0015; first instance: `commands/spec/revise.lib.sh`). The `.md` body sources the lib at runtime; the bats suite under `tests/hooks/<name>.bats` sources the same file at test time. Helpers MUST be pure functions (no top-level side effects). This pattern is sibling to the `tools/cmd/speccraft-*` Go binary layer (item 6) but distinct: `.lib.sh` runs in-process inside the command's shell, not as a separately invoked binary. A command lib may itself `source` another command's lib to reuse a pure parser (spec 0025: `commands/spec/consolidate.lib.sh` sources `commands/history/compact.lib.sh` for the history-parser reuse) — an explicit cross-spec coupling pinned by a bats test that sources both.
+3. `commands/` — Markdown slash commands. Top-level: `init.md`, `sync.md`. Spec lifecycle: `commands/spec/{new,plan,implement,review,review-code,delegate,close,override,revise}.md`. Architect conductor: `commands/arch/{decide,close,orchestrate}.md`; `orchestrate` colocates a sourceable `orchestrate.lib.sh` (the deterministic `orch_*` state-machine helpers, bats-tested — the shell/markdown analogue of the spec-0015 `.lib.sh` pattern below). A command may colocate a sourceable Bash helper alongside its `.md` body using the `commands/<group>/<name>.lib.sh` pattern (introduced by spec 0015; first instance: `commands/spec/revise.lib.sh`). The `.md` body sources the lib at runtime; the bats suite under `tests/hooks/<name>.bats` sources the same file at test time. Helpers MUST be pure functions (no top-level side effects). This pattern is sibling to the `tools/cmd/speccraft-*` Go binary layer (item 6) but distinct: `.lib.sh` runs in-process inside the command's shell, not as a separately invoked binary. A command lib may itself `source` another command's lib to reuse a pure parser (spec 0025: `commands/spec/consolidate.lib.sh` sources `commands/history/compact.lib.sh` for the history-parser reuse) — an explicit cross-spec coupling pinned by a bats test that sources both.
 4. `agents/` — Markdown subagent definitions: `spec-author`, `tdd-planner`, `spec-critic`, `cross-reviewer`, `aux-delegator`, `memory-keeper`.
 5. `skills/<name>/SKILL.md` — model-loaded skills: `speccraft-context`, `spec-format`, `aux-agents`.
 6. `tools/cmd/speccraft-{state,guard,drift}` — Go entrypoints, one binary each, that hooks and commands shell out to.
@@ -130,8 +130,9 @@ See `history.md` for full ADR-style entries. Headlines:
   within-draft edits keep the same revision by design — the counter advances only via
   the archive path. The AC10 meta-guard `tests/hooks/frontmatter-writer-guard.bats`
   forbids raw in-place `status:`/`revision:` rewrites in `commands/**`.
-- **Workspace topology & architect-as-conductor (design 0001, DECIDED — not yet
-  shipped; delivered as two specs, A then B):** the architect graduates from an
+- **Workspace topology & architect-as-conductor (design 0001, SHIPPED — specs
+  0037–0041, v1.12.0; foundation in `tools/internal/speccraft/{config,root,ledger}.go`,
+  conductor in `commands/arch/orchestrate.{md,lib.sh}`):** the architect graduates from an
   advisory design-writer into a **conductor** that sequences the existing per-spec
   lifecycle (`new → answer-questions → (review → revise)* → plan → implement →
   validate`) across N repos — never bypassing the per-spec commands or the TDD
@@ -170,7 +171,8 @@ See `history.md` for full ADR-style entries. Headlines:
   read-only **`speccraft-state get-status <spec.md>`** reader (the counterpart to
   the existing `set-status` writer). **Two-stage delivery:** Spec A ships the
   topology foundation (`kind:` field, `workspace.yml` parsing, `find-workspace-root`,
-  `get-status`, the `design:` back-reference convention — all Go/table-testable,
+  `get-status`, the `informed-by: [design/<id>]` back-reference `spec:new` writes
+  (NOT a `design:` field — the conductor's crash-safe `new`-adoption keys on it) — all Go/table-testable,
   fully backward-compatible) and validates BEFORE any orchestration exists; Spec B
   builds the conductor (state machine, `ledger.md`, decomposition/dispatch,
   reconcile, `/speccraft:arch:orchestrate`) on that foundation. Advisory throughout:

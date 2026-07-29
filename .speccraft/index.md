@@ -29,6 +29,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 - Skills: `skills/<name>/SKILL.md`
 - Go helper binaries: `tools/cmd/speccraft-*/main.go`
 - Shared Go logic: `tools/internal/speccraft/`, `tools/internal/delegate/`
+- Architect conductor & workspace topology: `commands/arch/orchestrate.{md,lib.sh}`, `tools/internal/speccraft/ledger.go` (`ParseLedger`/`SetLedgerField`/`Reconcile`), `FindWorkspaceRoot`/`ParseWorkspaceMembers`; the workspace ledger is `<workspace>/.speccraft/ledger.md` (a history.md-class memory file, never `state.json`)
 - User-facing memory templates: `templates/speccraft/`
 - E2E test harness: `tests/e2e/run.sh`
 - Specs: `specs/NNNN-<slug>/`
