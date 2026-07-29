@@ -9,7 +9,7 @@ review_timeout_s = 600
 [[agents]]
 name = "codex"
 mode = "cli"
-cmd = ["codex", "exec", "--sandbox workspace-write"]
+cmd = ["codex", "exec", "--sandbox", "workspace-write"]
 input = "stdin"       # "stdin" | "argv" | "file"
 strengths = ["refactoring", "review"]
 
@@ -24,7 +24,7 @@ strengths = ["refactoring", "review"]
 name = "claude-p"
 mode = "cli"
 cmd = ["claude", "-p"]
-input = "argv"
+input = "stdin"       # stdin, not argv: large review payloads overflow the single-argv exec limit
 strengths = ["general"]
 
 # Opt-in ACP. Requires `acpx` installed.
