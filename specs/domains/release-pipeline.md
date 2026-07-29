@@ -1,0 +1,9 @@
+# Domain: release-pipeline
+
+Distribution: GitHub-Release binary publishing, tag-on-version-bump automation, `install-binaries.sh` download/fallback, doctor provenance, release-completeness verification.
+
+- Helper binaries ship only as GitHub Release assets (never committed): `release.yml` triggers on `v*` tags and publishes exactly the four tarballs `speccraft-<version>-{linux-amd64,linux-arm64,macos-amd64,macos-arm64}.tar.gz` plus `checksums.txt` on a published (non-draft) release (spec 0021)
+- A `main`-push CI job auto-creates and pushes the `vX.Y.Z` tag matching `.claude-plugin/plugin.json` when none exists, using a PAT/deploy key (never `GITHUB_TOKEN`, whose loop-guard suppresses tag re-triggers) so `release.yml` fires; completeness is only ever asserted against an existing tag, never bare `plugin.json`, keeping the pipeline deadlock-free (spec 0021)
+- `scripts/verify-release.sh <version>` runs as the final `release.yml` step and is reused by the completeness guard: it asserts HTTP 200 on the four tarballs + `checksums.txt` and recomputes each tarball's SHA-256 against `checksums.txt`, failing the release loudly on any partial or broken publish (spec 0021)
+- `install-binaries.sh` installs via download without Go when a release exists (checksum-verified) and writes `.binary-provenance=download`; on download failure it prints a stderr warning naming the failed URL before falling back to `go build`, writes `.binary-provenance=source`, and `doctor.sh` reports that as a distinct "built from source (download unavailable)" state (spec 0021)
+- The release base URL is overridable via `SPECCRAFT_RELEASE_BASE` for hermetic, network-free install/checksum/failure fixture tests, and producer and consumer agree on `checksums.txt` (not `checksums-merged.txt`) as the published checksum asset name (spec 0021)
