@@ -1,0 +1,9 @@
+# Domain: plugin-foundations
+
+The v1 skeleton: the two-layer plugin/repo model, the four-hook enforcement surface, the `.speccraft/` memory set + skill load model, the `specs/NNNN-slug/` lifecycle + status machine, and regex-only drift enforcement (spec 0001).
+
+- speccraft is a two-layer Claude Code plugin: the plugin layer (slash commands, subagents, skills, hooks, and the helper Go binaries `speccraft-state`/`speccraft-guard`/`speccraft-drift`) is repo-agnostic, and the repo layer (`.speccraft/`, `specs/`) is created by `/speccraft:init` and is the only place the plugin reads/writes host state (spec 0001)
+- Four hooks form the enforcement surface: `SessionStart` injects `.speccraft/index.md`, `UserPromptSubmit` nudges spec-first, `PreToolUse` (`speccraft-guard`) enforces active-spec + the TDD invariant, and `PostToolUse` tracks session edits and runs the regex drift scan (spec 0001)
+- The `.speccraft/` memory set is `index.md` (~1 page, always injected at SessionStart) plus deeper `guardrails.md`/`architecture.md`/`conventions.md`/`history.md` (append-only ADR log) pulled on demand by the auto-invoked context skill, `agents.toml` (aux-agent registry), and gitignored `state.json` (spec 0001)
+- Specs live at `specs/NNNN-slug/` (4-digit zero-padded id, kebab slug) holding `spec.md`/`plan.md`/`review.md`/`tasks.md`/`changelog.md` and move through the status machine `draft → reviewed → planned → in-progress → closed | archived`; `spec:{new,plan,implement,close}` drive the lifecycle and `spec:close` produces the changelog + memory proposals (spec 0001)
+- Drift enforcement is regex-only in v1: `enforce: regex pattern="…" [scope="…"]` directives in HTML comments (with `!`-prefixed glob excludes) drive the deterministic post-edit scanner; cross-model review offloads second opinions to aux CLI agents (Codex/OpenCode/Claude `-p`) (spec 0001)
