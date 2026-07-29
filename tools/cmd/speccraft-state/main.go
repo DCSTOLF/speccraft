@@ -10,7 +10,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
 
-const version = "1.11.0"
+const version = "1.12.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))

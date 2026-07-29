@@ -2,6 +2,10 @@
 
 Append-only. Newest first.
 
+## 2026-07-29 — Release 1.12.0: bundle the design-0001 conductor arc (spec 0041)
+
+**Spec:** specs/0041-release-1-12-0/ (status: closed). Minor version bump 1.11.0 → 1.12.0 packaging specs 0037–0040 (workspace topology, ledger+reconcile, the arch:orchestrate conductor, crash-safe re-entry), each of which closed without a bump by design. Six locations via the established single-source pattern: 3 Go `const version` (state/guard/drift) each bumped through the **renamed-version-test** TDD technique (`…Const1120`/`…Is1120`, stale-guard now rejects 1.11.0 — NO override), `manifest_version_test.go` → `…VersionIs1120`, and the two JSON manifests (plugin.json + marketplace.json). `go test ./...` + `go vet` green; binaries rebuilt report 1.12.0. Pushing + tagging `v1.12.0` triggers the auto-tag → release.yml → verify-release.sh publish pipeline (spec 0021) — not done here (nothing pushed).
+
 ## 2026-07-29 — Retroactively closed the genesis spec 0001 (speccraft v1)
 
 **Spec:** specs/0001-speccraft-v1/ (status: in-progress → closed; status reconciliation, no code change). The project-genesis spec that bootstrapped the plugin (hooks, the three Go binaries, commands, subagents, `.speccraft/` memory, e2e harness) had sat at `in-progress` since 2026-05-09 with 58/69 tasks done — the 11 open ones all manual-verification / early-phase-e2e placeholders, long since superseded by the shipped `tests/e2e/run.sh` harness, the release/verify pipeline (spec 0021), and the mock-agent e2e. Closed to reflect reality (`active_spec` was already null; v1 shipped and was hardened by the 40 specs through 0040). Retrospective changelog at specs/0001-speccraft-v1/changelog.md.
