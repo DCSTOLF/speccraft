@@ -10,7 +10,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
 
-const version = "1.13.0"
+const version = "1.14.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -372,6 +372,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return reconcileCmd(args[1], stdout, stderr)
 
+	case "ledger-get":
+		// Spec 0043 AC2: raw-dump oracle for the stored ledger pointer fields.
+		filter := ""
+		if len(args) >= 2 {
+			filter = args[1]
+		}
+		return ledgerGetCmd(filter, stdout, stderr)
+
 	default:
 		fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[0])
 		usage(stderr)
@@ -563,6 +571,7 @@ Usage:
   speccraft-state ledger-set <design-id> <member-path> <field> <value>
                                           Upsert a member field in the workspace ledger.md (spec 0038)
   speccraft-state reconcile <design-id>  Roll up a design's member spec statuses (spec 0038)
+  speccraft-state ledger-get [<design>]  Dump raw stored ledger rows as <design>\t<member>\t<spec>\t<last_completed_phase>\t<in_flight>\t<blocked> (spec 0043)
   speccraft-state config-kind <dir>      Print the strict config kind of <dir> (repo|workspace) (spec 0042)
   speccraft-state find-workspace-root    Print the nearest workspace-root ancestor of cwd (spec 0042)
   speccraft-state --version              Print version`)

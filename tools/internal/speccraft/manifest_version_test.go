@@ -11,9 +11,9 @@ import (
 	"testing"
 )
 
-func Test_Manifests_VersionIs1130(t *testing.T) {
+func Test_Manifests_VersionIs1140(t *testing.T) {
 	root := findDocsRoot(t)
-	const want = `"version": "1.13.0"`
+	const want = `"version": "1.14.0"`
 	const stale = "1.12.0"
 	for _, rel := range []string{
 		filepath.Join(".claude-plugin", "plugin.json"),

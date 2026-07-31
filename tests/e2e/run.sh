@@ -153,6 +153,11 @@ run_helper_unit_tests() {
   ( bash "$E2E_DIR/workspace_init_cycle.sh" ) \
     || fail "workspace_init_cycle.sh failed"
   pass "workspace_init_cycle.sh"
+  # spec 0043 — workspace sync end-to-end (hermetic: real sync.lib.sh helpers +
+  # speccraft-state ledger oracles reconcile a stale ledger against member reality).
+  ( bash "$E2E_DIR/workspace_sync_cycle.sh" ) \
+    || fail "workspace_sync_cycle.sh failed"
+  pass "workspace_sync_cycle.sh"
 }
 
 # ---- assertion helpers ----

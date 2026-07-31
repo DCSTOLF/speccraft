@@ -1,11 +1,34 @@
 ---
-description: "Reconcile .speccraft/ memory with reality. Detect drift."
+description: "Reconcile .speccraft/ memory with reality. Detect drift. Kind-aware (repo | workspace)."
 allowed-tools: ["Read", "Write", "Edit", "Bash"]
 ---
 
-Run a drift scan and a memory-keeper audit pass.
+Reconcile `.speccraft/` memory with reality. This command is **kind-aware**: at a
+`kind = repo` root it runs the repo drift/memory audit; at a `kind = workspace` root
+it reconciles the workspace's own memory (ledger + member manifest) against reality
+(spec 0043).
 
-Steps:
+**IMPORTANT**: Execute ALL steps below using your tools before responding. Do not
+describe steps — carry them out. The deterministic workspace logic lives in
+`commands/sync.lib.sh` (bats-tested via `tests/hooks/sync-workspace.bats`); source it
+before use.
+
+## 0. Resolve root & kind, then branch
+
+```bash
+PLUGIN_ROOT="$(speccraft-state plugin-root)"
+ROOT="$(speccraft-state find-root)"
+KIND="$(speccraft-state config-kind "$ROOT")" || { echo "sync: cannot determine config kind of $ROOT" >&2; exit 1; }
+```
+
+`config-kind` is strict (spec 0042): if it exits non-zero or prints anything other
+than `repo`/`workspace`, surface the error and stop — never guess a kind. Then dispatch
+on `$KIND`: `repo` → the repo flow below; `workspace` → the workspace reconciliation.
+
+<!-- speccraft:sync:repo -->
+## Repo mode (`KIND = repo`)
+
+Run a drift scan and a memory-keeper audit pass.
 
 1. Run `speccraft-drift scan-all` over `enforce:`-tagged conventions and
    guardrails. Report violations with file:line references.
@@ -28,7 +51,6 @@ Steps:
    `/speccraft:spec:close` runs inline, applied retroactively. Source the helper:
 
    ```bash
-   PLUGIN_ROOT="$(speccraft-state plugin-root)"
    REPO_ROOT="$(speccraft-state find-root)"
    source "$PLUGIN_ROOT/commands/spec/consolidate.lib.sh"
    CANDIDATES="$(consolidate_backfill_candidates "$REPO_ROOT" | tr '\n' ' ')"
@@ -53,3 +75,81 @@ Steps:
      "$REPO_ROOT/specs/<id>/consolidation-skip"`) so the spec is excluded from every
      future run. Each eligible spec is proposed at most once per run; an
      already-archived spec is skipped.
+
+<!-- speccraft:sync:workspace -->
+## Workspace mode (`KIND = workspace`)
+
+Reconcile the workspace's own memory — the ledger (`.speccraft/ledger.md`) and the
+member manifest (`workspace.yml`) — against reality (spec 0043, drift classes A + B).
+Design-level consolidation (class C) and `--recursive` per-member fan-out are NOT part
+of this pass. Source the lib:
+
+```bash
+source "$PLUGIN_ROOT/commands/sync.lib.sh"   # also sources orchestrate.lib.sh + init.lib.sh
+```
+
+### W1. Ledger drift (class B) — detect per member
+
+For every ledger row, compare the stored pointer against the member's live spec
+status and emit findings. Capture each member's full `ledger-get` row as its
+**expected snapshot** for the conflict-safe apply (W3).
+
+```bash
+speccraft-state ledger-get | while IFS= read -r row; do
+  design="$(awk -F '\t' '{print $1}' <<<"$row")"
+  member="$(awk -F '\t' '{print $2}' <<<"$row")"
+  spec="$(awk -F '\t' '{print $3}' <<<"$row")"
+  lcp="$(awk -F '\t' '{print $4}' <<<"$row")"
+  inflight="$(awk -F '\t' '{print $5}' <<<"$row")"
+  blocked="$(awk -F '\t' '{print $6}' <<<"$row")"
+  # Resolve the member's live status; resolved=1 iff get-status succeeds.
+  if status="$( ( cd "$ROOT/$member" && speccraft-state get-status "$spec" ) 2>/dev/null )"; then
+    resolved=1
+  else
+    status=""; resolved=0
+  fi
+  sync_ledger_drift "$design" "$member" "$spec" "$lcp" "$inflight" "$blocked" "$status" "$resolved"
+done
+```
+
+Parse the emitted 6-field records with `awk -F '\t'` asserting `NF == 6` — **never**
+`IFS=$'\t' read` (it collapses the empty columns that clear-ops and advisories rely
+on). The classes:
+
+- **Auto-fixable (ledger, tool-managed):** `status-ahead`, `stale-in-flight`,
+  `stale-blocked` — their `<field>`/`<value>` are the exact `ledger-set` target.
+- **Advisory (reported only, never auto-applied):** `dangling-spec`, `malformed-row`
+  (semantic, row isolated — the audit continues).
+
+### W2. Membership audit (class A) — advisory only
+
+```bash
+sync_membership_audit "$ROOT"
+```
+
+Emits `stale-member` / `unlisted-member` / `orphan-ledger-row` — all **advisory**.
+`workspace.yml` is curated/human-owned (spec 0042 AC6) and is **never** rewritten by
+sync; report these for the developer to edit by hand.
+
+### W3. Present & apply — confirm-gated, tool-managed-only
+
+Present every finding to the developer. On confirm, apply **only** the fixable ledger
+classes, grouped per member into an ordered plan and guarded against a concurrent
+conductor write:
+
+```bash
+# Fixes for one member, in the fixed order last_completed_phase → in_flight → blocked,
+# passed as argv (never eval'd). expected_row is the snapshot captured in W1.
+sync_apply_member_plan "$ROOT" "$design" "$member" "$expected_row" \
+  last_completed_phase=validated in_flight= blocked=
+```
+
+`sync_apply_member_plan` re-reads the member's row once and applies the plan only if
+it is byte-identical to `expected_row`; if a conductor advanced the row since
+detection it emits a `conflict` and applies nothing (never rewinding a pointer or
+clearing a newer marker). Advisory findings are reported only. Declining a finding
+applies nothing.
+
+> **Live-run note.** Sync re-validates before each write but takes no lock; a narrow
+> TOCTOU window remains. Run workspace sync when no `arch:orchestrate` is concurrently
+> writing the ledger.
