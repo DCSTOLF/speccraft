@@ -10,7 +10,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 )
 
-const version = "1.14.0"
+const version = "1.15.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -380,6 +380,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return ledgerGetCmd(filter, stdout, stderr)
 
+	case "ledger-archive":
+		// Spec 0044: archive a done design's rows out of the live ledger.
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: speccraft-state ledger-archive <design> [--expect <fingerprint>]")
+			return 1
+		}
+		expect, hasExpect := "", false
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--expect" && i+1 < len(args) {
+				expect, hasExpect = args[i+1], true
+				i++
+			}
+		}
+		return ledgerArchiveCmd(args[1], expect, hasExpect, stdout, stderr)
+
 	default:
 		fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[0])
 		usage(stderr)
@@ -572,6 +587,8 @@ Usage:
                                           Upsert a member field in the workspace ledger.md (spec 0038)
   speccraft-state reconcile <design-id>  Roll up a design's member spec statuses (spec 0038)
   speccraft-state ledger-get [<design>]  Dump raw stored ledger rows as <design>\t<member>\t<spec>\t<last_completed_phase>\t<in_flight>\t<blocked> (spec 0043)
+  speccraft-state ledger-archive <design> [--expect <fp>]
+                                          Archive a done design's rows to ledger.archive.md (spec 0044)
   speccraft-state config-kind <dir>      Print the strict config kind of <dir> (repo|workspace) (spec 0042)
   speccraft-state find-workspace-root    Print the nearest workspace-root ancestor of cwd (spec 0042)
   speccraft-state --version              Print version`)

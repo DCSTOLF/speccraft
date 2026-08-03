@@ -37,23 +37,13 @@ func reconcileCmd(designID string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ledger, perr := speccraft.ParseLedger(filepath.Join(root, ".speccraft", "ledger.md"))
-	if perr != nil {
-		fmt.Fprintln(stderr, perr)
+	// reconcileOutput (spec 0044) produces the exact reconcile bytes and surfaces a
+	// malformed-ledger parse error identically to the prior inline path.
+	out, oerr := reconcileOutput(root, designID)
+	if oerr != nil {
+		fmt.Fprintln(stderr, oerr)
 		return 1
 	}
-	resolve := func(memberPath, specRef string) (string, bool) {
-		v, _, outcome, _ := resolveSpecStatus(filepath.Join(root, memberPath), specRef)
-		return v, outcome == resolveResolved
-	}
-	r := speccraft.Reconcile(ledger, designID, resolve)
-	fmt.Fprintf(stdout, "done: %v\n", r.Done)
-	for _, m := range r.Members {
-		status := m.Status
-		if m.Class == "blocked" {
-			status = "blocked"
-		}
-		fmt.Fprintf(stdout, "%s\t%s\t%s\n", status, m.Member, m.Spec)
-	}
+	fmt.Fprint(stdout, out)
 	return 0
 }

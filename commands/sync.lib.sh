@@ -168,3 +168,71 @@ sync_apply_member_plan() {
   done
   return 0
 }
+
+# ===================== Spec 0044: design consolidation (class C) =====================
+
+# sync_resolve_design_dir <root> <id> — resolve a ledger's bare <id> to its on-disk
+# design/<id>-<slug>/ directory. Exactly one match → print it; zero → error; ≥2 → error.
+sync_resolve_design_dir() {
+  local root="$1" id="$2" m
+  local -a matches=()
+  for m in "$root"/design/"$id"-*/; do
+    [ -d "$m" ] && matches+=("${m%/}")
+  done
+  case "${#matches[@]}" in
+    1) printf '%s\n' "${matches[0]}" ;;
+    0) sync_error "no design dir for $id" ;;
+    *) sync_error "ambiguous design dir for $id" ;;
+  esac
+}
+
+# sync_design_fingerprint <root> <design> — sha256 of the design's reconcile output;
+# identical to `speccraft-state reconcile <design> | sha256sum` and to ledger-archive's
+# --expect fingerprint.
+sync_design_fingerprint() {
+  ( cd "$1" && speccraft-state reconcile "$2" ) | sha256sum | awk '{print $1}'
+}
+
+# sync_design_rollup_body <root> <design> <fingerprint> — the outcome.md body: a
+# fingerprinted `consolidated:` marker + one `<member> → <spec> → <status>` line per
+# member in reconcile order.
+sync_design_rollup_body() {
+  local root="$1" design="$2" fp="$3" date_str
+  date_str="$(date +%F)"
+  printf '# Design %s — consolidated\nconsolidated: %s fingerprint: %s\n\n## Members\n' \
+    "$design" "$date_str" "$fp"
+  ( cd "$root" && speccraft-state reconcile "$design" ) \
+    | awk -F '\t' 'NF==3 { print $2 " → " $3 " → " $1 }'
+}
+
+# sync_done_live_designs <root> — design ids both live in the ledger and reconcile-done,
+# LC_ALL=C-sorted, one per line.
+sync_done_live_designs() {
+  local root="$1" d
+  ( cd "$root" && speccraft-state ledger-get 2>/dev/null || true ) \
+    | awk -F '\t' 'NF>=1 && $1!="" {print $1}' | LC_ALL=C sort -u | while IFS= read -r d; do
+      [ -z "$d" ] && continue
+      if ( cd "$root" && speccraft-state reconcile "$d" 2>/dev/null ) | grep -q '^done: true'; then
+        printf '%s\n' "$d"
+      fi
+    done
+}
+
+# sync_consolidate_design <root> <design> — crash-safe, fingerprint-bound consolidation:
+# resolve the design dir, capture the fingerprint, write outcome.md (byte-safe mktemp+mv)
+# unless a matching-fingerprint outcome already exists, then archive via the atomic
+# `ledger-archive --expect <fp>` guard. A stale-fingerprint outcome is rewritten to the
+# current rows before archival; a conductor changing the design mid-run makes
+# ledger-archive return a `conflict` (surfaced non-zero), leaving the outcome for next run.
+sync_consolidate_design() {
+  local root="$1" design="$2" dir fp outcome tmp
+  dir="$(sync_resolve_design_dir "$root" "$design")" || return 1
+  fp="$(sync_design_fingerprint "$root" "$design")"
+  outcome="$dir/outcome.md"
+  if ! { [ -f "$outcome" ] && grep -q "fingerprint: $fp" "$outcome"; }; then
+    tmp="$outcome.tmp.$$"
+    sync_design_rollup_body "$root" "$design" "$fp" > "$tmp" || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "$outcome" || { rm -f "$tmp"; return 1; }
+  fi
+  ( cd "$root" && speccraft-state ledger-archive "$design" --expect "$fp" )
+}

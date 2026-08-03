@@ -153,3 +153,32 @@ applies nothing.
 > **Live-run note.** Sync re-validates before each write but takes no lock; a narrow
 > TOCTOU window remains. Run workspace sync when no `arch:orchestrate` is concurrently
 > writing the ledger.
+
+### W4. Design consolidation (class C) — bound the ledger, confirm-gated
+
+After W1–W3 have reconciled the ledger (the ordering is load-bearing — W3's `ledger-set`
+fixes must land before W4 decides a design is done), fold every fully-`done` design out of
+the live ledger into a durable rollup record, keeping `.speccraft/ledger.md` bounded as
+designs accumulate.
+
+```bash
+sync_done_live_designs "$ROOT" | while IFS= read -r design; do
+  [ -z "$design" ] && continue
+  # Present the proposed rollup + the rows that would be archived; apply ONLY on confirm.
+  sync_consolidate_design "$ROOT" "$design"
+done
+```
+
+- `sync_done_live_designs` lists design ids that are both live in the ledger and
+  `reconcile`-`done`. Present each to the developer with its proposed
+  `design/<id>-<slug>/outcome.md` rollup (via `sync_design_rollup_body`) and the rows to be
+  archived; **apply `sync_consolidate_design` only on confirm** — declining leaves
+  `ledger.md`, `.speccraft/ledger.archive.md`, and `design/` byte-identical.
+- `sync_consolidate_design` writes the fingerprinted `outcome.md` **before** archival and
+  archives through `speccraft-state ledger-archive <design> --expect <fp>` — the atomic
+  read-verify-splice that appends to `.speccraft/ledger.archive.md` first, then removes the
+  rows from `ledger.md`. A conductor that changed the design mid-consolidation makes
+  `ledger-archive` return a `conflict` (surfaced, nothing written); the idempotent outcome
+  file is corrected on the next run.
+- Archival is **one-directional** and confirm-gated; a no-longer-`done` design is never
+  proposed. `workspace.yml` and the 0043 passes are untouched.

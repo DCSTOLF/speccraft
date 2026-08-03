@@ -274,3 +274,128 @@ line_of() { grep -n -E "$1" "$SYNC_MD" | head -1 | cut -d: -f1; }
   grep -qiE 'advisor(y|ies)' "$SYNC_MD"
   grep -qiE 'fixable|status-ahead|stale-in-flight' "$SYNC_MD"
 }
+
+# ================= Spec 0044: design consolidation (class C) =================
+
+# mk_design_dir <id-slug> — a real design/<id-slug>/ dir with a design.md.
+mk_design_dir() {
+  mkdir -p "$TEST_WS/design/$1"
+  printf -- '---\nid: "%s"\n---\n' "${1%%-*}" > "$TEST_WS/design/$1/design.md"
+}
+# seed_done_design <design> <member> <ref> — ledger row + closed member spec.
+seed_done_design() {
+  ( cd "$TEST_WS" && speccraft-state ledger-set "$1" "$2" spec "$3" )
+  ( cd "$TEST_WS" && speccraft-state ledger-set "$1" "$2" last_completed_phase validated )
+  mkdir -p "$TEST_WS/$2/.speccraft" "$TEST_WS/$2/specs/$3"
+  printf 'kind = "repo"\n' > "$TEST_WS/$2/.speccraft/speccraft.toml"
+  printf -- '---\nstatus: closed\n---\n' > "$TEST_WS/$2/specs/$3/spec.md"
+}
+
+# --- T3: sync_resolve_design_dir (AC4) ---
+
+@test "sync_resolve_design_dir: single match prints the dir" {
+  source "$SYNC_LIB"; mk_ws "#"; mk_design_dir 0001-alpha
+  run sync_resolve_design_dir "$TEST_WS" 0001
+  [ "$status" -eq 0 ]; [ "$output" = "$TEST_WS/design/0001-alpha" ]
+}
+@test "sync_resolve_design_dir: no match errors" {
+  source "$SYNC_LIB"; mk_ws "#"; mkdir -p "$TEST_WS/design"
+  run sync_resolve_design_dir "$TEST_WS" 0009
+  [ "$status" -ne 0 ]
+}
+@test "sync_resolve_design_dir: ambiguous match errors" {
+  source "$SYNC_LIB"; mk_ws "#"; mk_design_dir 0001-alpha; mk_design_dir 0001-beta
+  run sync_resolve_design_dir "$TEST_WS" 0001
+  [ "$status" -ne 0 ]
+}
+
+# --- T5: sync_design_fingerprint + sync_design_rollup_body (AC5) ---
+
+@test "sync_design_fingerprint: equals sha256 of reconcile output" {
+  source "$SYNC_LIB"; mk_ws "#"; seed_done_design D ./api 0007-a
+  want="$( ( cd "$TEST_WS" && speccraft-state reconcile D ) | sha256sum | awk '{print $1}')"
+  run sync_design_fingerprint "$TEST_WS" D
+  [ "$status" -eq 0 ]; [ "$output" = "$want" ]
+}
+@test "sync_design_rollup_body: one member line per member + fingerprint marker" {
+  source "$SYNC_LIB"; mk_ws "#"; seed_done_design D ./api 0007-a
+  fp="$(sync_design_fingerprint "$TEST_WS" D)"
+  run sync_design_rollup_body "$TEST_WS" D "$fp"
+  [ "$status" -eq 0 ]
+  grep -q "fingerprint: $fp" <<<"$output"
+  grep -qF './api → 0007-a → closed' <<<"$output"
+}
+
+# --- T7: sync_done_live_designs (AC3) ---
+
+@test "sync_done_live_designs: only the done id, sorted" {
+  source "$SYNC_LIB"; mk_ws "#"
+  seed_done_design D2done ./api 0007-a
+  ( cd "$TEST_WS" && speccraft-state ledger-set D1wip ./web spec 0012-b )  # unresolved spec → not done
+  run sync_done_live_designs "$TEST_WS"
+  [ "$status" -eq 0 ]
+  [ "$output" = "D2done" ]
+}
+@test "sync_done_live_designs: all in progress → empty" {
+  source "$SYNC_LIB"; mk_ws "#"
+  ( cd "$TEST_WS" && speccraft-state ledger-set Dx ./web spec 0012-b )
+  mkdir -p "$TEST_WS/web/specs/0012-b"; printf -- '---\nstatus: in-progress\n---\n' > "$TEST_WS/web/specs/0012-b/spec.md"
+  run sync_done_live_designs "$TEST_WS"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+}
+
+# --- T9: sync_consolidate_design (AC6) ---
+
+@test "sync_consolidate_design: happy path writes outcome + archives rows" {
+  source "$SYNC_LIB"; mk_ws "#"; mk_design_dir 0007-auth
+  seed_done_design 0007 ./api 0007-a
+  run sync_consolidate_design "$TEST_WS" 0007
+  [ "$status" -eq 0 ]
+  [ -f "$TEST_WS/design/0007-auth/outcome.md" ]
+  grep -qF './api → 0007-a → closed' "$TEST_WS/design/0007-auth/outcome.md"
+  ! ( cd "$TEST_WS" && speccraft-state ledger-get 0007 ) | grep -q .   # rows gone from live
+  grep -q '## design 0007' "$TEST_WS/.speccraft/ledger.archive.md"     # rows in archive
+}
+@test "sync_consolidate_design: crash-then-rerun archives without duplicate outcome" {
+  source "$SYNC_LIB"; mk_ws "#"; mk_design_dir 0007-auth
+  seed_done_design 0007 ./api 0007-a
+  fp="$(sync_design_fingerprint "$TEST_WS" 0007)"
+  # Simulate: outcome written (matching fp) but archival never happened (rows still live).
+  sync_design_rollup_body "$TEST_WS" 0007 "$fp" > "$TEST_WS/design/0007-auth/outcome.md"
+  before="$(cat "$TEST_WS/design/0007-auth/outcome.md")"
+  run sync_consolidate_design "$TEST_WS" 0007
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TEST_WS/design/0007-auth/outcome.md")" = "$before" ]      # no duplicate/rewrite
+  grep -q '## design 0007' "$TEST_WS/.speccraft/ledger.archive.md"     # rows now archived
+}
+@test "sync_consolidate_design: stale-fingerprint outcome is rewritten" {
+  source "$SYNC_LIB"; mk_ws "#"; mk_design_dir 0007-auth
+  seed_done_design 0007 ./api 0007-a
+  printf '# Design 0007 — consolidated\nconsolidated: 2000-01-01 fingerprint: STALEFP\n\n## Members\nold\n' \
+    > "$TEST_WS/design/0007-auth/outcome.md"
+  run sync_consolidate_design "$TEST_WS" 0007
+  [ "$status" -eq 0 ]
+  ! grep -q 'STALEFP' "$TEST_WS/design/0007-auth/outcome.md"           # rewritten to current
+  grep -qF './api → 0007-a → closed' "$TEST_WS/design/0007-auth/outcome.md"
+}
+@test "sync_consolidate_design: not-done design surfaces non-zero (no archive)" {
+  source "$SYNC_LIB"; mk_ws "#"; mk_design_dir 0009-wip
+  ( cd "$TEST_WS" && speccraft-state ledger-set 0009 ./web spec 0012-b )
+  mkdir -p "$TEST_WS/web/specs/0012-b"; printf -- '---\nstatus: in-progress\n---\n' > "$TEST_WS/web/specs/0012-b/spec.md"
+  run sync_consolidate_design "$TEST_WS" 0009
+  [ "$status" -ne 0 ]
+  [ ! -f "$TEST_WS/.speccraft/ledger.archive.md" ] || ! grep -q '## design 0009' "$TEST_WS/.speccraft/ledger.archive.md"
+}
+
+# --- T11: sync.md W4 wiring (AC7) ---
+
+@test "sync.md: W4 block under workspace anchor, after W1-W3, calls consolidation helpers" {
+  local ws w1 w4 done_call cons_call
+  ws="$(line_of '<!-- speccraft:sync:workspace -->')"
+  w1="$(line_of 'sync_ledger_drift')"
+  done_call="$(line_of 'sync_done_live_designs')"
+  cons_call="$(line_of 'sync_consolidate_design')"
+  [ "$done_call" -gt "$ws" ]
+  [ "$cons_call" -gt "$ws" ]
+  [ "$done_call" -gt "$w1" ]   # W4 after the W1-W3 ledger pass
+}

@@ -158,6 +158,11 @@ run_helper_unit_tests() {
   ( bash "$E2E_DIR/workspace_sync_cycle.sh" ) \
     || fail "workspace_sync_cycle.sh failed"
   pass "workspace_sync_cycle.sh"
+  # spec 0044 — design consolidation end-to-end (hermetic: real sync.lib.sh helpers +
+  # ledger-archive archive a done design's rows out of the live ledger into the archive).
+  ( bash "$E2E_DIR/workspace_consolidate_cycle.sh" ) \
+    || fail "workspace_consolidate_cycle.sh failed"
+  pass "workspace_consolidate_cycle.sh"
 }
 
 # ---- assertion helpers ----
