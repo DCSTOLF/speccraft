@@ -18,12 +18,16 @@ func ledgerSetCmd(designID, memberPath, field, value string, stdout, stderr io.W
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ledger := filepath.Join(root, ".speccraft", "ledger.md")
-	if err := speccraft.SetLedgerField(ledger, designID, memberPath, field, value); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	return 0
+	// Spec 0045: serialize the whole read-modify-write (SetLedgerField reads and
+	// rewrites ledger.md internally) behind the exclusive ledger lock.
+	return withLedgerLock(root, stderr, func() int {
+		ledger := filepath.Join(root, ".speccraft", "ledger.md")
+		if err := speccraft.SetLedgerField(ledger, designID, memberPath, field, value); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	})
 }
 
 // reconcileCmd implements `speccraft-state reconcile <design>` (spec 0038 AC6):

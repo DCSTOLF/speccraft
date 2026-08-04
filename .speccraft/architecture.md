@@ -130,6 +130,40 @@ See `history.md` for full ADR-style entries. Headlines:
   within-draft edits keep the same revision by design — the counter advances only via
   the archive path. The AC10 meta-guard `tests/hooks/frontmatter-writer-guard.bats`
   forbids raw in-place `status:`/`revision:` rewrites in `commands/**`.
+- **Ledger write-lock layer (spec 0045):** every ledger writer
+  (`ledger-set`, `ledger-archive`) serializes its ENTIRE read-modify-write
+  transaction — including `ledger-archive`'s two-file archive-append+live-remove
+  sequence and every error path — behind an exclusive advisory
+  `syscall.Flock(LOCK_EX)` on a sidecar `<workspace-root>/.speccraft/ledger.lock`
+  (path always at the workspace root via `FindWorkspaceRoot`, never a member
+  repo). The primitive is `withLedgerLock(root, stderr, body)` in
+  `tools/cmd/speccraft-state/ledger_lock.go` (portable), backed by
+  `ledger_flock_unix.go` (`//go:build unix`, shipped linux + macOS) and a
+  `ledger_flock_other.go` (`//go:build !unix`) stub that fails loud. Bounded
+  acquisition via `SPECCRAFT_LEDGER_LOCK_TIMEOUT` (Go duration, default `10s`;
+  unset/empty/invalid/zero/negative → 10s fallback); implemented as a
+  `LOCK_NB` poll loop (10ms interval) — NOT a cancellation goroutine — so a
+  timed-out acquisition cannot leak and grab the lock after `ledger busy` was
+  already returned. On timeout the writer exits non-zero and stderr
+  **contains** `ledger busy` (substring, never exact-equality). Crash-safe by
+  construction: advisory, kernel-released on exit, so on-success / on-error
+  (deferred unlock + Close) / on-crash are the same exit clause — no stale lock
+  ever wedges the next writer. The lock file is 0644 under an ensured
+  `.speccraft/`, never parsed as ledger content, and git-ignored the same way
+  `state.json` is. A `ledgerLockHold` package var is the SOLE production seam
+  (nil in production; a `sync.Once`-gated hook in contention tests parks writer
+  A inside the critical section while writer B genuinely blocks on the kernel
+  flock — real serialization proof, no wall-clock timing). Semantic-CAS-
+  under-lock guarantee: `ledger-archive --expect <fp>`'s fingerprint check is
+  now computed IN-PROCESS from the ledger bytes read *after* the lock is held
+  and *before* any write, closing the op's own read→rename window; the check
+  is equal to what `reconcile <design> | sha256sum` would yield but never
+  shells out from inside the critical section (which wraps only in-process
+  work). Platform scope: POSIX-only (linux + macOS binaries); Windows and
+  cross-host / network-filesystem locking are out of scope. Adversarial
+  mutation of the lock path (e.g. symlinking it) is outside the cooperating-
+  writer threat model. This closes the concurrent-writer race that specs 0043
+  and 0044 both shipped as `bounded + deferred`.
 - **Workspace topology & architect-as-conductor (design 0001, SHIPPED — specs
   0037–0041, v1.12.0; foundation in `tools/internal/speccraft/{config,root,ledger}.go`,
   conductor in `commands/arch/orchestrate.{md,lib.sh}`):** the architect graduates from an

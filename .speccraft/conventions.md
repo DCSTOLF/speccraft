@@ -204,6 +204,52 @@ it). `Effective = hasArchived ? max(fmRev, maxArchived+1) : fmRev`.
   `status: draft` LAST (fixed order archive → counter → status, interruption-safe). A
   stray `review-r<N>.md` can no longer deadlock revise.
 
+## Ledger write-lock invariant
+
+Introduced by spec 0045.
+
+Any NEW ledger writer (a Go op that mutates `<workspace-root>/.speccraft/ledger.md`
+or `.speccraft/ledger.archive.md`) MUST acquire `withLedgerLock` around its
+**whole transaction** — every read-modify-write sequence, both files of a
+two-file transaction, every error path — **before its first authoritative
+ledger read**, and MUST NOT release the lock until the transaction is fully
+committed. This is the ledger analogue of the spec-0012 `state.json`
+single-writer rule: without the lock, two writers reading the same bytes each
+rename and the last silently clobbers the first.
+
+- **Authoritative read only under the lock (AC1).** Any read taken *before* the
+  lock is held is non-authoritative and MUST be re-read once the lock is
+  acquired. A caller-supplied `--expect` fingerprint MUST be re-verified against
+  bytes read under the lock and before any write; do not trust a pre-lock
+  snapshot. The fingerprint check is an **in-process** computation over the
+  just-read bytes — equal to what `reconcile <design> | sha256sum` would yield
+  but NEVER a shell-out from inside the critical section (which wraps only
+  in-process work).
+- **`withLedgerLock(root, stderr, body)` in `tools/cmd/speccraft-state/ledger_lock.go`**
+  is the sanctioned entrypoint; `root` MUST come from `FindWorkspaceRoot` so the
+  lock always lands at the workspace root (never a member repo — otherwise two
+  writers can serialize on different sidecars and clobber each other). The
+  wrapper handles ensured-`.speccraft/`, 0644 file mode, `LOCK_NB`-polling
+  within the `SPECCRAFT_LEDGER_LOCK_TIMEOUT`-bounded deadline, `ledger busy`
+  stderr on timeout, deferred unlock + Close, and the `ledgerLockHold` test
+  seam. Do not re-implement any of these.
+- **Whole two-file transactions stay under one held lock.** A writer that
+  touches both `ledger.md` and `ledger.archive.md` (like `ledger-archive`) MUST
+  hold the SAME lock across the entire sequence — both-present crash recovery,
+  archive append+rename, live remove+rename, every error path — never
+  release-and-reacquire between the two files.
+- **Contention tests use the seam, never wall-clock timing.** A new writer's
+  contention test MUST install a `sync.Once`-gated `ledgerLockHold` hook so one
+  writer *provably* parks inside the critical section while a second *provably*
+  blocks on the kernel flock. Never assert acquisition by sleeping and hoping
+  for order — the AC2 barrier seam exists so "both land" is a deterministic
+  invariant.
+- **Bounded acquisition, substring match.** Any test that asserts the timeout
+  path uses `strings.Contains(stderr, "ledger busy")` — never exact-equality —
+  and asserts only the outcome (non-zero exit + substring), never a wall-clock
+  duration. Timeout parsing accepts unset/empty/invalid/zero/negative as the
+  10s default fallback; only a strictly positive `time.ParseDuration` wins.
+
 ## Version bumps
 
 Introduced by spec 0019.

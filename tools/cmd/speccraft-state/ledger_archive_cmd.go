@@ -117,38 +117,87 @@ func ledgerArchiveCmd(designID, expect string, hasExpect bool, stdout, stderr io
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	livePath := filepath.Join(root, ".speccraft", "ledger.md")
-	archivePath := filepath.Join(root, ".speccraft", "ledger.archive.md")
+	// Spec 0045: hold the exclusive ledger lock across the ENTIRE two-file
+	// transaction — both-present recovery, --expect re-verify, archive
+	// append+rename, and live remove+rename — so no concurrent writer can
+	// interleave. Every authoritative read below happens under the lock.
+	return withLedgerLock(root, stderr, func() int {
+		livePath := filepath.Join(root, ".speccraft", "ledger.md")
+		archivePath := filepath.Join(root, ".speccraft", "ledger.archive.md")
 
-	// A parse-corrupt live ledger or archive aborts (never clobber). Validate both.
-	if readFileOrEmpty(livePath) != "" {
-		if _, e := speccraft.ParseLedger(livePath); e != nil {
-			fmt.Fprintln(stderr, e)
+		// A parse-corrupt live ledger or archive aborts (never clobber). Validate both.
+		if readFileOrEmpty(livePath) != "" {
+			if _, e := speccraft.ParseLedger(livePath); e != nil {
+				fmt.Fprintln(stderr, e)
+				return 1
+			}
+		}
+		archiveText := readFileOrEmpty(archivePath)
+		if archiveText != "" {
+			if _, e := speccraft.ParseLedger(archivePath); e != nil {
+				fmt.Fprintln(stderr, e)
+				return 1
+			}
+		}
+
+		liveText := readFileOrEmpty(livePath)
+		liveRemainder, liveSection, liveFound := spliceDesignSection(liveText, designID)
+		_, archiveSection, archiveFound := spliceDesignSection(archiveText, designID)
+
+		switch {
+		case !liveFound && !archiveFound:
+			fmt.Fprintf(stderr, "unknown design: %s\n", designID)
+			return 1
+		case !liveFound && archiveFound:
+			return 0 // already archived — idempotent no-op
+		case liveFound && archiveFound:
+			// Crash residue: appended to the archive but the live copy was never removed.
+			if strings.TrimRight(liveSection, "\n") != strings.TrimRight(archiveSection, "\n") {
+				fmt.Fprintf(stderr, "conflict: %s present in both files with differing content\n", designID)
+				return 1
+			}
+			if err := speccraft.AtomicWriteFile(livePath, []byte(liveRemainder), 0o644); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+
+		// liveFound && !archiveFound — the normal archive path.
+		done, blockers, err := designDone(root, designID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
 			return 1
 		}
-	}
-	archiveText := readFileOrEmpty(archivePath)
-	if archiveText != "" {
-		if _, e := speccraft.ParseLedger(archivePath); e != nil {
-			fmt.Fprintln(stderr, e)
+		if !done {
+			fmt.Fprintf(stderr, "design not done: %s\n", strings.Join(blockers, ", "))
 			return 1
 		}
-	}
+		if hasExpect {
+			fp, err := designFingerprint(root, designID)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			if fp != expect {
+				fmt.Fprintf(stderr, "conflict: %s changed\n", designID)
+				return 1
+			}
+		}
 
-	liveText := readFileOrEmpty(livePath)
-	liveRemainder, liveSection, liveFound := spliceDesignSection(liveText, designID)
-	_, archiveSection, archiveFound := spliceDesignSection(archiveText, designID)
-
-	switch {
-	case !liveFound && !archiveFound:
-		fmt.Fprintf(stderr, "unknown design: %s\n", designID)
-		return 1
-	case !liveFound && archiveFound:
-		return 0 // already archived — idempotent no-op
-	case liveFound && archiveFound:
-		// Crash residue: appended to the archive but the live copy was never removed.
-		if strings.TrimRight(liveSection, "\n") != strings.TrimRight(archiveSection, "\n") {
-			fmt.Fprintf(stderr, "conflict: %s present in both files with differing content\n", designID)
+		// Transactional: append to the archive FIRST, then remove from the live ledger.
+		section := liveSection
+		if !strings.HasSuffix(section, "\n") {
+			section += "\n"
+		}
+		var newArchive string
+		if archiveText == "" {
+			newArchive = "# Ledger\n\n" + section
+		} else {
+			newArchive = strings.TrimRight(archiveText, "\n") + "\n\n" + section
+		}
+		if err := speccraft.AtomicWriteFile(archivePath, []byte(newArchive), 0o644); err != nil {
+			fmt.Fprintln(stderr, err)
 			return 1
 		}
 		if err := speccraft.AtomicWriteFile(livePath, []byte(liveRemainder), 0o644); err != nil {
@@ -156,48 +205,5 @@ func ledgerArchiveCmd(designID, expect string, hasExpect bool, stdout, stderr io
 			return 1
 		}
 		return 0
-	}
-
-	// liveFound && !archiveFound — the normal archive path.
-	done, blockers, err := designDone(root, designID)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if !done {
-		fmt.Fprintf(stderr, "design not done: %s\n", strings.Join(blockers, ", "))
-		return 1
-	}
-	if hasExpect {
-		fp, err := designFingerprint(root, designID)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		if fp != expect {
-			fmt.Fprintf(stderr, "conflict: %s changed\n", designID)
-			return 1
-		}
-	}
-
-	// Transactional: append to the archive FIRST, then remove from the live ledger.
-	section := liveSection
-	if !strings.HasSuffix(section, "\n") {
-		section += "\n"
-	}
-	var newArchive string
-	if archiveText == "" {
-		newArchive = "# Ledger\n\n" + section
-	} else {
-		newArchive = strings.TrimRight(archiveText, "\n") + "\n\n" + section
-	}
-	if err := speccraft.AtomicWriteFile(archivePath, []byte(newArchive), 0o644); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if err := speccraft.AtomicWriteFile(livePath, []byte(liveRemainder), 0o644); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	return 0
+	})
 }

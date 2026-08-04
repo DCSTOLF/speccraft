@@ -9,7 +9,7 @@ import (
 	"github.com/dcstolf/speccraft/tools/internal/speccraft/drift"
 )
 
-const version = "1.15.0"
+const version = "1.16.0"
 
 func main() {
 	if len(os.Args) < 2 {

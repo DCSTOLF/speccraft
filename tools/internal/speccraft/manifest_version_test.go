@@ -11,10 +11,10 @@ import (
 	"testing"
 )
 
-func Test_Manifests_VersionIs1150(t *testing.T) {
+func Test_Manifests_VersionIs1160(t *testing.T) {
 	root := findDocsRoot(t)
-	const want = `"version": "1.15.0"`
-	const stale = "1.12.0"
+	const want = `"version": "1.16.0"`
+	const stale = "1.15.0"
 	for _, rel := range []string{
 		filepath.Join(".claude-plugin", "plugin.json"),
 		filepath.Join(".claude-plugin", "marketplace.json"),
