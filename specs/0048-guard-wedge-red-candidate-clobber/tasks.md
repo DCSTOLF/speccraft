@@ -50,22 +50,22 @@ contract: done-means-v1
   done: $ grep -q 'func runBuildProbe(' tools/cmd/speccraft-guard/buildprobe.go && grep -q 'WaitDelay' tools/cmd/speccraft-guard/buildprobe.go && grep -q 'GOFLAGS=-mod=readonly' tools/cmd/speccraft-guard/buildprobe.go && grep -q -- "-run" tools/cmd/speccraft-guard/buildprobe.go && grep -q -- '-count=1' tools/cmd/speccraft-guard/buildprobe.go && cd tools && go build ./... && GOOS=windows go build ./...
 - [x] **T14** — GREEN (half 2): wire `deps.proberForLang`, carry `ToolInput` on `deps` (NOT threaded through `siblingRedCheck`'s signature — see Bypasses), replace the `OutcomeBuildFailed` return with a call to `buildRepairBranch`, which lives in `buildprobe.go` beside the probe rather than inline in `main.go`. Predicate retargeted to the actual placement: `main.go` wires the factory and calls the branch; `buildprobe.go` resolves `d.proberForLang` exactly once and owns the only `runBuildProbe` call site
   done: $ grep -q 'proberForLang' tools/cmd/speccraft-guard/main.go && grep -q 'buildRepairBranch(' tools/cmd/speccraft-guard/main.go && [ "$(grep -c 'd.proberForLang(' tools/cmd/speccraft-guard/buildprobe.go)" = 1 ] && grep -q 'runBuildProbe(' tools/cmd/speccraft-guard/buildprobe.go && (cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_' -count=1)
-- [ ] **T15** — RED: repair-mode boundaries — AC3 record-failure, AC4 budget, AC5 zero-override repair run, AC6 unrelated edit, AC8 infra failure + timeout matrix
-  - [ ] **T15.a** — a failed record BLOCKS and leaves no partial entry (AC3)
-  - [ ] **T15.b** — the 11th still-broken edit blocks naming `/speccraft:spec:override` (AC4)
-  - [ ] **T15.c** — the interleaved 6 → clean → 4 → block sequence, and `ResetSession` restoring the budget (AC4)
-  - [ ] **T15.d** — spec 0047's five-edit sequential repair runs at ZERO overrides (AC5)
-  - [ ] **T15.e** — an unrelated Go edit while broken is admitted, recorded, and bounded (AC6)
-  - [ ] **T15.f** — a prober that cannot complete blocks naming BOTH errors; no entry written (AC8)
-  - [ ] **T15.g** — `SPECCRAFT_BUILD_PROBE_TIMEOUT` matrix: unset/empty/invalid/zero/negative → 30s (AC8)
+- [x] **T15** — RED: repair-mode boundaries — AC3 record-failure, AC4 budget, AC5 zero-override repair run, AC6 unrelated edit, AC8 infra failure + timeout matrix
+  - [x] **T15.a** — a failed record BLOCKS and leaves no partial entry (AC3)
+  - [x] **T15.b** — the 11th still-broken edit blocks naming `/speccraft:spec:override` (AC4)
+  - [x] **T15.c** — the interleaved 6 → clean → 4 → block sequence, and `ResetSession` restoring the budget (AC4)
+  - [x] **T15.d** — spec 0047's five-edit sequential repair runs at ZERO overrides (AC5)
+  - [x] **T15.e** — an unrelated Go edit while broken is admitted, recorded, and bounded (AC6)
+  - [x] **T15.f** — a prober that cannot complete blocks naming BOTH errors; no entry written (AC8)
+  - [x] **T15.g** — `SPECCRAFT_BUILD_PROBE_TIMEOUT` matrix: unset/empty/invalid/zero/negative → 30s (AC8)
   done: $ grep -q 'Test_BuildProbe_SequentialRepairScenario_ZeroOverrides' tools/cmd/speccraft-guard/buildprobe_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_(RecordFailure|BudgetExhausted|BudgetSurvivesCleanProbe|SequentialRepairScenario|UnrelatedEditWhileBroken|InfraFailure)|Test_BuildProbeTimeout_Matrix' -count=1
-- [ ] **T16** — GREEN: repair-mode boundary fixes (record-before-allow ordering, sentinel mapping, error wording)
-  done: $ grep -q 'ErrBuildRepairBudgetExhausted' tools/cmd/speccraft-guard/main.go && grep -q 'speccraft:spec:override' tools/cmd/speccraft-guard/main.go && cd tools && go test ./cmd/speccraft-guard/ -count=1
-- [ ] **T17** — RED/PIN: unsupported languages fall back to today's exact blocking behaviour (AC7), Rust included and pinned separately
+- [x] **T16** — GREEN: repair-mode boundary fixes — **NO CODE CHANGE NEEDED.** T15's seven boundary groups (AC3 record-failure, AC4 budget + interleaving, AC5 the zero-override five-edit repair run, AC6 unrelated edit, AC8 probe-failure + timeout matrix) all passed against T14's `buildRepairBranch` as landed: record-before-allow ordering, the `ErrBuildRepairBudgetExhausted` sentinel mapping and the override wording were already correct. Recorded as a PIN set rather than a fake RED→GREEN. Predicate retargeted to `buildprobe.go`, where the branch lives (see T14)
+  done: $ grep -q 'ErrBuildRepairBudgetExhausted' tools/cmd/speccraft-guard/buildprobe.go && grep -q 'speccraft:spec:override' tools/cmd/speccraft-guard/buildprobe.go && (cd tools && go test ./cmd/speccraft-guard/ -count=1)
+- [x] **T17** — RED/PIN: unsupported languages fall back to today's exact blocking behaviour (AC7), Rust included and pinned separately
   done: $ grep -q 'Test_RustDispatch_BuildFailed_Unchanged_NoProber' tools/cmd/speccraft-guard/buildprobe_fallback_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_UnsupportedLanguages_FallBackToBlocking|Test_RustDispatch_BuildFailed_Unchanged_NoProber' -count=1
-- [ ] **T18** — RED/PIN: the probe never mutates the tree — tri-outcome recursive snapshot plus overlay/content/GOCACHE all outside the root (AC9)
+- [x] **T18** — RED/PIN: the probe never mutates the tree — tri-outcome recursive snapshot plus overlay/content/GOCACHE all outside the root (AC9)
   done: $ grep -q 'Test_BuildProbe_OverlayAndCacheResolveOutsideRepoRoot' tools/cmd/speccraft-guard/buildprobe_nomutation_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_(NeverMutatesWorkingTree|OverlayAndCacheResolveOutsideRepoRoot)' -count=1
-- [ ] **T19** — RED/PIN: the ordinary red-check path is behaviourally unchanged — full branch table plus a one-call-site source-scan (AC16)
+- [x] **T19** — RED/PIN: the ordinary red-check path is behaviourally unchanged — full branch table plus a one-call-site source-scan (AC16)
   done: $ grep -q 'Test_Prober_ReachedFromExactlyOneCallSite' tools/cmd/speccraft-guard/buildprobe_fallback_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_SiblingRedCheck_OrdinaryPaths_Unchanged_ZeroProberInvocations|Test_Prober_ReachedFromExactlyOneCallSite' -count=1
 - [ ] **T20** — RED: gated write tools pinned by paired enumeration across `hooks.json`, `pre-tool-use.sh`, `applyEdit` and the prober table (AC10)
   done: $ grep -q 'Test_GatedWriteTools_EnumerationIsTheSingleSource' tools/cmd/speccraft-guard/writetools_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_GatedWriteTools_EnumerationIsTheSingleSource|Test_BuildProbe_EveryGatedWriteTool_ReachesProberWithDerivedContent' -count=1

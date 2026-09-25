@@ -13,30 +13,33 @@ package main
 // toolchain through `-overlay`, which maps a real path to a temp file, so the
 // probe compiles content that exists nowhere on disk.
 //
-// TWO COMMANDS, not one — plan correction C1, and the reason matters:
+// THE COMMAND, and why it is `go test` rather than `go build`:
 //
-//	go build -overlay … ./...              # compiles non-test files
-//	go test  -overlay … -run '^$' ./...    # compiles TEST files, runs nothing
+//	go test -overlay … -run '^$' -count=1 ./...
 //
-// `go build ./...` does not compile `_test.go` files at all. A probe using only
-// `go build` would call an overlay CLEAN while a sibling test file was
-// unbuildable — allowing the edit silently and leaving the tree untestable, which
-// is the hole the review spent three rounds closing. The overlay is "clean" only
-// if BOTH commands exit zero.
+// Plan correction C1 established that `go build` ALONE is wrong: it does not
+// compile `_test.go` files, so a build-only probe calls an overlay CLEAN while a
+// sibling test file is unbuildable — allowing the edit silently and leaving the
+// tree untestable, the hole the review spent three rounds closing. C1 therefore
+// specified two commands.
 //
-// Three invocation details that are load-bearing rather than cosmetic:
+// Implementing it surfaced the converse, and one command now does both jobs:
+// `go test -run '^$'` compiles non-test AND test files, including for packages
+// with no test files at all, runs nothing, and writes only into GOCACHE. Adding
+// `go build -o <dir> ./...` alongside it was not merely redundant but WRONG — it
+// fails with "no main packages to build" on a library-only module, which would
+// report every edit to such a module as still-broken and push it into repair mode.
 //
-//   - `-o <tmpdir>` is mandatory. `go build ./...` discards binaries when the
-//     pattern matches several packages, but writes the executable into the CURRENT
-//     DIRECTORY when the module has exactly one `main` package. Directing output
-//     outside the repo makes "the probe never mutates the working tree" true by
-//     construction rather than by luck.
+// Two invocation details that are load-bearing rather than cosmetic:
+//
 //   - `GOFLAGS=-mod=readonly` guarantees the probe can never rewrite go.mod/go.sum.
 //   - `GOCACHE` is redirected to a temp dir so a probe cannot poison or be poisoned
-//     by the caller's build cache.
+//     by the caller's build cache. It is also why no `-o` is needed: `go test`
+//     links into the cache, never into the source tree, so the probe cannot drop a
+//     binary into the author's repo the way a bare `go build` can for a
+//     single-main module.
 //
-// No build-tag split, deliberately: `go build -overlay` is portable everywhere Go
-// runs. Spec 0047's process-group problem (a grandchild holding the captured pipe
+// No build-tag split, deliberately: `-overlay` is portable everywhere Go runs. Spec 0047's process-group problem (a grandchild holding the captured pipe
 // hangs Wait after a timeout) is real here too, and is solved portably with
 // exec.CommandContext + cmd.WaitDelay rather than with unix-only Setpgid. The
 // tasks_predicate.go/_other.go pair is NOT mirrored.
@@ -127,7 +130,7 @@ func moduleRootFor(absPath, repoRoot string) (string, bool) {
 type goBuildProber struct{}
 
 // Probe writes the post-edit content to a temp file, points an overlay at it, and
-// runs the two compile commands. Clean iff both exit zero.
+// compiles the module through it. Clean iff the compile exits zero.
 func (goBuildProber) Probe(ctx context.Context, req buildProbeRequest) (buildProbeResult, error) {
 	tmp, err := os.MkdirTemp("", "speccraft-build-probe-")
 	if err != nil {
@@ -153,10 +156,6 @@ func (goBuildProber) Probe(ctx context.Context, req buildProbeRequest) (buildPro
 	}
 
 	goCache := filepath.Join(tmp, "gocache")
-	outDir := filepath.Join(tmp, "out")
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return buildProbeResult{}, fmt.Errorf("build probe: out dir: %w", err)
-	}
 
 	res := buildProbeResult{
 		OverlayJSON:    overlayPath,
@@ -164,9 +163,25 @@ func (goBuildProber) Probe(ctx context.Context, req buildProbeRequest) (buildPro
 		GoCache:        goCache,
 	}
 
-	// Both commands must pass. `go build` alone would miss a broken _test.go.
+	// ONE command, and it is the `go test` one. See the file header for why a
+	// `go build`-only probe is wrong; this is the converse finding, which a test
+	// forced out:
+	//
+	//   * `go build -o <dir> ./...` FAILS with "no main packages to build" on a
+	//     library-only module. Keeping it would report every edit to such a module
+	//     as "still broken" and push it into repair mode — a false positive on the
+	//     most ordinary case there is.
+	//   * `go test -run '^$' ./...` compiles BOTH non-test and test files, and does
+	//     so even for packages with no test files at all (verified: a compile error
+	//     in a test-less package still fails it). It runs nothing, and writes only
+	//     into GOCACHE — never the source tree — so it needs no `-o` and cannot
+	//     drop a binary into the author's repo the way a bare `go build` can for a
+	//     single-main module.
+	//
+	// So one command is both safer and strictly more thorough than the two it
+	// replaces, and correction C1's intent (never miss a broken _test.go) is fully
+	// preserved.
 	cmds := [][]string{
-		{"build", "-overlay", overlayPath, "-o", outDir, "./..."},
 		{"test", "-overlay", overlayPath, "-run", "^$", "-count=1", "./..."},
 	}
 	var combined strings.Builder

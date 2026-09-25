@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dcstolf/speccraft/tools/internal/speccraft"
 	"github.com/dcstolf/speccraft/tools/internal/speccraft/runner"
@@ -219,6 +220,245 @@ func Test_BuildProbe_StillBrokenOverlay_AllowsAndRecordsEntry(t *testing.T) {
 	}
 	if e.Summary == "" {
 		t.Error("Summary must be recorded")
+	}
+}
+
+// AC3 — a failed RECORD must block. Recording happens before the edit is allowed
+// precisely so an admitted-but-unlogged edit is impossible; if the record cannot
+// be written, allowing anyway would produce exactly that.
+func Test_BuildProbe_RecordFailure_BlocksAndWritesNoEntry(t *testing.T) {
+	root, prodFile, _ := goModuleFixture(t, true)
+	d := deps{
+		runnerForLang: fixedRunnerForLang(buildFailedRunner("undefined: missingHelper"), true),
+		proberForLang: fixedProberForLang(&fakeProber{clean: false, output: "still broken"}, true),
+	}
+
+	// Make only the SAVE fail, while reads keep working: saveStateLocked writes
+	// state.json.tmp before renaming, so making that path a DIRECTORY breaks the
+	// write and nothing else. Fully deterministic and uid-independent — no
+	// permission bits, so it behaves identically under root.
+	//
+	// Turning .speccraft itself into a regular file does NOT work here: the
+	// prod-guard prologue can then no longer resolve an active spec and ALLOWS the
+	// edit before the red-check ever runs, so the test would pass for the wrong
+	// reason.
+	if err := os.MkdirAll(filepath.Join(root, ".speccraft", "state.json.tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	stillBroken := "package pkg\n\nfunc Foo() int { return missingHelper() + 1 }\n"
+	err := processToolUse(decodeEnvelope(t, "Write", prodFile, stillBroken, root), d)
+	if err == nil {
+		t.Fatal("a failed record must BLOCK — allowing would admit an unlogged edit")
+	}
+	// Pin the REASON. Asserting only err != nil would pass if the guard blocked
+	// for some unrelated reason (e.g. falling back to "no failing test observed"
+	// because state could not be read), which would make this test useless as a
+	// regression for the record path specifically.
+	if !strings.Contains(err.Error(), "could not record") {
+		t.Errorf("the refusal must name the failed record, got: %v", err)
+	}
+}
+
+// AC4 — the bound bites. The 11th still-broken edit in a session is refused, and
+// the refusal must name /speccraft:spec:override so the operator has a way
+// forward rather than a wall.
+func Test_BuildProbe_BudgetExhausted_BlocksNamingOverride(t *testing.T) {
+	root, prodFile, _ := goModuleFixture(t, true)
+	d := deps{
+		runnerForLang: fixedRunnerForLang(buildFailedRunner("undefined: missingHelper"), true),
+		proberForLang: fixedProberForLang(&fakeProber{clean: false, output: "still broken"}, true),
+	}
+	stillBroken := "package pkg\n\nfunc Foo() int { return missingHelper() + 1 }\n"
+	in := decodeEnvelope(t, "Write", prodFile, stillBroken, root)
+
+	for i := 1; i <= 10; i++ {
+		if err := processToolUse(in, d); err != nil {
+			t.Fatalf("edit %d of the bound must be admitted: %v", i, err)
+		}
+	}
+	err := processToolUse(in, d)
+	if err == nil {
+		t.Fatal("the 11th still-broken edit must be refused")
+	}
+	if !strings.Contains(err.Error(), "speccraft:spec:override") {
+		t.Errorf("the refusal must name the override escape hatch, got: %v", err)
+	}
+	br, _ := speccraft.GetBuildRepair(root)
+	if len(br.Log) != 10 {
+		t.Errorf("a refused edit must append nothing: log = %d, want 10", len(br.Log))
+	}
+}
+
+// AC4 interleaved, at guard level — a clean probe ends repair mode but does NOT
+// refund budget. Without this a caller could alternate break/fix indefinitely and
+// never reach the bound.
+func Test_BuildProbe_BudgetSurvivesCleanProbe_AndResetSessionRestores(t *testing.T) {
+	root, prodFile, _ := goModuleFixture(t, true)
+	broken := deps{
+		runnerForLang: fixedRunnerForLang(buildFailedRunner("undefined: missingHelper"), true),
+		proberForLang: fixedProberForLang(&fakeProber{clean: false, output: "still broken"}, true),
+	}
+	clean := deps{
+		runnerForLang: fixedRunnerForLang(buildFailedRunner("undefined: missingHelper"), true),
+		proberForLang: fixedProberForLang(&fakeProber{clean: true}, true),
+	}
+	stillBroken := decodeEnvelope(t, "Write", prodFile,
+		"package pkg\n\nfunc Foo() int { return missingHelper() + 1 }\n", root)
+	repairing := decodeEnvelope(t, "Write", prodFile,
+		"package pkg\n\nfunc Foo() int { return 1 }\n", root)
+
+	for i := 0; i < 6; i++ {
+		if err := processToolUse(stillBroken, broken); err != nil {
+			t.Fatalf("edit %d: %v", i, err)
+		}
+	}
+	if err := processToolUse(repairing, clean); err != nil {
+		t.Fatalf("the repairing edit must be allowed: %v", err)
+	}
+	if br, _ := speccraft.GetBuildRepair(root); len(br.Log) != 6 {
+		t.Fatalf("a clean probe must not clear the log: %d, want 6", len(br.Log))
+	}
+
+	for i := 0; i < 4; i++ {
+		if err := processToolUse(stillBroken, broken); err != nil {
+			t.Fatalf("post-probe edit %d: %v", i, err)
+		}
+	}
+	if err := processToolUse(stillBroken, broken); err == nil {
+		t.Error("the budget must be session-wide: a clean probe cannot refund it")
+	}
+
+	if err := speccraft.ResetSession(root); err != nil {
+		t.Fatal(err)
+	}
+	// ResetSession clears the red candidates along with the log (they are one
+	// session's state), so the sibling candidate has to be re-registered or the
+	// red-check stops at "no failing test observed" before reaching the adapter.
+	if _, err := speccraft.CaptureRedCandidates(root,
+		filepath.Join(filepath.Dir(prodFile), "foo_test.go"), nil, []string{"TestFoo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := processToolUse(stillBroken, broken); err != nil {
+		t.Errorf("a new session must start with a full budget: %v", err)
+	}
+}
+
+// AC5 — the scenario that motivated the whole spec. Spec 0047 hit a forward
+// reference in production code and needed FIVE sequential repair edits, spending
+// five overrides against a stated budget of zero. The same shape must now cost
+// ZERO overrides: each intermediate edit is admitted and logged, and the final
+// repairing edit closes repair mode.
+func Test_BuildProbe_SequentialRepairScenario_ZeroOverrides(t *testing.T) {
+	root, prodFile, _ := goModuleFixture(t, true)
+	adapter := buildFailedRunner("undefined: runPredicates")
+
+	// Four partial steps, then the repair.
+	steps := []struct {
+		content string
+		clean   bool
+	}{
+		{"package pkg\n\nfunc Foo() int { return runPredicates() }\n", false},
+		{"package pkg\n\nfunc Foo() int { return runPredicates() + 1 }\n", false},
+		{"package pkg\n\nfunc Foo() int { return runPredicates() + 2 }\n", false},
+		{"package pkg\n\nfunc Foo() int { return runPredicates() + 3 }\n", false},
+		{"package pkg\n\nfunc runPredicates() int { return 0 }\n\nfunc Foo() int { return runPredicates() }\n", true},
+	}
+	for i, st := range steps {
+		d := deps{
+			runnerForLang: fixedRunnerForLang(adapter, true),
+			proberForLang: fixedProberForLang(&fakeProber{clean: st.clean, output: "undefined: runPredicates"}, true),
+		}
+		if err := processToolUse(decodeEnvelope(t, "Write", prodFile, st.content, root), d); err != nil {
+			t.Fatalf("repair step %d must be admitted without an override: %v", i+1, err)
+		}
+	}
+
+	br, _ := speccraft.GetBuildRepair(root)
+	if len(br.Log) != 4 {
+		t.Errorf("the four partial steps must be logged, the repair not: got %d entries", len(br.Log))
+	}
+	if br.Attestation != nil {
+		t.Error("the final repairing edit must close repair mode")
+	}
+}
+
+// AC6 — an UNRELATED Go edit while the build is broken is still admitted (the
+// author may legitimately need to touch another file mid-repair), but it is
+// recorded and counted like any other, so it cannot outlast the bound.
+func Test_BuildProbe_UnrelatedEditWhileBroken_IsAdmittedAndRecorded(t *testing.T) {
+	root, prodFile, _ := goModuleFixture(t, true)
+	other := filepath.Join(filepath.Dir(prodFile), "other.go")
+	if err := os.WriteFile(other, []byte("package pkg\n\nfunc Other() int { return 0 }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := deps{
+		runnerForLang: fixedRunnerForLang(buildFailedRunner("undefined: missingHelper"), true),
+		proberForLang: fixedProberForLang(&fakeProber{clean: false, output: "still broken"}, true),
+	}
+
+	in := decodeEnvelope(t, "Write", other, "package pkg\n\nfunc Other() int { return 7 }\n", root)
+	if err := processToolUse(in, d); err != nil {
+		t.Fatalf("an unrelated edit mid-repair must be admitted: %v", err)
+	}
+	br, _ := speccraft.GetBuildRepair(root)
+	if len(br.Log) != 1 {
+		t.Fatalf("it must still be RECORDED: got %d entries", len(br.Log))
+	}
+	if want := speccraft.NormalizeStateKey(other); br.Log[0].Path != want {
+		t.Errorf("the entry must name the file actually edited: got %q, want %q", br.Log[0].Path, want)
+	}
+}
+
+// AC8 — a prober that cannot COMPLETE is not evidence. The refusal must name both
+// the original build error and the probe failure, and must write no log entry:
+// treating an unanswerable probe as "clean" would admit edits on no evidence.
+func Test_BuildProbe_ProberFailure_BlocksNamingBothErrors(t *testing.T) {
+	root, prodFile, _ := goModuleFixture(t, true)
+	d := deps{
+		runnerForLang: fixedRunnerForLang(buildFailedRunner("undefined: missingHelper"), true),
+		proberForLang: fixedProberForLang(&fakeProber{err: context.DeadlineExceeded}, true),
+	}
+
+	err := processToolUse(decodeEnvelope(t, "Write", prodFile,
+		"package pkg\n\nfunc Foo() int { return 1 }\n", root), d)
+	if err == nil {
+		t.Fatal("a probe that cannot complete must BLOCK, not be read as clean")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "missingHelper") {
+		t.Errorf("the refusal must name the original build error, got: %v", err)
+	}
+	if !strings.Contains(msg, "deadline exceeded") {
+		t.Errorf("the refusal must name the probe failure, got: %v", err)
+	}
+	if br, _ := speccraft.GetBuildRepair(root); len(br.Log) != 0 {
+		t.Errorf("an unanswerable probe must record nothing: %+v", br.Log)
+	}
+}
+
+// AC8 — the timeout matrix. A malformed value must fall back to the default, never
+// silently disable the bound.
+func Test_BuildProbeTimeout_Matrix(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"", buildProbeDefaultTimeout},
+		{"   ", buildProbeDefaultTimeout},
+		{"not-a-duration", buildProbeDefaultTimeout},
+		{"0", buildProbeDefaultTimeout},
+		{"0s", buildProbeDefaultTimeout},
+		{"-5s", buildProbeDefaultTimeout},
+		{"45s", 45 * time.Second},
+		{"2m", 2 * time.Minute},
+	} {
+		if got := buildProbeTimeout(tc.raw); got != tc.want {
+			t.Errorf("buildProbeTimeout(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+	if buildProbeDefaultTimeout != 30*time.Second {
+		t.Errorf("the documented default is 30s, got %v", buildProbeDefaultTimeout)
 	}
 }
 
