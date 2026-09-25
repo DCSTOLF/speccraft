@@ -62,6 +62,55 @@ legitimately empty has still been touched.
   informational, always exit 0.
 - **`guardrails.md` and `conventions.md` amended together**, with the documented
   cap pinned to the compiled one bidirectionally.
+- **`saveStateLocked` now routes its rename through the package's single
+  `atomicRename` seam** (spec 0035, previously used only by `WriteReviewFile`) —
+  the retrofit spec 0035 explicitly skipped. The plan called for a new
+  `injectSaveFailure`; reusing the existing seam keeps ONE fault-injection point
+  for every durable write in `internal/speccraft`.
+
+## Files touched
+
+27 files, +3787 / −90. `started_at_sha: 9f7329d7` is set on this spec, so
+`git diff <sha>...HEAD` is exact and self-scoping — unlike spec 0049, whose close
+diff was empty and whose file list had to be reconstructed by hand.
+
+**Production (Go):**
+
+- `tools/internal/speccraft/buildrepair.go` (new) — the state layer:
+  `NormalizeStateKey`, `CaptureRedCandidates`, `GetRedBaseline`,
+  `RecordBuildRepair`, `ClearBuildRepairAttestation`, `GetBuildRepair`, the
+  unexported cap/summary/marker constants, and `ErrBuildRepairBudgetExhausted`
+- `tools/internal/speccraft/state.go` — three new `,omitempty` `Session` fields;
+  `saveStateLocked` routed through the spec-0035 `atomicRename` seam
+- `tools/cmd/speccraft-guard/buildprobe.go` (new) — `BuildProber`,
+  `goBuildProber`, `buildRepairBranch`, `runBuildProbe`, `buildProbeTimeout`,
+  `buildFailedBlockError`, `moduleRootFor`
+- `tools/cmd/speccraft-guard/main.go` — `deps.proberForLang`, `deps.toolInput`,
+  `var gatedWriteTools`, the capture path made blocking and normalized, both
+  `redCand` read sites normalized, `OutcomeBuildFailed` → `buildRepairBranch`
+- `tools/cmd/speccraft-state/buildrepair_log.go` (new) + `main.go` —
+  `case "build-repair-log":`
+
+**Tests (all new unless noted):** `state_buildrepair_test.go`,
+`buildrepair_test.go`, `buildrepair_inject_test.go` (internal package, reuses
+`atomicRename`), `buildrepair_policy_test.go` (internal package, reads the
+compiled cap), `statekey_normalizer_test.go`, `state_single_writer_test.go`
+(allowlist +3 field patterns), `redbaseline_test.go`, `buildprobe_test.go`,
+`buildprobe_fallback_test.go`, `buildprobe_nomutation_test.go`,
+`statekey_routing_test.go`, `writetools_test.go`, `buildrepair_log_test.go`.
+
+**Docs / policy / harness:** `.speccraft/guardrails.md` (the carve-out sentence),
+`.speccraft/conventions.md` (the spec-0018-AC13 entry and the now-fixed clobber
+bullet), `commands/spec/close.md` (step 2's informational report),
+`tests/hooks/close-gate.bats`.
+
+**Incidental, not covered by any AC:** `.gitignore` gains `.DS_Store`. Named here
+so the diff has no unexplained lines.
+
+The spec itself moved `status: blocked` → `in-progress` and was stamped with
+`started_at_sha` at the start of this session. It had been parked as `blocked`
+during spec 0049 — whose implementation was blocked live by defect B, the bug this
+spec fixes.
 
 ## Override accounting
 
@@ -103,7 +152,8 @@ strongest evidence available that both were worth fixing.
   a library-only module**, which would have reported every edit to such a module
   as still-broken and pushed it into repair mode — a false positive on the most
   ordinary case in this very repo. `go test -overlay -run '^$' ./...` alone
-  compiles non-test *and* test files (including for packages with no test files),
+  compiles non-test *and* test files — verified directly: a compile error in a
+  test-less package still fails the probe —
   runs nothing, and links into `GOCACHE` rather than the tree, so it needs no
   `-o` and cannot drop a binary into the author's repo. C1's intent is fully
   preserved; the command it added is the one that survived. **The spec text and
@@ -138,10 +188,36 @@ strongest evidence available that both were worth fixing.
   active spec and **allow** the edit, so it would have passed for the wrong
   reason; it now makes `state.json.tmp` a directory, breaking only the save.
 
+## Review
+
+Three rounds, cross-model; six outputs, six distinct md5s — **no false quorum in
+any round.** codex `changes-requested` ×3; claude-p `changes-requested` →
+`approve` → `approve`. Recorded as `approve-with-comments` rather than plain
+approve because codex never withdrew: its standing position is that a bounded,
+logged bypass is still a bypass. That is answered by policy — §A.5 amends the
+guardrail explicitly — rather than by mechanism, which is why `guardrails.md` was
+edited in the same pass as the code.
+
+Round 1's headline, reached independently by both reviewers: the draft's
+"still broken → allow" branch was an **unbounded** bypass, and the draft's defence
+(an unobservable signal is not really a bypass) did not survive contact —
+unobservable-therefore-allow-everything is not a narrower rule, it is no rule.
+That produced the bounded, self-closing, logged mode that shipped. Round 2 caught
+that the bound was per-episode rather than per-session. Round 3 found a real logic
+error in the poison-recovery text, which is why a failed capture now blocks.
+
+**Three changes landed after round 3 and are therefore unreviewed** — capture
+failure blocking the test-file edit, the `conventions.md` amendment, and AC18's
+bidirectional pin. Each is a direct adoption of a reviewer proposal (T8/T24/T25).
+
 ## Verification
 
 - `go test ./... -count=1` — 8/8 packages green; `go vet ./...` clean
-- `bats tests/hooks/` — 333/333 green
+- `bats tests/hooks/` — 333/333 green, with the freshly built `./bin` prefixed to
+  `PATH` (spec 0049's rule: without it `speccraft-state` resolves to the cached
+  1.11.0 plugin build in this devcontainer and two unrelated suites fail).
+  `tasks-verify.bats` is excluded from T26.b's predicate and run separately — it
+  invokes the verifier that is executing the predicate
 - `speccraft-drift scan-all` — clean
 - `GOOS=windows go build ./...` and `GOOS=darwin go build ./...` — both green,
   which is the evidence for the no-build-tag-split decision (`exec.CommandContext`

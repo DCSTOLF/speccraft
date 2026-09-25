@@ -10,7 +10,7 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
 4. `agents/` — Markdown subagent definitions: `spec-author`, `tdd-planner`, `spec-critic`, `cross-reviewer`, `aux-delegator`, `memory-keeper`.
 5. `skills/<name>/SKILL.md` — model-loaded skills: `speccraft-context`, `spec-format`, `aux-agents`.
 6. `tools/cmd/speccraft-{state,guard,drift}` — Go entrypoints, one binary each, that hooks and commands shell out to.
-7. `tools/internal/speccraft/` — shared Go logic (state, config, files, root discovery, plugin-root resolution, drift scan, Rust static recognition, **stack detection** — `DetectStack` in `detect.go`, spec 0034, **revision/frontmatter-writer core** — `ComputeRevisionState`, `setFrontmatterField`, `SetRevision`, and the kind-scoped `SetStatus(path, ArtifactKind, status)` over `kindStatuses` in `revision.go`, specs 0036 + 0049).
+7. `tools/internal/speccraft/` — shared Go logic (state, config, files, root discovery, plugin-root resolution, drift scan, Rust static recognition, **stack detection** — `DetectStack` in `detect.go`, spec 0034, **revision/frontmatter-writer core** — `ComputeRevisionState`, `setFrontmatterField`, `SetRevision`, and the kind-scoped `SetStatus(path, ArtifactKind, status)` over `kindStatuses` in `revision.go`, specs 0036 + 0049, **build-repair + red-candidate-baseline state** — `NormalizeStateKey`, `CaptureRedCandidates`, `RecordBuildRepair` and the unexported `buildRepairMaxEdits` in `buildrepair.go`, spec 0048).
 8. `tools/internal/speccraft/runner/` — language-neutral test-runner invocation primitive (Outcome enum, TestRecord, Runner interface, AdapterFor + AdapterForLanguage factories, crate fingerprint, pre-edit gate). Per-language adapters live here; Rust was the first concrete implementation (cargo + nextest). Spec 0018 extended the primitive to Go (`go test`), Python (`pytest`), and JS/TS (one shared `JSTSAdapter` driven by a configured command), so the red→green invariant is a real observed-failure check for all four languages — superseding spec 0005's original Rust-only validation boundary.
 9. `tools/internal/speccraft/rusttok/` — Rust string/comment-aware tokenizer + `fn`-name extractor. Used by the Rust static-classification code in `tools/internal/speccraft/rust_*.go`.
 10. `tools/internal/delegate/` — auxiliary-agent delegation config parsing (`agents.toml`).
@@ -261,3 +261,69 @@ See `history.md` for full ADR-style entries. Headlines:
   `scripts/verify-linux-pins.sh`, which reverts each production fix in a detached worktree
   (never a temp clone) and requires a Linux bats failure for each, so no fix is pinned only
   by the macOS runner and gating that job cannot silently un-pin a bug.
+
+- **Build-repair mode & the red-candidate baseline (spec 0048):** the spec-0018
+  red-check gains its one sanctioned carve-out and loses its clobber. **The layer
+  split is the boundary:** STATE lives in `tools/internal/speccraft/buildrepair.go`
+  under the `state.json` single-writer rule and does only state arithmetic; the
+  DECISION — the build probe — lives in the guard's cmd package, where it can be
+  fault-injected. Three new `,omitempty` `Session` fields: `red_baseline`
+  (normalized test-file path → the ids that file held on its FIRST touch this
+  session, written once and never rewritten), `build_repair` (the append-only log of
+  edits admitted while the build was broken, and the SOLE source of the repair
+  budget), `build_repair_attestation` (repair mode is open; audit metadata that gates
+  nothing and deliberately carries NO counter, because one there could diverge from
+  `len(build_repair)`). `ResetSession` clears all three together with
+  `red_candidates`. Exported ops: `NormalizeStateKey` — the ONE state-key normalizer
+  (abs → `EvalSymlinks` of the deepest existing ancestor → rejoin the non-existent
+  tail → `Clean`), pinned by a single-DEFINITION assertion plus **per-package**
+  anchored routing scans, because the red-check is package-scoped and a structural
+  RED cannot authorise an edit in another package; `CaptureRedCandidates`
+  (baseline-iff-absent then recompute `postIDs − baseline`, one lock and one save, so
+  a no-new-test edit cannot clobber a standing RED while a deletion still shrinks it
+  — and its error is RETURNED, so a failed capture BLOCKS the test-file edit, leaving
+  disk byte-unchanged for a genuine retry); `RecordBuildRepair` (append + open
+  attestation + **enforce the 10-edit cap inside the same atomic op**, the only
+  placement where "recorded before allowed" is race-free);
+  `ClearBuildRepairAttestation` (clears the attestation, NEVER the log, so a clean
+  probe cannot refund spent budget); plus the `GetRedBaseline`/`GetBuildRepair`
+  readers. `saveStateLocked` now routes its rename through the package's single
+  spec-0035 `atomicRename` seam — the retrofit spec 0035 explicitly skipped — so
+  every durable write has ONE fault-injection point. **Probe surface:**
+  `tools/cmd/speccraft-guard/buildprobe.go` holds the `BuildProber` interface, the
+  Go-only `goBuildProber`, `buildRepairBranch` (the four-way decision replacing the
+  flat `OutcomeBuildFailed` refusal — no prober → today's byte-identical refusal via
+  the one `buildFailedBlockError`; probe cannot complete → BLOCK naming both errors;
+  clean → allow silently and close repair mode; still broken → record then allow,
+  bounded), `runBuildProbe`, and `buildProbeTimeout`
+  (`SPECCRAFT_BUILD_PROBE_TIMEOUT`, default 30s, its own budget and never
+  `redCheckTimeout`'s). Resolution is `deps.proberForLang`, shaped exactly like
+  `deps.runnerForLang`; only `lang == "go"` resolves `ok == true`, so
+  Python/JS/TS/Rust keep today's behaviour — Go-only by MECHANISM, not scope.
+  `OutcomeBuildFailed` is the SINGLE entry point, asserted by a one-call-site
+  source-scan, and the in-flight edit reaches it via `deps.toolInput` rather than
+  through `siblingRedCheck`'s six-call-site signature (threading it would make an
+  intermediate state uncompilable — the wedge, hit while removing it).
+  **Isolation guarantees:** the post-edit content (derived by `applyEdit`, so all
+  four gated write tools are modelled) goes to a temp file referenced by an
+  `-overlay` JSON, `GOCACHE` is a temp dir, `GOFLAGS=-mod=readonly` forbids a
+  `go.mod`/`go.sum` rewrite, and the command is ONE
+  `go test -overlay … -run '^$' -count=1 ./...` — `go test` compiles test files too
+  (a `go build`-only probe calls an overlay clean while a sibling `_test.go` is
+  unbuildable) and links into the cache, whereas `go build -o <dir> ./...`
+  additionally FAILS with "no main packages to build" on a library-only module.
+  Nothing under the repository root is created, written or removed, asserted by a
+  recursive pre/post snapshot across all three outcomes. No build-tag split:
+  `-overlay` is portable and the process-group hang is handled by
+  `exec.CommandContext` + `cmd.WaitDelay`. **The gated tool set is now a single
+  source:** `var gatedWriteTools` in `main.go`, pinned against `applyEdit`'s switch,
+  both `hooks.json` matchers, and `hooks/pre-tool-use.sh`'s `GATED_TOOLS`. **The log
+  has a reader:** `speccraft-state build-repair-log` (on the `run()` seam) is
+  reported by `/speccraft:spec:close` step 2 and is informational **by contract** —
+  always exit 0, even on a read error — because a report that could fail the close
+  would make honest multi-step repair look like failure and the rational response
+  would be to avoid repair mode, putting the wedge back. **Policy:** this is the
+  SECOND bypass class alongside `/speccraft:spec:override`, so
+  `.speccraft/guardrails.md` names it with its bound, and that number is pinned to
+  the compiled `buildRepairMaxEdits` bidirectionally by a test anchored on the
+  carve-out SENTENCE rather than on a bare numeral.

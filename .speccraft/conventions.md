@@ -65,6 +65,10 @@ edit is wrongly blocked with "no failing test observed."
 
 Introduced by spec 0032 (extending the stale-cached-guard rule above).
 
+**Superseded for the shipped guard by spec 0048** — the per-file `red_baseline` means
+a no-new-test edit no longer disarms a standing RED. Keep this rule only when a stale
+cached pre-0048 guard is first on `PATH`.
+
 `SetRedCandidates` replaces the captured set PER FILE, so a NO-NEW-TEST edit to the
 sibling test file that holds your standing RED (adding an import, tweaking a comment,
 an assertion-only change) silently DISARMS it — the guard re-captures zero new test
@@ -89,6 +93,12 @@ test observed" (spec 0031's brittleness note (a), recurred in 0032 when adding a
 ### Avoid a NEW import to dodge the import-then-use guard deadlock
 
 Introduced by spec 0036.
+
+**Partly superseded by spec 0048, for Go only.** An `imported and not used` build
+failure now reaches the build probe, which finds the overlay still broken and ADMITS
+the edit after logging it — so the deadlock is gone, but each such edit spends one of
+the session's 10 build-repair admissions. The dependency-free local construct is
+still preferred (it costs nothing), and Python/JS/TS/Rust still block outright.
 
 Adding a fresh `import` to a Go file that already carries a standing RED can deadlock
 the TDD gate: the import line alone is a build-failing edit (`imported and not used`)
@@ -139,6 +149,49 @@ runtime "unknown subcommand", never a build error) at ZERO additional override.
   1) plus the `main.go` call site. When an atomic change spans multiple files or distant
   regions of one file, budget one override per EDIT you will actually issue, and prefer
   one wide Edit over two narrow ones when both are unavoidable.
+  **Spec 0048 spent 3 against a stated 1 in two named shapes.** (i) *One logical fix,
+  two read sites in the same function* — `siblingRedCheck` indexes `red_candidates`
+  twice, once to gather the just-added set and once to decide which ids to RUN; only
+  the first was normalized, and the follow-up was a second EDIT. Grep for EVERY site
+  before the first edit and make it one Edit. (ii) *A forward reference* — a caller
+  written before its callee breaks the build, and the guard then refuses the edit
+  that completes the repair. **Write the callee first, always**; stubs-before-callers
+  deserves its own task in the plan (0048's T13 exists only for that, and the one
+  step that skipped it cost the override). Since spec 0048 a Go forward reference
+  costs build-repair budget rather than an override — cheaper, but not free.
+
+### Fault injection: reuse the package's seam, keep it uid-independent, and place it where only the step under test can break
+
+Introduced by spec 0048, extending spec 0035's `atomicRename` seam and spec 0049's
+"never with file permissions" rule.
+
+- **Reuse the existing seam; do not add a second one.** `tools/internal/speccraft`
+  already had exactly one save-failure seam — the package-level `atomicRename` var
+  (spec 0035, for `WriteReviewFile`). Spec 0048's plan called for a new
+  `injectSaveFailure`; instead `saveStateLocked` now routes its final rename through
+  `atomicRename`, so the package has ONE fault-injection point for every durable
+  write. Two injection seams into the same operation is the "one shared entrypoint"
+  problem wearing a test's clothes. An internal test file (`package speccraft`)
+  alongside an external one (`package speccraft_test`) in the same directory is legal
+  Go and is the right way to reach an unexported seam — never export a seam for a
+  test's convenience (`buildrepair_inject_test.go`, `buildrepair_policy_test.go`).
+- **Where the Go seam is out of reach, inject real I/O failure deterministically and
+  uid-independently.** From a `cmd` package the internal seam is unreachable, so spec
+  0048 pre-creates `<root>/.speccraft/state.json.tmp` as a **directory**:
+  `os.WriteFile` then fails with `EISDIR` on every platform, as any uid — a directory
+  cannot be opened for writing as root either. Never inject with permission bits:
+  `AtomicWriteFile`'s same-directory temp + `os.Rename` succeeds into a writable
+  parent regardless of the target's mode, and a read-only parent silently degrades to
+  a no-op under root. The `.tmp`-suffix coupling is an implementation dependency — say
+  so in a comment, and assert the save actually FAILED before asserting anything about
+  the resulting state, so a neutered injection fails loudly instead of vacuously.
+- **Place the injection so it can only break the step under test.** Spec 0048's first
+  record-failure test made `.speccraft` itself a regular file. That breaks an EARLIER
+  step: `prodGuardPrologue` can no longer resolve an active spec, so it **allows** the
+  edit — and the test asserting a refusal passed for entirely the wrong reason. Before
+  trusting a fault-injection test, name the step you meant to break and confirm the
+  assertion still distinguishes it from every earlier step the same breakage disables.
+  This is spec 0049's "prove every negative assertion bites" applied to injection.
 
 ### One shared parser entrypoint, pinned by a source-scan assertion
 
@@ -520,6 +573,26 @@ When a hook in `hooks/` gates behavior on the Claude Code tool name (e.g. `tool_
 - **One-line change.** Adding a future write-tool name (e.g. a hypothetical `BulkEdit`) is a one-line change in two places: append to `GATED_TOOLS` in the hook source, extend the pipe-separated matcher regex in `hooks.json`. Anything more is a smell — refactor before extending.
 
 Coverage assertion: `tests/hooks/pre-tool-use-state-guard.bats` exercises one case per gated tool name so a missing matcher extension fails at test time, not silently at runtime.
+
+**The enumeration is paired on the Go side too (spec 0048).** `var gatedWriteTools`
+in `tools/cmd/speccraft-guard/main.go` is the single source for the gated tool set,
+and it has FOUR consumers: `applyEdit`'s switch, the `hooks.json` **PreToolUse**
+matcher, the `hooks.json` **PostToolUse** matcher, and `GATED_TOOLS` in
+`hooks/pre-tool-use.sh`. Nothing but a test connects them, and adding a tool to some
+but not all fails in the worst way — the hook never fires for the new tool, so every
+guard rule quietly stops applying to edits made with it: no error, no output, just an
+unguarded write path.
+
+**Corollary — a write that does not go through a gated TOOL is not gated at all.**
+The hook only ever sees `Edit`/`Write`/`MultiEdit`/`NotebookEdit`. A file written by
+**shell** — `cat > file <<'EOF'`, `printf >`, `cp`, `git checkout` — never reaches
+`speccraft-guard`, so a test file created that way registers **zero** red candidates,
+and the paired production edit is then refused with "no failing test observed" for a
+reason that has nothing to do with the test's content. Author every decisive RED with
+the Edit tool; if a test file was created by shell, re-touch it with an Edit that ADDS
+a test before the gated production edit. This is a property of the hook boundary, not
+a sanctioned bypass: the gate exists to be satisfied, and `/speccraft:spec:override`
+is the recorded path when it cannot be.
 
 ### E2E language-fixture pattern (`tests/e2e/<lang>_cycle.sh`)
 
@@ -986,7 +1059,7 @@ Rust's red-check is backed by a persisted `rust_test_baseline` that attests a pr
   What HAS changed is the case where the build is already broken and the edit in hand would repair it. Spec 0048 implemented the apply-edit-in-memory red-check this note previously deferred, as **build-repair mode**: for **Go**, `OutcomeBuildFailed` now triggers a `go test -overlay` probe of the post-edit content. A probe that comes back clean allows the edit silently and ends repair mode; one that comes back still-broken allows it too, but records it first, bounded at `buildRepairMaxEdits` (10) per session. So do NOT reach for an override merely because the tree does not compile — that path is mechanical now. Reach for one when you are introducing a brand-new exported symbol, and concentrate that bootstrapping into a single edit, because `ConsumeOverride` is consumed per EDIT rather than per task.
 
   Two cautions carried from implementing it. The probe is Go-only: Python, JS/TS and Rust still block on a build failure exactly as before. And budget is counted in edits, not tasks — spec 0048 itself budgeted 1 and spent 3, twice because one logical change spanned two non-adjacent regions of a file and once because a forward reference to a not-yet-written helper broke the build and the guard then forbade its own repair. Write the callee before the caller.
-- **A no-new-test edit to a test file CLEARS its just-added RED.** `Session.RedCandidates` is REPLACED per test-file path on each capture (`SetRedCandidates` is not additive), and an edit that introduces no new test identifier computes an empty just-added set — so a follow-up, assertion-only edit to a file that already registered a RED overwrites that file's candidates with empty and re-blocks the paired production edit. When a test edit must PRESERVE a standing RED, make it single-shot, or re-register by RENAMING a test (a rename introduces a new id). Concrete instance: spec 0031's two-step edit to `speccraft-state/version_test.go` briefly lost its RED this way and was fixed by a single-edit rename.
+- **A no-new-test edit to a test file used to CLEAR its just-added RED — FIXED by spec 0048, and the workaround survives only for a stale cached guard.** Before 0048, `Session.RedCandidates` was REPLACED per test-file path from `postIDs − preIDs` on each capture, so an edit introducing no new test identifier computed an empty just-added set, overwrote that file's candidates with empty, and re-blocked the paired production edit. It recurred continuously: spec 0031's two-step edit to `speccraft-state/version_test.go`, spec 0032's `strings` import, spec 0049's blocked GREEN, and **four times inside spec 0048's own implementation** — one of which cost an override. Spec 0048 replaced the difference with `postIDs − red_baseline[file]`, where the per-file baseline is captured **first-touch-only** per session (`CaptureRedCandidates`, one lock, one save), so a no-new-test edit now recomputes the SAME candidate set while a genuine deletion still shrinks it. The old recipe — keep the decisive RED as the last test-file touch, or re-register by RENAMING a test — is therefore needed in exactly one case: a **stale cached pre-0048 `speccraft-guard` first on `PATH`**. When dogfooding, rebuild and invoke `./bin/speccraft-guard` explicitly; do not reach for the workaround in fresh work.
 
 ### JSON-envelope-boundary RED for a change to a gated package's own surface
 
@@ -998,6 +1071,55 @@ When a failing test must justify a change to `speccraft-guard`'s OWN package —
 - **The technique.** Build a real Claude Code envelope STRING (`{"tool_name":"Write","tool_input":{"file_path":"…","content":"…"}}`), `json.Unmarshal` it into `HookInput`, and drive `processToolUse`. Against current code the not-yet-modeled key (`content`) is silently dropped, so the behavior is wrong and the assertion fails — but the test COMPILES (no reference to the new field/signature). That is a valid, observed, override-free RED. Add the finer-grained unit pins that DO reference the new symbol/signature in the same GREEN edit, AFTER the symbol exists, in the test file (test files are never TDD-gated).
 - **Contrast.** Spec 0030 also needed no override, but only because its new symbols lived in a FRESH package whose sibling test compiled against a stub-free surface. When the change mutates an EXISTING gated package's in-package surface, the compile-stable RED must live at the JSON boundary — that is the specific, load-bearing move.
 - **Canonical reference.** `Test_WriteEnvelope_CapturesRedCandidates_*` and `Test_WriteThenEditProd_NoOverride_Allows_{Go,Python}` in `tools/cmd/speccraft-guard/main_test.go` (spec 0031) — raw Write envelopes that fail on the dropped `content` key, made green by the `ToolInput.Content` + `ToolName`-switch fix.
+
+#### The same technique pins new STRUCT FIELDS — and drops an internal bootstrap to zero overrides
+
+Introduced by spec 0048.
+
+A brand-new EXPORTED symbol in `tools/internal/speccraft` costs one override only
+because its first test *names* the symbol and therefore cannot compile. Author that
+first test as a **data round-trip** instead and the cost is zero.
+
+- **The technique for new `Session` fields.** Write the new keys as **literal JSON**
+  into a temp `state.json`, `LoadState` → `SaveState`, and assert the keys survive.
+  Against current code the unknown keys are silently dropped, so the test fails on
+  BEHAVIOUR while the package still compiles — a valid, observed, override-free RED.
+  Canonical: `Test_Session_*_SurvivesLoadSaveRoundTrip` in
+  `tools/internal/speccraft/state_buildrepair_test.go`. It is what let spec 0048's
+  T2 — the task its single budgeted override existed FOR, a from-scratch
+  `buildrepair.go` with six new exported symbols — land at **zero**.
+- **Pair the stubs with that RED in ONE edit.** The round-trip RED authorises the
+  GREEN that creates the file, so land every new exported symbol as a compile-clean
+  stub in that single edit, then add the finer-grained tests that DO name the symbols
+  afterwards, in test files, which are never TDD-gated.
+- **What it does not buy.** A test that must name a changed *signature* on an
+  existing exported symbol has no data boundary to hide behind. When the only
+  obstacle is the override, prefer adding a NEW exported op over changing a
+  signature.
+
+### A structural or meta RED is PACKAGE-SCOPED
+
+Introduced by spec 0048.
+
+`siblingRedCheck` resolves sibling test files for the edited production file, so the
+failing test that authorises an edit must live in the **same package** as that file.
+A source-scanning meta-test is a RED like any other: a perfectly good failing
+structural test sitting in `tools/internal/speccraft` cannot authorise an edit in
+`tools/cmd/speccraft-guard`, and the guard's refusal ("no failing test observed")
+gives no hint that the test it wants is in the wrong directory.
+
+- **Split a repo-wide routing/enumeration scan per package.** Spec 0048's plan had
+  ONE test in `internal/speccraft` reaching into `cmd/speccraft-guard` by file path;
+  the guard then refused the very edit that test was written to authorise. The
+  shipped form is two: `statekey_normalizer_test.go` asserts the repo-wide single
+  DEFINITION, and `statekey_routing_test.go` asserts that package's own call sites
+  route through it. Each package pins its own call sites, so a new guard call site
+  fails the guard's own suite — better coverage AND an authorising RED.
+- **Anchor per function, per spec 0032.** Both scans locate `func X(` and search
+  WITHIN that body; a whole-file search passes as soon as any function mentions the
+  token and would clear a function deriving its own key.
+- **Cross-package reach by file path is brittle anyway** — it hardcodes a relative
+  path between two test trees.
 
 ## Language extensibility in `speccraft-guard`
 

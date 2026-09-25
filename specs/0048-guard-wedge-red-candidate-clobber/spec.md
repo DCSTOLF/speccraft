@@ -1,7 +1,7 @@
 ---
 id: "0048"
 title: "Guard wedge and red-candidate clobber"
-status: in-progress
+status: closed
 created: 2026-08-07
 authors: [claude]
 packages: ["tools/cmd/speccraft-guard", "tools/internal/speccraft", "commands/spec"]
