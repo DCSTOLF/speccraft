@@ -66,6 +66,28 @@ type Session struct {
 	// Cleared on SessionStart via ResetSession. Mutations route exclusively
 	// through speccraft-state / state.go per the single-writer rule.
 	RedCandidates map[string][]string `json:"red_candidates,omitempty"`
+
+	// RedBaseline maps a normalized test-file path to the test identifiers that
+	// file held on its FIRST touch this session. It is written once per file and
+	// never rewritten, which is what makes RedCandidates recomputable: a later
+	// edit that adds no new `func Test…` recomputes the same candidate set from
+	// this baseline instead of clearing it (spec 0048 defect B, AC11/AC13).
+	// Keys are produced by NormalizeStateKey. Cleared only by ResetSession.
+	RedBaseline map[string][]string `json:"red_baseline,omitempty"`
+
+	// BuildRepair is the append-only log of edits admitted while the build was
+	// broken — the audit trail for build-repair mode (spec 0048 defect A). An
+	// entry is recorded BEFORE the edit is allowed, so an allowed-but-unlogged
+	// edit is impossible, and its length is the sole source of the repair budget.
+	// A clean probe clears the attestation but NEVER this log, so spent budget
+	// cannot be refunded. Cleared only by ResetSession (AC4, AC13, AC17).
+	BuildRepair []BuildRepairEntry `json:"build_repair,omitempty"`
+
+	// BuildRepairAttestation records that build-repair mode is currently open.
+	// Audit metadata only — it gates nothing, and deliberately carries no edit
+	// counter, because a counter here could diverge from len(BuildRepair).
+	// Cleared by a clean probe or by ResetSession (spec 0048).
+	BuildRepairAttestation *BuildRepairAttestation `json:"build_repair_attestation,omitempty"`
 }
 
 var mu sync.Mutex
@@ -109,12 +131,15 @@ func saveStateLocked(root string, s State) error {
 	if err != nil {
 		return err
 	}
-	// Atomic write via temp file.
+	// Atomic write via temp file. The rename goes through the package's single
+	// `atomicRename` seam (review.go, spec 0035) rather than calling os.Rename
+	// directly, so spec 0048's fault-injection tests can force a save failure
+	// and assert the capture is all-or-nothing. One seam for the whole package.
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return atomicRename(tmp, path)
 }
 
 // GetField reads a top-level string field from state.json.

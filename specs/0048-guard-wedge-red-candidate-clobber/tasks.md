@@ -5,27 +5,27 @@ contract: done-means-v1
 
 # Tasks
 
-- [ ] **T1** — RED: the three new session keys survive a load/save round-trip (compile-stable field RED)
+- [x] **T1** — RED: the three new session keys survive a load/save round-trip (compile-stable field RED)
   done: $ grep -q 'func Test_Session_RedBaseline_SurvivesLoadSaveRoundTrip(' tools/internal/speccraft/state_buildrepair_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_Session_(RedBaseline|BuildRepairLog|BuildRepairAttestation)_SurvivesLoadSaveRoundTrip|Test_Session_NewKeys_AreOmittedWhenUnset' -count=1
-- [ ] **T2** — GREEN: from-scratch exported bootstrap in `buildrepair.go` — **THE ONE BUDGETED OVERRIDE STEP** (budget 1; spend 0 if T1's runtime RED carries it)
+- [x] **T2** — GREEN: from-scratch exported bootstrap in `buildrepair.go` — **THE ONE BUDGETED OVERRIDE STEP** (budget 1; spend 0 if T1's runtime RED carries it)
   done: $ [ "$(grep -cE '^func (NormalizeStateKey|CaptureRedCandidates|GetRedBaseline|RecordBuildRepair|ClearBuildRepairAttestation|GetBuildRepair)\(' tools/internal/speccraft/buildrepair.go)" = 6 ] && grep -qE '^\s*buildRepairMaxEdits\s*=\s*10' tools/internal/speccraft/buildrepair.go && cd tools && go build ./...
-- [ ] **T3** — GREEN: `Session` gains `red_baseline`, `build_repair`, `build_repair_attestation` (all `,omitempty`)
+- [x] **T3** — GREEN: `Session` gains `red_baseline`, `build_repair`, `build_repair_attestation` (all `,omitempty`)
   done: $ grep -q 'red_baseline,omitempty' tools/internal/speccraft/state.go && grep -q 'build_repair,omitempty' tools/internal/speccraft/state.go && grep -q 'build_repair_attestation,omitempty' tools/internal/speccraft/state.go && cd tools && go test ./internal/speccraft/ -run 'Test_Session_' -count=1
-- [ ] **T4** — RED: normalizer + atomic baseline capture semantics, and the single-writer allowlist extended to cover the new fields
-  - [ ] **T4.a** — normalizer: uncleaned, symlinked, and not-yet-existing paths
-  - [ ] **T4.b** — first-touch baseline, later-touch immutability, no-new-test preservation, deletion shrink
-  - [ ] **T4.c** — injected save failure leaves neither baseline nor candidates
-  - [ ] **T4.d** — `TestRustState_NoExternalWriters_Grep` allowlists `buildrepair.go` and gains the three new field patterns
+- [x] **T4** — RED: normalizer + atomic baseline capture semantics, and the single-writer allowlist extended to cover the new fields
+  - [x] **T4.a** — normalizer: uncleaned, symlinked, and not-yet-existing paths
+  - [x] **T4.b** — first-touch baseline, later-touch immutability, no-new-test preservation, deletion shrink
+  - [x] **T4.c** — injected save failure leaves neither baseline nor candidates
+  - [x] **T4.d** — `TestRustState_NoExternalWriters_Grep` allowlists `buildrepair.go` and gains the three new field patterns
   done: $ grep -q 'buildrepair.go' tools/internal/speccraft/state_single_writer_test.go && grep -q 'RedBaseline' tools/internal/speccraft/state_single_writer_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_NormalizeStateKey_|Test_CaptureRedCandidates_|Test_ResetSession_ClearsBaselineCandidatesAttestationAndLog|TestRustState_NoExternalWriters_Grep' -count=1
-- [ ] **T5** — GREEN: implement `NormalizeStateKey`, `CaptureRedCandidates`, `GetRedBaseline` under one `mu.Lock()` and one save
+- [x] **T5** — GREEN: implement `NormalizeStateKey`, `CaptureRedCandidates`, `GetRedBaseline` under one `mu.Lock()` and one save
   done: $ grep -q 'mu.Lock()' tools/internal/speccraft/buildrepair.go && [ "$(grep -c 'saveStateLocked' tools/internal/speccraft/buildrepair.go)" -ge 1 ] && cd tools && go test ./internal/speccraft/ -run 'Test_NormalizeStateKey_|Test_CaptureRedCandidates_' -count=1
-- [ ] **T6** — RED: build-repair ledger semantics — attestation, sha256 digest, 4 KiB summary cap, session-wide budget, save-failure atomicity
-  - [ ] **T6.a** — first entry opens the attestation and logs seq 1; N entries are sequence-ordered
-  - [ ] **T6.b** — digest is sha256 over the FULL pre-truncation bytes; summary capped with a visible marker
-  - [ ] **T6.c** — AC4 interleaved: 6 → clean → log still 6 → 4 more → 5th exhausted; `ResetSession` restores
-  - [ ] **T6.d** — injected save failure returns an error and writes no partial entry
+- [x] **T6** — RED: build-repair ledger semantics — attestation, sha256 digest, 4 KiB summary cap, session-wide budget, save-failure atomicity
+  - [x] **T6.a** — first entry opens the attestation and logs seq 1; N entries are sequence-ordered
+  - [x] **T6.b** — digest is sha256 over the FULL pre-truncation bytes; summary capped with a visible marker
+  - [x] **T6.c** — AC4 interleaved: 6 → clean → log still 6 → 4 more → 5th exhausted; `ResetSession` restores
+  - [x] **T6.d** — injected save failure returns an error and writes no partial entry
   done: $ grep -q 'Test_RecordBuildRepair_BudgetIsSessionWide_CleanProbeDoesNotRefund' tools/internal/speccraft/buildrepair_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_RecordBuildRepair_|Test_ClearBuildRepairAttestation_' -count=1
-- [ ] **T7** — GREEN: implement `RecordBuildRepair`, `ClearBuildRepairAttestation`, `GetBuildRepair` with the cap enforced inside the lock
+- [x] **T7** — GREEN: implement `RecordBuildRepair`, `ClearBuildRepairAttestation`, `GetBuildRepair` with the cap enforced inside the lock
   done: $ grep -q 'ErrBuildRepairBudgetExhausted' tools/internal/speccraft/buildrepair.go && grep -q 'buildRepairMaxEdits' tools/internal/speccraft/buildrepair.go && cd tools && go test ./internal/speccraft/ -count=1
 - [ ] **T8** — RED: guard-level baseline behaviour, including AC14's byte-unchanged assertion
   - [ ] **T8.a** — no-new-test re-edit preserves candidates; the prod edit is allowed (AC11)

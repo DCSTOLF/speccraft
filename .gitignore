@@ -20,3 +20,6 @@ tests/e2e/.logs/
 
 # Go build artifacts
 tools/bin/
+
+# macOS Finder metadata — created by the host mounting this workspace, never project intent
+.DS_Store

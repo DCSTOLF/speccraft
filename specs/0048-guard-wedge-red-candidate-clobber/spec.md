@@ -1,11 +1,12 @@
 ---
 id: "0048"
 title: "Guard wedge and red-candidate clobber"
-status: blocked
+status: in-progress
 created: 2026-08-07
 authors: [claude]
 packages: ["tools/cmd/speccraft-guard", "tools/internal/speccraft", "commands/spec"]
 related-specs: ["0018", "0031", "0032", "0047"]
+started_at_sha: "9f7329d7cdb22bda17d6dc7433e0fefe8ce965cc"
 ---
 
 # Spec 0048 — Guard wedge and red-candidate clobber

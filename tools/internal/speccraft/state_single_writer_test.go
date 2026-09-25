@@ -42,10 +42,23 @@ func TestRustState_NoExternalWriters_Grep(t *testing.T) {
 		// state.go (callers route through SetField).
 		regexp.MustCompile(`\.ActiveProduct\s*=[^=]`),
 		regexp.MustCompile(`\.ActiveDesign\s*=[^=]`),
+		// Spec 0048: the build-repair ledger and the red-candidate baseline are
+		// Session fields like any other. Adding buildrepair.go to allowedFiles
+		// below without also adding these patterns would have LOOSENED the
+		// guardrail — the new fields would be written by a second file and
+		// covered by nothing.
+		regexp.MustCompile(`\.RedBaseline\s*=[^=]`),
+		regexp.MustCompile(`\.BuildRepair\s*=[^=]`),
+		regexp.MustCompile(`\.BuildRepairAttestation\s*=[^=]`),
 	}
 
 	allowedFiles := map[string]bool{
 		filepath.Join(toolsDir, "internal", "speccraft", "state.go"): true,
+		// Spec 0048: buildrepair.go is a SECOND sanctioned writer inside the
+		// same package — it owns the atomic capture/record operations, which
+		// must hold one lock across load→modify→save and therefore cannot be
+		// expressed as a call into state.go.
+		filepath.Join(toolsDir, "internal", "speccraft", "buildrepair.go"): true,
 	}
 
 	var violations []string
