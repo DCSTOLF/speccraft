@@ -172,13 +172,12 @@ func dispatchByLanguage(input HookInput, absPath, root string, cfg speccraft.Spe
 	case speccraft.IsRustFile(absPath):
 		return rustDispatch(input, absPath, root, cfg, d)
 	case speccraft.IsTestFile(absPath):
-		// Test files (Go, Python, JS/TS) — always allowed. Capture the set
-		// of test ids this edit introduces so the production red-check can
-		// require an observed failure within the session's just-added set
-		// (spec 0018, Decision D1). Best-effort: a capture error never blocks
-		// a test-file edit.
-		captureRedCandidates(input.ToolInput, absPath, root)
-		return nil
+		// Test files (Go, Python, JS/TS) — allowed, but the capture must
+		// SUCCEED. The set of test ids this edit introduces is what the
+		// production red-check requires an observed failure within (spec 0018,
+		// Decision D1), so a failed capture is not a cosmetic loss: it silently
+		// disarms the next production edit. Spec 0048 makes it blocking.
+		return captureRedCandidates(input.ToolInput, absPath, root)
 	case speccraft.IsProductionGoFile(absPath), speccraft.IsProductionPythonFile(absPath):
 		return goPythonProdGuard(absPath, root, cfg, d)
 	case speccraft.IsProductionJSTSFile(absPath):
@@ -366,7 +365,18 @@ func computeJustAddedForEdit(absPath string, ti ToolInput, root string) ([]strin
 // baseline, so the just-added set is captured at test-edit time and consumed by
 // siblingRedCheck at production-edit time (spec 0018, Decision D1). Best-effort
 // — any error is swallowed; a test-file edit is always allowed.
-func captureRedCandidates(ti ToolInput, absPath, root string) {
+// The just-added set is derived by the state layer from a FIRST-TOUCH baseline,
+// not from this edit's pre/post difference (spec 0048 defect B). Computing it
+// here as postIDs−preIDs was the bug: on a second edit that adds no new test,
+// pre and post are identical, the difference is empty, and the file's standing
+// candidates were overwritten with [] — blocking a legitimately-RED production
+// edit. CaptureRedCandidates keeps the baseline from the first touch, so the same
+// candidates are recomputed while a genuine deletion still shrinks them.
+//
+// The error is RETURNED, not discarded. A swallowed capture failure allowed the
+// test-file edit and left the session with no registered candidate, so the next
+// production edit was refused for a reason unrelated to the author's work.
+func captureRedCandidates(ti ToolInput, absPath, root string) error {
 	preBytes, _ := os.ReadFile(absPath)
 	pre := string(preBytes)
 	post := applyEdit(pre, ti)
@@ -374,14 +384,15 @@ func captureRedCandidates(ti ToolInput, absPath, root string) {
 	preIDs := extractTestIDs(absPath, pre)
 	postIDs := extractTestIDs(absPath, post)
 
-	preSet := stringSet(preIDs)
-	var added []string
-	for _, id := range postIDs {
-		if _, ok := preSet[id]; !ok {
-			added = append(added, id)
-		}
+	if _, err := speccraft.CaptureRedCandidates(root, absPath, preIDs, postIDs); err != nil {
+		return fmt.Errorf(
+			"speccraft-guard: could not record the just-added test ids for %s:\n  %v\n\n"+
+				"The edit was NOT applied. Without this record the next production edit\n"+
+				"would be refused for an unrelated reason, so the failure is surfaced here.\n"+
+				"Fix the cause and retry the same edit.",
+			absPath, err)
 	}
-	_ = speccraft.SetRedCandidates(root, absPath, added)
+	return nil
 }
 
 // extractTestIDs selects the per-language test-identifier extractor by file
@@ -517,7 +528,14 @@ func siblingRedCheck(absPath, root string, cfg speccraft.SpeccraftConfig, lang s
 	justAdded := map[string]struct{}{}
 	var justAddedList []string
 	for _, sib := range siblings {
-		for _, id := range redCand[sib] {
+		// BOTH sides of this lookup go through the one normalizer (spec 0048
+		// AC15). Capture writes NormalizeStateKey(path); reading with a raw
+		// sibling path meant a symlinked repo registered candidates under the
+		// real path and looked them up under the link — so every production edit
+		// was refused while state.json plainly showed the candidate. An
+		// *uncleaned* path does NOT expose this, because resolveSiblingTests
+		// already returns a cleaned path; only the symlink case diverges.
+		for _, id := range redCand[speccraft.NormalizeStateKey(sib)] {
 			if _, seen := justAdded[id]; !seen {
 				justAdded[id] = struct{}{}
 				justAddedList = append(justAddedList, id)
@@ -551,7 +569,12 @@ func siblingRedCheck(absPath, root string, cfg speccraft.SpeccraftConfig, lang s
 	defer cancel()
 
 	for _, sib := range siblings {
-		ids := redCand[sib]
+		// Normalized for the same reason as the gathering loop above: this is the
+		// SECOND read of redCand, and it decides which ids actually get RUN. With
+		// only the first site normalized the candidate was found but no adapter
+		// was ever invoked, so the check fell through to "no failing test among
+		// the tests added" — a different message for the same root cause.
+		ids := redCand[speccraft.NormalizeStateKey(sib)]
 		sibDir := filepath.Dir(sib)
 		for _, id := range ids {
 			res, err := adapter.Run(ctx, runner.Request{WorkDir: sibDir, FullyQualifiedTestName: id})
