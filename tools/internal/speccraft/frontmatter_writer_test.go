@@ -26,7 +26,7 @@ func Test_SetFrontmatterField_RewritesFirstMatchOnly_LaterDupUntouched(t *testin
 
 func Test_SetFrontmatterField_MixedEOL_PreservesPerLineTerminator(t *testing.T) {
 	p := writeSpecFile(t, "---\r\nstatus: draft\r\nrevision: 1\r\n---\r\nbody\n")
-	if err := SetStatus(p, "reviewed"); err != nil {
+	if err := SetStatus(p, KindSpec, "reviewed"); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
@@ -38,7 +38,7 @@ func Test_SetFrontmatterField_MixedEOL_PreservesPerLineTerminator(t *testing.T) 
 
 func Test_SetFrontmatterField_PreservesBOM_And_NoEOFNewline(t *testing.T) {
 	p := writeSpecFile(t, "\ufeff---\nstatus: draft\n---\nbody-no-newline")
-	if err := SetStatus(p, "planned"); err != nil {
+	if err := SetStatus(p, KindSpec, "planned"); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
@@ -50,7 +50,7 @@ func Test_SetFrontmatterField_PreservesBOM_And_NoEOFNewline(t *testing.T) {
 
 func Test_SetFrontmatterField_NoBakOrTmpSibling(t *testing.T) {
 	p := writeSpecFile(t, "---\nstatus: draft\n---\n")
-	if err := SetStatus(p, "reviewed"); err != nil {
+	if err := SetStatus(p, KindSpec, "reviewed"); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(p))
@@ -68,7 +68,7 @@ func Test_SetFrontmatterField_SameValue_SkipWrite_NoMtimeChurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := os.Stat(p)
-	if err := SetStatus(p, "draft"); err != nil {
+	if err := SetStatus(p, KindSpec, "draft"); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.Stat(p)
@@ -104,9 +104,28 @@ func Test_SetFrontmatterField_InsertsWhenAbsent_CRLF(t *testing.T) {
 	}
 }
 
+// Test_SetStatus_Design_BomCrlfNoEofNewline_OnlyStatusLineChanges — spec 0049
+// AC6. A PIN, not a RED: setFrontmatterField is kind-agnostic, so this is
+// already correct once the kind-scoped enum lands. AC6 requires it asserted for
+// a DESIGN artifact specifically, because the PM/Architect kinds were never
+// covered by the spec-0036 byte-safety tests.
+func Test_SetStatus_Design_BomCrlfNoEofNewline_OnlyStatusLineChanges(t *testing.T) {
+	// UTF-8 BOM + CRLF terminators + no EOF newline, all at once.
+	src := "\ufeff---\r\nid: \"0001\"\r\nstatus: draft\r\nauthors: [claude]\r\n---\r\nbody-no-newline"
+	p := writeSpecFile(t, src)
+	if err := SetStatus(p, KindDesign, "decided"); err != nil {
+		t.Fatalf("SetStatus on a design: %v", err)
+	}
+	got, _ := os.ReadFile(p)
+	want := "\ufeff---\r\nid: \"0001\"\r\nstatus: decided\r\nauthors: [claude]\r\n---\r\nbody-no-newline"
+	if string(got) != want {
+		t.Errorf("only the status: line may change.\n got %q\nwant %q", got, want)
+	}
+}
+
 func Test_SetFrontmatterField_NoFrontmatterBlock_Errors(t *testing.T) {
 	p := writeSpecFile(t, "# just a heading\nno frontmatter here\n")
-	if err := SetStatus(p, "reviewed"); err == nil {
+	if err := SetStatus(p, KindSpec, "reviewed"); err == nil {
 		t.Error("expected error mutating a file with no frontmatter block")
 	}
 }

@@ -132,7 +132,7 @@ func Test_ListArchivedOrdinals_IgnoresNonNumericSuffix(t *testing.T) {
 
 func Test_SetStatus_AcceptsEnum_RejectsUnknown(t *testing.T) {
 	p := writeSpecFile(t, "---\nstatus: draft\nrevision: 1\n---\n\n# S\n")
-	if err := SetStatus(p, "reviewed"); err != nil {
+	if err := SetStatus(p, KindSpec, "reviewed"); err != nil {
 		t.Fatalf("valid status: %v", err)
 	}
 	b, _ := os.ReadFile(p)
@@ -140,7 +140,7 @@ func Test_SetStatus_AcceptsEnum_RejectsUnknown(t *testing.T) {
 		t.Errorf("status = %q, want reviewed after write", v)
 	}
 	before, _ := os.ReadFile(p)
-	if err := SetStatus(p, "bogus"); err == nil {
+	if err := SetStatus(p, KindSpec, "bogus"); err == nil {
 		t.Error("expected error for unknown status value")
 	}
 	after, _ := os.ReadFile(p)
@@ -170,7 +170,7 @@ func Test_SetRevision_RejectsDemotion_Monotonic(t *testing.T) {
 func Test_SetStatus_And_SetRevision_RefuseClosedSpec(t *testing.T) {
 	p := writeSpecFile(t, "---\nstatus: closed\nrevision: 4\n---\n\n# S\n")
 	before, _ := os.ReadFile(p)
-	if err := SetStatus(p, "draft"); err == nil {
+	if err := SetStatus(p, KindSpec, "draft"); err == nil {
 		t.Error("SetStatus must refuse an already-closed spec")
 	}
 	if err := SetRevision(p, 9); err == nil {
@@ -178,6 +178,174 @@ func Test_SetStatus_And_SetRevision_RefuseClosedSpec(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
 		t.Error("a closed spec must be left byte-unchanged")
+	}
+}
+
+// --- spec 0049: kind-scoped status enum (AC4, AC5) ---
+//
+// The three artifact kinds have genuinely different state machines — spec
+// draft→reviewed→planned→in-progress→closed, design draft→decided→closed,
+// brief draft→prioritized→closed. A single flat enum would let a spec.md be
+// set to "decided", so each kind is scoped to exactly its own lifecycle and
+// the two mirror tests below prove the new values are NOT pooled.
+
+func Test_SetStatus_KindDesign_AcceptsDecided_RejectsPrioritized(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		wantOK bool
+	}{
+		{"decided", true},
+		{"draft", true},
+		{"closed", true},
+		{"prioritized", false}, // the brief-only value must not leak in
+		{"reviewed", false},    // spec-only value
+		{"planned", false},     // spec-only value
+		{"in-progress", false}, // spec-only value
+	} {
+		p := writeSpecFile(t, "---\nstatus: draft\n---\n\n# D\n")
+		before, _ := os.ReadFile(p)
+		err := SetStatus(p, KindDesign, tc.status)
+		if tc.wantOK && err != nil {
+			t.Errorf("design status %q: unexpected error %v", tc.status, err)
+			continue
+		}
+		if !tc.wantOK {
+			if err == nil {
+				t.Errorf("design status %q: expected rejection", tc.status)
+			}
+			if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+				t.Errorf("design status %q: a rejected status must not mutate the file", tc.status)
+			}
+		}
+	}
+}
+
+func Test_SetStatus_KindBrief_AcceptsPrioritized_RejectsDecided(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		wantOK bool
+	}{
+		{"prioritized", true},
+		{"draft", true},
+		{"closed", true},
+		{"decided", false}, // the design-only value must not leak in
+		{"reviewed", false},
+		{"planned", false},
+		{"in-progress", false},
+	} {
+		p := writeSpecFile(t, "---\nstatus: draft\n---\n\n# B\n")
+		before, _ := os.ReadFile(p)
+		err := SetStatus(p, KindBrief, tc.status)
+		if tc.wantOK && err != nil {
+			t.Errorf("brief status %q: unexpected error %v", tc.status, err)
+			continue
+		}
+		if !tc.wantOK {
+			if err == nil {
+				t.Errorf("brief status %q: expected rejection", tc.status)
+			}
+			if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+				t.Errorf("brief status %q: a rejected status must not mutate the file", tc.status)
+			}
+		}
+	}
+}
+
+// Test_SetStatus_KindSpec_RejectsDecidedAndPrioritized is the no-regression
+// half: today's spec enum is unchanged and neither new value leaks into it.
+func Test_SetStatus_KindSpec_RejectsDecidedAndPrioritized(t *testing.T) {
+	for _, status := range []string{"draft", "reviewed", "planned", "in-progress", "blocked", "closed"} {
+		p := writeSpecFile(t, "---\nstatus: draft\n---\n\n# S\n")
+		if err := SetStatus(p, KindSpec, status); err != nil {
+			t.Errorf("spec status %q must still be accepted: %v", status, err)
+		}
+	}
+	for _, status := range []string{"decided", "prioritized"} {
+		p := writeSpecFile(t, "---\nstatus: draft\n---\n\n# S\n")
+		before, _ := os.ReadFile(p)
+		if err := SetStatus(p, KindSpec, status); err == nil {
+			t.Errorf("spec status %q must be rejected (kind leak)", status)
+		}
+		if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+			t.Errorf("spec status %q: a rejected status must not mutate the file", status)
+		}
+	}
+}
+
+// Test_SetStatus_EmptyKind_Errors pins AC4's "ArtifactKind has no meaningful
+// zero value": an empty or unrecognized kind is an error, NOT a silent synonym
+// for spec, and it is rejected BEFORE the status is validated (so the error
+// names the kind even when the status would also have been invalid).
+func Test_SetStatus_EmptyKind_Errors(t *testing.T) {
+	for _, kind := range []ArtifactKind{ArtifactKind(""), ArtifactKind("bogus")} {
+		p := writeSpecFile(t, "---\nstatus: draft\n---\n\n# S\n")
+		before, _ := os.ReadFile(p)
+		// "draft" is valid for every kind, so a rejection here can only come
+		// from the kind check.
+		if err := SetStatus(p, kind, "draft"); err == nil {
+			t.Errorf("kind %q with a universally-valid status must still error", kind)
+		}
+		if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+			t.Errorf("kind %q: a rejected kind must not mutate the file", kind)
+		}
+	}
+}
+
+// Test_SetStatus_RenameFailure_LeavesFileByteIdentical_NoTempLeftover — spec
+// 0049 AC2 at the Go layer. A PIN, not a RED: AtomicWriteFile already removes
+// its temp on a failed rename.
+//
+// This is the test that replaced the review-round-1 fixture. The original AC
+// proposed a read-only TARGET FILE, which cannot work — AtomicWriteFile writes
+// a same-directory temp and renames over the target, and rename(2) succeeds
+// into a writable parent regardless of the target's mode. A read-only PARENT
+// was rejected too: it blocks a normal user but silently no-ops under root, so
+// the test would pass for the wrong reason in any privileged environment.
+// Injecting at the seam is deterministic and uid-independent.
+func Test_SetStatus_RenameFailure_LeavesFileByteIdentical_NoTempLeftover(t *testing.T) {
+	p := writeSpecFile(t, "---\nstatus: draft\n---\n\n# D\n")
+	before, _ := os.ReadFile(p)
+
+	orig := atomicRename
+	atomicRename = func(_, _ string) error { return revErr("injected rename failure") }
+	defer func() { atomicRename = orig }()
+
+	if err := SetStatus(p, KindDesign, "decided"); err == nil {
+		t.Error("a failed rename must surface an error, never a silent success")
+	}
+	if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+		t.Error("target must be byte-identical after a failed write")
+	}
+	entries, err := os.ReadDir(filepath.Dir(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != filepath.Base(p) {
+			t.Errorf("temp remnant left behind after a failed write: %s", e.Name())
+		}
+	}
+}
+
+// Test_SetStatus_ClosedArtifact_Immutable_AllKinds — AC5: closed-artifact
+// immutability is kind-INdependent.
+func Test_SetStatus_ClosedArtifact_Immutable_AllKinds(t *testing.T) {
+	for _, tc := range []struct {
+		kind   ArtifactKind
+		status string
+	}{
+		{KindSpec, "draft"},
+		{KindDesign, "decided"},
+		{KindBrief, "prioritized"},
+	} {
+		p := writeSpecFile(t, "---\nstatus: closed\n---\n\n# X\n")
+		before, _ := os.ReadFile(p)
+		if err := SetStatus(p, tc.kind, tc.status); err == nil {
+			t.Errorf("kind %q: must refuse an already-closed artifact", tc.kind)
+		}
+		if after, _ := os.ReadFile(p); !bytes.Equal(before, after) {
+			t.Errorf("kind %q: a closed artifact must be left byte-unchanged", tc.kind)
+		}
 	}
 }
 

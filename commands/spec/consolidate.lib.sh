@@ -406,7 +406,14 @@ consolidate_backfill_order() {
           case " $emitted " in *" $c "*) ;; *) printf '%s\n' "$c"; emitted="$emitted $c" ;; esac
         done
       done < <(printf '%s\n' "$hdr" | history_provenance_ids)
-    done < <(history_parse_entries "$H" | tac)
+    # POSIX line reversal, NOT `tac` (spec 0049 AC8). `tac` is GNU-only and
+    # absent on macOS, and the failure was silent: a missing command inside a
+    # process substitution yields empty input, so the loop body never ran and
+    # `set -euo pipefail` never fired (a process substitution's exit status is
+    # not checked). The whole history-chronological half was dropped with no
+    # error. history_parse_entries emits exactly one header line per entry, so
+    # reversing LINES is reversing ENTRIES.
+    done < <(history_parse_entries "$H" | awk '{a[NR]=$0} END{for(i=NR;i>0;i--) print a[i]}')
   fi
   # history-less / compacted-out candidates last, by created: then id
   local tmp created; tmp="$(mktemp)"

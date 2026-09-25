@@ -1,0 +1,92 @@
+---
+spec: "0048"
+contract: done-means-v1
+---
+
+# Tasks
+
+- [ ] **T1** — RED: the three new session keys survive a load/save round-trip (compile-stable field RED)
+  done: $ grep -q 'func Test_Session_RedBaseline_SurvivesLoadSaveRoundTrip(' tools/internal/speccraft/state_buildrepair_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_Session_(RedBaseline|BuildRepairLog|BuildRepairAttestation)_SurvivesLoadSaveRoundTrip|Test_Session_NewKeys_AreOmittedWhenUnset' -count=1
+- [ ] **T2** — GREEN: from-scratch exported bootstrap in `buildrepair.go` — **THE ONE BUDGETED OVERRIDE STEP** (budget 1; spend 0 if T1's runtime RED carries it)
+  done: $ [ "$(grep -cE '^func (NormalizeStateKey|CaptureRedCandidates|GetRedBaseline|RecordBuildRepair|ClearBuildRepairAttestation|GetBuildRepair)\(' tools/internal/speccraft/buildrepair.go)" = 6 ] && grep -qE '^\s*buildRepairMaxEdits\s*=\s*10' tools/internal/speccraft/buildrepair.go && cd tools && go build ./...
+- [ ] **T3** — GREEN: `Session` gains `red_baseline`, `build_repair`, `build_repair_attestation` (all `,omitempty`)
+  done: $ grep -q 'red_baseline,omitempty' tools/internal/speccraft/state.go && grep -q 'build_repair,omitempty' tools/internal/speccraft/state.go && grep -q 'build_repair_attestation,omitempty' tools/internal/speccraft/state.go && cd tools && go test ./internal/speccraft/ -run 'Test_Session_' -count=1
+- [ ] **T4** — RED: normalizer + atomic baseline capture semantics, and the single-writer allowlist extended to cover the new fields
+  - [ ] **T4.a** — normalizer: uncleaned, symlinked, and not-yet-existing paths
+  - [ ] **T4.b** — first-touch baseline, later-touch immutability, no-new-test preservation, deletion shrink
+  - [ ] **T4.c** — injected save failure leaves neither baseline nor candidates
+  - [ ] **T4.d** — `TestRustState_NoExternalWriters_Grep` allowlists `buildrepair.go` and gains the three new field patterns
+  done: $ grep -q 'buildrepair.go' tools/internal/speccraft/state_single_writer_test.go && grep -q 'RedBaseline' tools/internal/speccraft/state_single_writer_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_NormalizeStateKey_|Test_CaptureRedCandidates_|Test_ResetSession_ClearsBaselineCandidatesAttestationAndLog|TestRustState_NoExternalWriters_Grep' -count=1
+- [ ] **T5** — GREEN: implement `NormalizeStateKey`, `CaptureRedCandidates`, `GetRedBaseline` under one `mu.Lock()` and one save
+  done: $ grep -q 'mu.Lock()' tools/internal/speccraft/buildrepair.go && [ "$(grep -c 'saveStateLocked' tools/internal/speccraft/buildrepair.go)" -ge 1 ] && cd tools && go test ./internal/speccraft/ -run 'Test_NormalizeStateKey_|Test_CaptureRedCandidates_' -count=1
+- [ ] **T6** — RED: build-repair ledger semantics — attestation, sha256 digest, 4 KiB summary cap, session-wide budget, save-failure atomicity
+  - [ ] **T6.a** — first entry opens the attestation and logs seq 1; N entries are sequence-ordered
+  - [ ] **T6.b** — digest is sha256 over the FULL pre-truncation bytes; summary capped with a visible marker
+  - [ ] **T6.c** — AC4 interleaved: 6 → clean → log still 6 → 4 more → 5th exhausted; `ResetSession` restores
+  - [ ] **T6.d** — injected save failure returns an error and writes no partial entry
+  done: $ grep -q 'Test_RecordBuildRepair_BudgetIsSessionWide_CleanProbeDoesNotRefund' tools/internal/speccraft/buildrepair_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_RecordBuildRepair_|Test_ClearBuildRepairAttestation_' -count=1
+- [ ] **T7** — GREEN: implement `RecordBuildRepair`, `ClearBuildRepairAttestation`, `GetBuildRepair` with the cap enforced inside the lock
+  done: $ grep -q 'ErrBuildRepairBudgetExhausted' tools/internal/speccraft/buildrepair.go && grep -q 'buildRepairMaxEdits' tools/internal/speccraft/buildrepair.go && cd tools && go test ./internal/speccraft/ -count=1
+- [ ] **T8** — RED: guard-level baseline behaviour, including AC14's byte-unchanged assertion
+  - [ ] **T8.a** — no-new-test re-edit preserves candidates; the prod edit is allowed (AC11)
+  - [ ] **T8.b** — deletion shrinks the candidate set (AC12)
+  - [ ] **T8.c** — capture failure BLOCKS the test-file edit and leaves `foo_test.go` byte-unchanged (AC14 touch 1)
+  - [ ] **T8.d** — the retry re-captures from that unchanged content and the prod edit is allowed (AC14 touch 2)
+  - [ ] **T8.e** — the sibling lookup finds an entry written through a symlinked path (AC15)
+  done: $ grep -q 'Test_TestFileEdit_CaptureFailure_BlocksEdit_AndLeavesDiskByteUnchanged' tools/cmd/speccraft-guard/redbaseline_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_TestFileEdit_|Test_SiblingLookup_FindsEntryWrittenViaSymlinkedPath' -count=1
+- [ ] **T9** — GREEN: guard capture path calls the atomic op, blocks on failure, reports on stderr, and normalizes both sides of the sibling lookup
+  done: $ grep -q 'speccraft.CaptureRedCandidates(' tools/cmd/speccraft-guard/main.go && grep -q 'speccraft.NormalizeStateKey(' tools/cmd/speccraft-guard/main.go && ! grep -q 'Best-effort: a capture error never blocks' tools/cmd/speccraft-guard/main.go && cd tools && go test ./cmd/speccraft-guard/ -count=1
+- [ ] **T10** — RED: one normalizer, pinned by an anchored per-function source-scan
+  done: $ grep -q 'Test_NormalizeStateKey_IsTheSoleEntrypoint' tools/internal/speccraft/statekey_normalizer_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_NormalizeStateKey_IsTheSoleEntrypoint|Test_StateKeyConstruction_RoutesThroughNormalizer' -count=1
+- [ ] **T11** — GREEN: every remaining state-key construction routes through `NormalizeStateKey`
+  done: $ [ "$(grep -rc 'func NormalizeStateKey(' tools/internal/speccraft/buildrepair.go)" = 1 ] && cd tools && go test ./internal/speccraft/ -run 'Test_StateKeyConstruction_RoutesThroughNormalizer' -count=1
+- [ ] **T12** — RED: prober behaviour through the compile-stable `processToolUse` seam (AC1/AC2) plus the R1 known-gap pin
+  - [ ] **T12.a** — clean overlay allows silently, writes no entry (AC1)
+  - [ ] **T12.b** — clean overlay clears the attestation and re-arms the ordinary red-check (AC1)
+  - [ ] **T12.c** — still-broken overlay allows and records one entry with seq, normalized path, digest, capped summary (AC2)
+  - [ ] **T12.d** — correction C1: a broken sibling TEST file is detected by the probe's `go test -run '^$'` half, so it is admitted through bounded repair mode and LOGGED — never silently allowed
+  done: $ grep -q 'Test_BuildProbe_CleanOverlay_AllowsEditSilently' tools/cmd/speccraft-guard/buildprobe_test.go && grep -q 'Test_BuildProbe_ProductionCleanTestBroken_IsDetectedAndLogged' tools/cmd/speccraft-guard/buildprobe_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_(CleanOverlay|StillBrokenOverlay|ProductionCleanTestBroken)' -count=1
+- [ ] **T13** — GREEN (half 1, stubs-before-callers): `buildprobe.go` lands standalone and compiles; T12 stays RED on purpose. Includes correction C1's two-command probe.
+  done: $ grep -q 'func runBuildProbe(' tools/cmd/speccraft-guard/buildprobe.go && grep -q 'WaitDelay' tools/cmd/speccraft-guard/buildprobe.go && grep -q 'GOFLAGS=-mod=readonly' tools/cmd/speccraft-guard/buildprobe.go && grep -q -- "-run" tools/cmd/speccraft-guard/buildprobe.go && grep -q -- '-count=1' tools/cmd/speccraft-guard/buildprobe.go && cd tools && go build ./... && GOOS=windows go build ./...
+- [ ] **T14** — GREEN (half 2): wire `deps.proberForLang`, thread `ToolInput` into `siblingRedCheck`, replace the `OutcomeBuildFailed` return with the repair-mode branch
+  done: $ grep -q 'proberForLang' tools/cmd/speccraft-guard/main.go && [ "$(grep -c 'd.proberForLang(' tools/cmd/speccraft-guard/main.go)" = 1 ] && grep -q 'runBuildProbe(' tools/cmd/speccraft-guard/main.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_' -count=1
+- [ ] **T15** — RED: repair-mode boundaries — AC3 record-failure, AC4 budget, AC5 zero-override repair run, AC6 unrelated edit, AC8 infra failure + timeout matrix
+  - [ ] **T15.a** — a failed record BLOCKS and leaves no partial entry (AC3)
+  - [ ] **T15.b** — the 11th still-broken edit blocks naming `/speccraft:spec:override` (AC4)
+  - [ ] **T15.c** — the interleaved 6 → clean → 4 → block sequence, and `ResetSession` restoring the budget (AC4)
+  - [ ] **T15.d** — spec 0047's five-edit sequential repair runs at ZERO overrides (AC5)
+  - [ ] **T15.e** — an unrelated Go edit while broken is admitted, recorded, and bounded (AC6)
+  - [ ] **T15.f** — a prober that cannot complete blocks naming BOTH errors; no entry written (AC8)
+  - [ ] **T15.g** — `SPECCRAFT_BUILD_PROBE_TIMEOUT` matrix: unset/empty/invalid/zero/negative → 30s (AC8)
+  done: $ grep -q 'Test_BuildProbe_SequentialRepairScenario_ZeroOverrides' tools/cmd/speccraft-guard/buildprobe_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_(RecordFailure|BudgetExhausted|BudgetSurvivesCleanProbe|SequentialRepairScenario|UnrelatedEditWhileBroken|InfraFailure)|Test_BuildProbeTimeout_Matrix' -count=1
+- [ ] **T16** — GREEN: repair-mode boundary fixes (record-before-allow ordering, sentinel mapping, error wording)
+  done: $ grep -q 'ErrBuildRepairBudgetExhausted' tools/cmd/speccraft-guard/main.go && grep -q 'speccraft:spec:override' tools/cmd/speccraft-guard/main.go && cd tools && go test ./cmd/speccraft-guard/ -count=1
+- [ ] **T17** — RED/PIN: unsupported languages fall back to today's exact blocking behaviour (AC7), Rust included and pinned separately
+  done: $ grep -q 'Test_RustDispatch_BuildFailed_Unchanged_NoProber' tools/cmd/speccraft-guard/buildprobe_fallback_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_UnsupportedLanguages_FallBackToBlocking|Test_RustDispatch_BuildFailed_Unchanged_NoProber' -count=1
+- [ ] **T18** — RED/PIN: the probe never mutates the tree — tri-outcome recursive snapshot plus overlay/content/GOCACHE all outside the root (AC9)
+  done: $ grep -q 'Test_BuildProbe_OverlayAndCacheResolveOutsideRepoRoot' tools/cmd/speccraft-guard/buildprobe_nomutation_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_(NeverMutatesWorkingTree|OverlayAndCacheResolveOutsideRepoRoot)' -count=1
+- [ ] **T19** — RED/PIN: the ordinary red-check path is behaviourally unchanged — full branch table plus a one-call-site source-scan (AC16)
+  done: $ grep -q 'Test_Prober_ReachedFromExactlyOneCallSite' tools/cmd/speccraft-guard/buildprobe_fallback_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_SiblingRedCheck_OrdinaryPaths_Unchanged_ZeroProberInvocations|Test_Prober_ReachedFromExactlyOneCallSite' -count=1
+- [ ] **T20** — RED: gated write tools pinned by paired enumeration across `hooks.json`, `pre-tool-use.sh`, `applyEdit` and the prober table (AC10)
+  done: $ grep -q 'Test_GatedWriteTools_EnumerationIsTheSingleSource' tools/cmd/speccraft-guard/writetools_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_GatedWriteTools_EnumerationIsTheSingleSource|Test_BuildProbe_EveryGatedWriteTool_ReachesProberWithDerivedContent' -count=1
+- [ ] **T21** — GREEN: land `var gatedWriteTools` in `main.go` as the single source the three consumers agree with
+  done: $ grep -q 'gatedWriteTools' tools/cmd/speccraft-guard/main.go && grep -q 'Edit|Write|MultiEdit|NotebookEdit' hooks/hooks.json && grep -q 'GATED_TOOLS="Edit Write MultiEdit NotebookEdit"' hooks/pre-tool-use.sh && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_GatedWriteTools_' -count=1
+- [ ] **T22** — RED: the log gets a consumer — `speccraft-state build-repair-log` (run() seam) plus durable bats cases in `close-gate.bats` (AC17)
+  done: $ grep -q 'build-repair-log' tests/hooks/close-gate.bats && grep -q 'Test_StateCmd_BuildRepairLog_NonEmpty_ListsSeqPathSummary' tools/cmd/speccraft-state/buildrepair_log_test.go && cd tools && go test ./cmd/speccraft-state/ -run 'Test_StateCmd_BuildRepairLog_' -count=1
+- [ ] **T23** — GREEN: `case "build-repair-log":` plus the informational report in `commands/spec/close.md` step 2
+  done: $ grep -q 'case "build-repair-log":' tools/cmd/speccraft-state/main.go && grep -q 'build-repair-log' commands/spec/close.md && bats tests/hooks/close-gate.bats
+- [ ] **T24** — RED: AC18's bidirectional anti-drift pin — the compiled cap must appear inside the guardrail's carve-out sentence
+  - [ ] **T24.a** — internal test file (`package speccraft`) so the unexported constant is readable
+  - [ ] **T24.b** — regex anchored on the carve-out SENTENCE, never on a bare numeral
+  - [ ] **T24.c** — `conventions.md` no longer claims the build-failure rule is never relaxed
+  done: $ head -1 tools/internal/speccraft/buildrepair_policy_test.go | grep -qx 'package speccraft' && grep -q 'buildRepairMaxEdits' tools/internal/speccraft/buildrepair_policy_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_Guardrails_CarveOut|Test_Conventions_BuildFailureEntry_NoLongerClaimsNeverRelaxed' -count=1
+- [ ] **T25** — GREEN: amend `.speccraft/guardrails.md` and `.speccraft/conventions.md` together (both or neither, spec §A.5)
+  done: $ grep -q 'build-repair' .speccraft/guardrails.md && grep -q '10' .speccraft/guardrails.md && ! grep -q 'must not be relaxed' .speccraft/conventions.md && cd tools && go test ./internal/speccraft/ -run 'Test_Guardrails_CarveOut|Test_Conventions_BuildFailureEntry' -count=1
+- [ ] **T26** — REFACTOR + full verification: dedupe test helpers, whole suite, vet, drift, cross-compile
+  - [ ] **T26.a** — `go test ./... -count=1` and `go vet ./...` green
+  - [ ] **T26.b** — full `bats tests/hooks/` suite green. NOTE: the `done:` predicate below deliberately EXCLUDES `tasks-verify.bats`, because that suite invokes `speccraft-state tasks-verify`, which is the verifier executing this predicate — the spec-0047 no-self-recursion rule. Run it manually as part of this task; it is not a silent omission.
+  - [ ] **T26.c** — `speccraft-drift scan-all` clean
+  - [ ] **T26.d** — `GOOS=windows go build ./...` green (proves the no-build-tag decision)
+  - [ ] **T26.e** — overrides actually spent are recorded in `changelog.md` against the stated budget of 1
+  - [ ] **T26.f** — R1 follow-up spec filed for the test-compile blind spot
+  done: $ cd tools && go test ./... -count=1 && go vet ./... && GOOS=windows go build ./... && cd .. && bats $(ls tests/hooks/*.bats | grep -v tasks-verify)

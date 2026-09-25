@@ -136,8 +136,11 @@ teardown() {
   ws_manifest_body api 'my repo' > "$TEST_REPO/workspace.yml" 2>/dev/null
   run bash -c "cd '$TEST_REPO' && speccraft-state list-members"
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qP 'present\tapi'
-  echo "$output" | grep -qP 'present\tmy repo'
+  # `grep -P` is GNU-only (BSD grep has no -P), so the tab is produced by
+  # printf and matched with -F rather than written as a PCRE escape (spec 0049).
+  tab="$(printf '\t')"
+  echo "$output" | grep -qF "present${tab}api"
+  echo "$output" | grep -qF "present${tab}my repo"
 }
 
 @test "ws_manifest_body: empty manifest parses to zero members" {

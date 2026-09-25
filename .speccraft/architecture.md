@@ -10,7 +10,7 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
 4. `agents/` — Markdown subagent definitions: `spec-author`, `tdd-planner`, `spec-critic`, `cross-reviewer`, `aux-delegator`, `memory-keeper`.
 5. `skills/<name>/SKILL.md` — model-loaded skills: `speccraft-context`, `spec-format`, `aux-agents`.
 6. `tools/cmd/speccraft-{state,guard,drift}` — Go entrypoints, one binary each, that hooks and commands shell out to.
-7. `tools/internal/speccraft/` — shared Go logic (state, config, files, root discovery, plugin-root resolution, drift scan, Rust static recognition, **stack detection** — `DetectStack` in `detect.go`, spec 0034, **revision/frontmatter-writer core** — `ComputeRevisionState`, `setFrontmatterField`, `SetStatus`, `SetRevision` in `revision.go`, spec 0036).
+7. `tools/internal/speccraft/` — shared Go logic (state, config, files, root discovery, plugin-root resolution, drift scan, Rust static recognition, **stack detection** — `DetectStack` in `detect.go`, spec 0034, **revision/frontmatter-writer core** — `ComputeRevisionState`, `setFrontmatterField`, `SetRevision`, and the kind-scoped `SetStatus(path, ArtifactKind, status)` over `kindStatuses` in `revision.go`, specs 0036 + 0049).
 8. `tools/internal/speccraft/runner/` — language-neutral test-runner invocation primitive (Outcome enum, TestRecord, Runner interface, AdapterFor + AdapterForLanguage factories, crate fingerprint, pre-edit gate). Per-language adapters live here; Rust was the first concrete implementation (cargo + nextest). Spec 0018 extended the primitive to Go (`go test`), Python (`pytest`), and JS/TS (one shared `JSTSAdapter` driven by a configured command), so the red→green invariant is a real observed-failure check for all four languages — superseding spec 0005's original Rust-only validation boundary.
 9. `tools/internal/speccraft/rusttok/` — Rust string/comment-aware tokenizer + `fn`-name extractor. Used by the Rust static-classification code in `tools/internal/speccraft/rust_*.go`.
 10. `tools/internal/delegate/` — auxiliary-agent delegation config parsing (`agents.toml`).
@@ -50,6 +50,7 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
   reporting.
 - **Release / distribution pipeline (spec 0021):** helper binaries ship only as GitHub Release assets, fetched on first use by `scripts/install-binaries.sh` (which writes a gitignored `.binary-provenance` = `download`|`source` that `scripts/doctor.sh` surfaces). The pipeline is closed-loop and deadlock-free: a `main` version bump → `auto-tag` job (`ci.yml`) pushes `vX.Y.Z` via `RELEASE_TAG_PAT` (never `GITHUB_TOKEN`) → `release.yml` builds + publishes the four platform tarballs + `checksums.txt` → its final step runs `scripts/verify-release.sh` (strong-form SHA-256 oracle) keyed to the pushed tag. The completeness guard keys off the **tag**, never the bare `plugin.json` value, so it can never fail on the legitimate transient "bumped but not yet released" state. `scripts/verify-release.sh` and `scripts/auto-tag.sh` are pure/hermetic via `SPECCRAFT_RELEASE_BASE` (`file://`) and `SPECCRAFT_PLUGIN_JSON`/`SPECCRAFT_TAGS` injection, pinned by sibling shell tests in `tests/e2e/`. Note: `speccraft-guard` does NOT gate `.sh` files (only the four source languages), so this whole surface is shell + workflow, outside the TDD-gate boundary.
 - **Dispatch-by-language pattern in `speccraft-guard`:** `tools/cmd/speccraft-guard/main.go` routes tool-use events through `dispatchByLanguage`, which delegates to per-language handlers. Currently supported: Go, Python, Rust, JavaScript, and TypeScript. Adding a new language is a localized change: implement `<lang>Dispatch` (reusing the shared `prodGuardPrologue` tri-state helper for the red-phase preamble), add a case to `dispatchByLanguage`, and extend `IsTestFile` in `tools/internal/speccraft/files.go`. The prologue helper was extracted in spec 0010 alongside the JS/TS dispatcher to keep gate semantics symmetric across languages. The open-coded language switch present before spec 0005 is gone. Since spec 0031, `applyEdit` models a write-tool call's post-edit content by the ORIGINATING TOOL NAME (`ToolInput.ToolName`, injected once at dispatch), not by payload shape (`old_string == ""`). Spec 0032 modeled the two remaining write-tools, so the switch now covers FOUR tools plus a fallback: `Write` → `content`; `Edit` → in-place first-occurrence replace (even when `old_string` is empty); `MultiEdit` → `applyMultiEdit`, folding a NEW named `MultiEditEntry{OldString,NewString}` slice as first-occurrence replacements over the RUNNING content (later entry sees earlier output; empty `OldString` skipped; absent target no-op — `.ipynb` JSON not parsed); `NotebookEdit` → `new_source` as the whole post-edit content (empty string included); any OTHER tool → `default:` returns pre-edit content unchanged (the generic unmodeled-tool fallback, re-established for the next new write-tool). A recurrence grep (`reserved_slot_test.go`) forbids "reserved"/"unmodeled" language from re-accreting on the default branch.
+- **Task-completion boundary (spec 0047):** `tasks.md` is read by **two deliberately separate parsers**. `speccraft.TasksDonePct` (`tools/internal/speccraft/state.go`) counts only column-0 `- [` lines and therefore reports **parent-level** progress, ignoring sub-checkboxes — pinned by `Test_StateCmd_TasksDonePct_IgnoresSubCheckboxes` so it stays correct by intent rather than by accident. `parseTasksFile` (`tools/cmd/speccraft-state/tasks_verify.go`, cmd package, unexported) implements the full done-means grammar. The duplication is intentional: unifying them would require an exported `internal/` symbol and a fresh override, and the two answer different questions. `speccraft-state tasks-verify` is the **close-time completion gate** — `/speccraft:spec:close` step 2 runs it with `--run` before the diff and before `memory-keeper`, so a doomed close does no downstream work. Its structural checks are read-only, but a `done: $` predicate is arbitrary POSIX shell run at the developer's own trust level from the repo root with the full ambient environment (the same trust already extended to the detected test command), bounded by `SPECCRAFT_TASKS_VERIFY_TIMEOUT` (default 30s) with a whole-**process-group** kill so a forked grandchild cannot hold the captured pipe open. Predicate execution is unix-only (`tasks_predicate.go` / `tasks_predicate_other.go` build-tag pair; the non-unix half reports `predicate-unsupported` rather than silently reporting clean).
 - **Runner-invocation primitive boundary:** `tools/internal/speccraft/runner/` is the source of truth for "did a real test fail?" — the static file-classification step answers "did this edit add a test?" only. No language-specific code lives in `tools/cmd/speccraft-guard`; all runner detail (argv shape, output parsing, outcome classification) is owned by the per-language adapter in the runner package. The interface accepts a `Request{WorkDir, FullyQualifiedTestName}` and returns a normalized `Result{Outcome, Records, Stderr}`.
 
 ## Key decisions
@@ -130,6 +131,25 @@ See `history.md` for full ADR-style entries. Headlines:
   within-draft edits keep the same revision by design — the counter advances only via
   the archive path. The AC10 meta-guard `tests/hooks/frontmatter-writer-guard.bats`
   forbids raw in-place `status:`/`revision:` rewrites in `commands/**`.
+
+  **Extended by spec 0049 to all three artifact kinds.** `SetStatus` is now
+  `SetStatus(path string, kind ArtifactKind, status string)` over a per-kind
+  `kindStatuses` map (spec `draft/reviewed/planned/in-progress/blocked/closed`, design
+  `draft/decided/closed`, brief `draft/prioritized/closed`), replacing spec 0036's flat
+  `validStatuses` — with NO compatibility wrapper and no meaningful zero value for
+  `ArtifactKind` (the empty or unknown kind errors BEFORE status validation, so an
+  uninitialised kind can never be silently reinterpreted as `spec`). Argument parsing and
+  the sole `--kind` default (`KindSpec`) moved out of `main.go`'s `case "set-status":`
+  into `tools/cmd/speccraft-state/set_status_cmd.go` — cmd package, riding the `run()`
+  seam — so the convenience default is visible at the CLI boundary and nowhere inside the
+  library; `--kind` validates the status enum only, never the target's actual kind.
+  `commands/arch/decide.lib.sh` and `commands/pm/prioritize.lib.sh` now DELEGATE their
+  `status:` writes to `set-status --kind design|brief` (each resolving the binary
+  `$SPECCRAFT_STATE_BIN` → PATH → plugin-local `bin/`), replacing two byte-identical
+  GNU-only in-place `sed` edits that no-opped silently on macOS while returning 0. The
+  AC10 meta-guard's path-shape filter is widened to all three kinds and to non-literal
+  targets; its scan root stays `commands/` and must NEVER widen to `specs/` — a test
+  asserts this, because the archived spec quotes the forbidden line verbatim.
 - **Ledger write-lock layer (spec 0045):** every ledger writer
   (`ledger-set`, `ledger-archive`) serializes its ENTIRE read-modify-write
   transaction — including `ledger-archive`'s two-file archive-append+live-remove
@@ -212,3 +232,32 @@ See `history.md` for full ADR-style entries. Headlines:
   reconcile, `/speccraft:arch:orchestrate`) on that foundation. Advisory throughout:
   the conductor never gates a member's spec flow or the TDD guard; one `blocked`
   member never stalls siblings.
+
+- **Shell-portability boundary (spec 0049):** the shipped shell surfaces (`hooks/`,
+  `commands/`, `tools/`, `templates/`, `agents/`, `skills/`) target BSD/macOS userland as
+  well as GNU, enforced by two independent mechanisms with different jobs. (1)
+  `tests/hooks/portability-guard.bats` — a fixture-first bounded lexical guard over those
+  surfaces forbidding eight GNU-only forms (`sed -i` with no backup suffix, the `0,/re/`
+  address, `tac`, `readlink -f`, `grep -P`, `stat -c`, `date -d`, `base64 -w`), prefix-safe,
+  comment- and fence-blind, with no escape hatch; it answers "did we ship a GNU-ism to a
+  user?" and deliberately excludes `tests/**` and `tools/**/*_test.go` as test-side, never
+  installed. (2) A `hooks-macos` CI job runs the FULL `tests/hooks/` bats suite on
+  `macos-14` through Homebrew Bash 5 (macOS ships 3.2; a runtime `BASH_VERSINFO[0] >= 5`
+  assertion keeps a silently-3.2 job from passing for the wrong reason). It answers "does
+  our own suite run on BSD?" — the only mechanism that catches SEMANTIC GNU-isms an
+  enumerated-form guard can never reach (it would have flagged the `sed -i`, never the
+  `0,/re/` address). Its value depends entirely on NOT installing GNU userland, so
+  `scripts/assert-no-gnu-userland.sh` runs as a workflow step BEFORE bats — path-shape
+  rejection of `*/gnubin/*` and `*/coreutils/libexec/*` shadowing plus a behavioural
+  `--version` probe for a GNU binary reached through an unusual symlink — and fails the job
+  loudly if a shim is present. It is deliberately NOT a bats test: on Linux `tac` resolves
+  legitimately, so a live assertion would invert and fail the Linux `hooks` job;
+  `tests/hooks/no-gnu-userland.bats` exercises the same logic against synthetic
+  `$SPECCRAFT_PROBE_PATH` values, platform-independently. The Linux `hooks` job prepends
+  the freshly built `bin/` to `$GITHUB_PATH` because the command libs' resolver prefers
+  PATH over the plugin-local copy. Platform scope is BSD/macOS + GNU only — Windows /
+  MSYS / busybox are out of scope, and `tests/e2e/` stays Linux-only (devcontainer), the
+  single remaining test-side exclusion. Coverage topology is checked by the non-CI-gating
+  `scripts/verify-linux-pins.sh`, which reverts each production fix in a detached worktree
+  (never a temp clone) and requires a Linux bats failure for each, so no fix is pinned only
+  by the macOS runner and gating that job cannot silently un-pin a bug.

@@ -83,6 +83,13 @@ jobs:
         run: |
           go build -o ../bin/speccraft-state ./cmd/speccraft-state
           go build -o ../bin/speccraft-guard ./cmd/speccraft-guard
+      # Spec 0049: commands/{arch,pm}/*.lib.sh now shell out to
+      # `speccraft-state set-status --kind ...`. Their resolver prefers PATH
+      # over the plugin-local bin/, so the freshly built binary must be on
+      # PATH — otherwise a stale ambient copy without --kind would be picked up
+      # and the suite would fail for the wrong reason.
+      - name: Put freshly built binaries on PATH
+        run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
       - name: Run hook tests
         run: |
           if [ -d tests/hooks ] && ls tests/hooks/*.bats 2>/dev/null; then
@@ -90,6 +97,51 @@ jobs:
           else
             echo "No bats tests yet (added per phase)"
           fi
+
+  hooks-macos:
+    name: Hook tests (bats, macOS)
+    # Spec 0049 AC10. The bats suite previously ran on Linux only, so every
+    # shell-portability defect in commands/**/*.lib.sh reached users regardless
+    # of test coverage — the field-reported bug was ALREADY covered by
+    # tests/hooks/arch-decide.bats, which fails on BSD sed. No new test was
+    # needed to catch it, only a runner.
+    #
+    # This job must NOT install GNU userland (coreutils, gnu-sed, …) and must
+    # not prepend a GNU-shim bin directory. Doing so makes the job green while
+    # testing nothing: GNU tools behave exactly as the buggy code assumed, so
+    # all three defects this spec fixes would have passed. The
+    # assert-no-gnu-userland step below enforces that mechanically rather than
+    # trusting this comment.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: tools/go.sum
+      # macOS ships Bash 3.2; this suite requires 5+. bats-core comes from
+      # Homebrew. zsh needs no install — macOS ships it as the default shell,
+      # so lib-zsh-safety.bats gains coverage here rather than needing setup.
+      - name: Install bats + bash 5
+        run: brew install bats-core bash
+      - name: Build helper binaries
+        working-directory: tools
+        run: |
+          go build -o ../bin/speccraft-state ./cmd/speccraft-state
+          go build -o ../bin/speccraft-guard ./cmd/speccraft-guard
+      - name: Put freshly built binaries on PATH
+        run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+      # Runs BEFORE bats: if the runner is not actually BSD-userland-on-Bash-5,
+      # fail loudly here instead of reporting a meaningless green suite.
+      - name: Assert BSD userland and bash 5 (no GNU shims)
+        run: |
+          BASH5="$(brew --prefix)/bin/bash"
+          "$BASH5" scripts/assert-no-gnu-userland.sh
+      - name: Run hook tests under bash 5
+        run: |
+          BASH5="$(brew --prefix)/bin/bash"
+          "$BASH5" --version | head -1
+          "$BASH5" -c 'bats tests/hooks/'
 
   e2e-devcontainer:
     name: E2E (devcontainer)

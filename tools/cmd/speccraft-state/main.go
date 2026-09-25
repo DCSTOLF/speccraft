@@ -142,6 +142,33 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, pct)
 		return 0
 
+	case "tasks-verify":
+		// Spec 0047: structural + predicate oracle over a tasks.md. Read-only.
+		var tvPath string
+		tvRun := false
+		for _, a := range args[1:] {
+			switch {
+			case a == "--run":
+				tvRun = true
+			case a == "--help" || a == "-h":
+				tasksVerifyUsage(stdout)
+				return 0
+			case tvPath == "":
+				tvPath = a
+			default:
+				// A silently ignored second path meant a typo'd invocation
+				// reported clean. Refuse it.
+				fmt.Fprintf(stderr, "tasks-verify: unexpected argument %q\n", a)
+				tasksVerifyUsage(stderr)
+				return 2
+			}
+		}
+		if tvPath == "" {
+			tasksVerifyUsage(stderr)
+			return 2
+		}
+		return tasksVerify(tvPath, tvRun, stdout, stderr)
+
 	case "detect-stack":
 		// Spec 0034: surface the host repo's primary language + effective suite
 		// test command + test-file globs as a versioned JSON envelope. Exit 0 for
@@ -267,16 +294,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	case "set-status":
 		// Spec 0036 AC8/AC9: the sanctioned status writer (enum-validated,
-		// refuses an already-closed spec, byte-safe).
-		if len(args) < 3 {
-			fmt.Fprintln(stderr, "usage: speccraft-state set-status <spec.md> <status>")
-			return 1
-		}
-		if err := speccraft.SetStatus(args[1], args[2]); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		return 0
+		// refuses an already-closed artifact, byte-safe). Spec 0049 moved the
+		// argument parsing — and the no-`--kind` default — into setStatusCmd.
+		return setStatusCmd(args[1:], stderr)
 
 	case "set-revision":
 		// Spec 0036 AC9/AC14/§C: the sanctioned, monotonic-forward revision writer.

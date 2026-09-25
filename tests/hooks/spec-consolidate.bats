@@ -496,6 +496,52 @@ EOF
   [ "${lines[2]}" = "0097-nohist" ]
 }
 
+# Spec 0049 AC8 — consolidate_backfill_order with `tac` absent from PATH.
+#
+# `tac` is GNU-only; macOS has no such command. The failure was SILENT: a
+# missing command inside a process substitution yields empty input, the `while`
+# body never runs, and `set -euo pipefail` does not fire because a process
+# substitution's exit status is never checked. So on macOS this function
+# discarded the ENTIRE history-chronological half and emitted only the
+# history-less fallback, in created: order — spec 0025's AC11 ordering contract
+# void, with no error.
+#
+# The fixture deliberately carries BOTH halves (0099/0098 have history entries,
+# 0097 does not): an ordering assertion over a history-only fixture would go
+# green against a fix that still drops the history-less half.
+#
+# `tac` is shadowed by a function returning 127 rather than by rebuilding PATH:
+# the helper needs awk/grep/sort/cut/mktemp to work, so stripping PATH wholesale
+# would fail for unrelated reasons. A function shadow is visible inside the
+# process substitution (same shell) and reproduces exactly the observable
+# behaviour of absence — the stage produces no output and a non-zero status.
+@test "consolidate_backfill_order: correct order with tac absent from PATH (AC8)" {
+  source "$LIB"
+  local H="$TEST_REPO/.speccraft/history.md"; mkdir -p "$(dirname "$H")"
+  cat > "$H" <<'EOF'
+# History
+
+## 2026-06-10 — Later (spec 0099)
+
+## 2026-06-05 — Earlier (spec 0098)
+EOF
+  for id in 0099-demo 0098-mid 0097-nohist; do
+    mkdir -p "$TEST_REPO/specs/$id"
+    printf -- '---\nid: "%s"\nstatus: closed\ncreated: 2026-06-01\n---\n' "${id%%-*}" > "$TEST_REPO/specs/$id/spec.md"
+  done
+
+  tac() { echo "tac: command not found" >&2; return 127; }
+  export -f tac 2>/dev/null || true
+
+  run consolidate_backfill_order "$TEST_REPO" "0099-demo 0098-mid 0097-nohist"
+  unset -f tac
+  [ "$status" -eq 0 ]
+  # BOTH halves, in full: history-chronological oldest-first, then history-less.
+  [ "${lines[0]}" = "0098-mid" ]
+  [ "${lines[1]}" = "0099-demo" ]
+  [ "${lines[2]}" = "0097-nohist" ]
+}
+
 @test "consolidate_marker_state: moved/conflict/skip/pending state machine" {
   source "$LIB"
   local sd="$TEST_REPO/specs/0099-demo"

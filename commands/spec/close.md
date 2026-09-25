@@ -13,10 +13,41 @@ Steps:
 1. Read `.speccraft/state.json` for `active_spec`. If none, error.
    Read spec.md, tasks.md.
 
-2. Verify all tasks in tasks.md are `[x]`. If not, ask the user to:
-   (a) confirm closure anyway, or (b) re-open and finish the remaining tasks.
-   If the user's message contains "approve all" or the spec was created in a
-   non-interactive context, proceed with closure regardless.
+2. **Task completion gate (spec 0047).** Run the mechanical oracle — this
+   replaces the old eyeball check, which only ever asked whether the top-level
+   boxes were `[x]`, i.e. exactly the assertion that was false when a multi-part
+   task was ticked after finishing only its most visible part:
+   ```bash
+   speccraft-state tasks-verify "specs/$ACTIVE/tasks.md" --run
+   ```
+   Branch on the exit code — `0` clean, `1` violations, `2` malformed:
+
+   - **`0`** — proceed silently to step 3.
+   - **`2` (malformed)** — STOP. This is a bug in `tasks.md` to hand-fix, not a
+     decision. **Exit 2 is never bypassable**; there is no token that waives it.
+   - **`1` (violations)** — present every finding (`task-id`, `kind`, `detail`)
+     and ask the user to either (a) re-open and finish the remaining work, or
+     (b) bypass.
+
+   **The bypass is deliberately narrow.** A blanket "approve all", or the spec
+   having been created in a non-interactive context, does **NOT** satisfy this
+   gate — that is the mode in which the failure this gate exists to prevent was
+   originally shipped. Bypass requires the literal token `SKIP-TASKS-VERIFY` in
+   the user's message. On bypass, append the skipped findings verbatim to the
+   spec's `changelog.md` before continuing:
+   ```markdown
+   ## Skipped task verification
+
+   Closed with `SKIP-TASKS-VERIFY`. `tasks-verify --run` reported:
+
+   - <task-id> — <kind> — <detail>
+   ```
+   Write that section deterministically here; do not delegate it to
+   `memory-keeper` prose in step 4, or the record becomes a summary of a summary.
+
+   Note the ordering: this gate runs **before** the diff (step 3) and before
+   `memory-keeper` (step 4), so a close that will be refused does no downstream
+   work.
 
 3. Compute the diff between when the spec started (commit at
    `started_at_sha` in spec frontmatter if set, else creation time resolved

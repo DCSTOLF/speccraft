@@ -18,6 +18,10 @@ created: YYYY-MM-DD
 authors: [claude]
 packages: ["pkg/path"] # Go package paths this spec touches
 related-specs: []      # IDs of related specs
+domains: [area]        # optional; routes /spec:close consolidation to
+                       # specs/domains/<area>.md. Authoritative when present —
+                       # otherwise the area is seeded from the title and
+                       # presented for confirmation.
 started_at_sha: ""     # set when status moves to in-progress (for /spec:close diff)
 ---
 ```
@@ -51,10 +55,60 @@ strategy: tdd
 ```yaml
 ---
 spec: "<NNNN>"
+contract: done-means-v1   # opt-in; see below
 ---
 ```
 
-Task line format: `- [x] TN — <description>` or `- [ ] TN — <description>`
+### Task line format
+
+Base form: `- [x] TN — <description>` or `- [ ] TN — <description>`.
+
+Under `contract: done-means-v1` (spec 0047), a task also carries sub-checkboxes
+and a `done:` line:
+
+```markdown
+---
+spec: "0047"
+contract: done-means-v1
+---
+
+# Tasks
+
+- [x] T1 — single deliverable
+  done: $ go test ./pkg/ -run Test_Thing
+- [ ] T2 — several deliverables, so decompose
+  - [x] T2.a — parser
+  - [x] T2.b — checks
+  - [ ] T2.c — wiring
+  done: $ grep -q 'case "thing":' cmd/main.go
+- [ ] T3 — not started yet
+  done: prose is allowed, but it is never verified
+```
+
+Grammar:
+
+- A **task** is a checkbox at column 0. Its id may be dotted (`T0.1`, `T0.5.1`) —
+  only indentation makes a sub-checkbox.
+- A **sub-checkbox** is an indented checkbox whose id is its parent's id plus one
+  more `[A-Za-z0-9]+` segment. One level deep. An indented bullet that does not
+  match this is prose and is ignored, at any depth.
+- A **`done:` line** is indented exactly 2 spaces and belongs to the nearest
+  preceding task. Exactly one per task, non-empty, required for every task under
+  the contract regardless of tick state.
+- A `done:` value starting with `$` is an **executable predicate**, run by
+  `speccraft-state tasks-verify --run` under `/bin/sh -c` from the repo root.
+  Any other value is prose: articulation only, never verified. A bare `$` with no
+  command is malformed, not prose — it would otherwise look executable and be
+  silently waived.
+
+Note the example above: `T2` stays `[ ]` precisely because `T2.c` is unfinished.
+Ticking it would be the parent/child violation the gate exists to catch.
+
+`speccraft-state tasks-verify <tasks.md> [--run]` exits `0` clean, `1` violations,
+`2` malformed. `/speccraft:spec:close` runs it as its completion gate. The
+parent/child check (a `[x]` parent with a `[ ]` sub-checkbox) applies to **all**
+tasks.md files, contract key or not; the `done:` requirement applies only under
+the contract.
 
 ## review.md frontmatter
 

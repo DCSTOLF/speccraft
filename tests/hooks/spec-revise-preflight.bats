@@ -121,6 +121,19 @@ load_lib() {
   if [ -f "$REVISE_LIB" ]; then source "$REVISE_LIB"; fi
 }
 
+# sed_inplace <script> <file> — portable in-place edit (spec 0049 AC10).
+#
+# `sed -i 'script' file` is GNU-only: BSD sed reads -i's NEXT ARGUMENT as the
+# backup suffix, so the script is consumed as a suffix and the edit silently
+# does not happen. Rather than pick between `-i ''` (BSD) and `-i` (GNU), avoid
+# in-place entirely: filter to a temp and move. Used by the fixture-tampering
+# tests below, which mutate a scratch spec.md to provoke the integrity check.
+sed_inplace() {
+  local script="$1" f="$2" tmp
+  tmp="$(mktemp)"
+  sed "$script" "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
 # ---------------------------------------------------------------------------
 # preflight_status_gate — rejects closed/archived/in-progress; accepts
 # draft/reviewed/planned. AC1 (revisable-status gate).
@@ -692,7 +705,7 @@ EOF
   load_lib
   snapshot_spec "$spec_dir/spec.md" "$snap"
   # Simulate agent tampering with revision.
-  sed -i 's/^revision: 1$/revision: 99/' "$spec_dir/spec.md"
+  sed_inplace 's/^revision: 1$/revision: 99/' "$spec_dir/spec.md"
   run frontmatter_integrity_check "$spec_dir/spec.md" "$snap"
   [ "$status" -ne 0 ]
   [[ "$output" == *"revision"* ]]
@@ -704,7 +717,7 @@ EOF
   mkdir -p "$snap"
   load_lib
   snapshot_spec "$spec_dir/spec.md" "$snap"
-  sed -i 's/^status: reviewed$/status: planned/' "$spec_dir/spec.md"
+  sed_inplace 's/^status: reviewed$/status: planned/' "$spec_dir/spec.md"
   run frontmatter_integrity_check "$spec_dir/spec.md" "$snap"
   [ "$status" -ne 0 ]
   [[ "$output" == *"status"* ]]
@@ -716,7 +729,7 @@ EOF
   mkdir -p "$snap"
   load_lib
   snapshot_spec "$spec_dir/spec.md" "$snap"
-  sed -i 's/^id: "0099"$/id: "0042"/' "$spec_dir/spec.md"
+  sed_inplace 's/^id: "0099"$/id: "0042"/' "$spec_dir/spec.md"
   run frontmatter_integrity_check "$spec_dir/spec.md" "$snap"
   [ "$status" -ne 0 ]
   [[ "$output" == *"id"* ]]
@@ -728,7 +741,7 @@ EOF
   mkdir -p "$snap"
   load_lib
   snapshot_spec "$spec_dir/spec.md" "$snap"
-  sed -i 's/^created: 2026-06-10$/created: 2026-06-11/' "$spec_dir/spec.md"
+  sed_inplace 's/^created: 2026-06-10$/created: 2026-06-11/' "$spec_dir/spec.md"
   run frontmatter_integrity_check "$spec_dir/spec.md" "$snap"
   [ "$status" -ne 0 ]
   [[ "$output" == *"created"* ]]
@@ -741,7 +754,7 @@ EOF
   load_lib
   snapshot_spec "$spec_dir/spec.md" "$snap"
   # Real-change to body only.
-  sed -i 's/test fixture body./EDITED BODY./' "$spec_dir/spec.md"
+  sed_inplace 's/test fixture body./EDITED BODY./' "$spec_dir/spec.md"
   run frontmatter_integrity_check "$spec_dir/spec.md" "$snap"
   [ "$status" -eq 0 ]
 }
@@ -778,7 +791,7 @@ EOF
   load_lib
   snapshot_spec "$spec_dir/spec.md" "$snap"
   # Add trailing spaces on the body line.
-  sed -i 's/test fixture body./test fixture body.   /' "$spec_dir/spec.md"
+  sed_inplace 's/test fixture body./test fixture body.   /' "$spec_dir/spec.md"
   run diff_against_snapshot "$spec_dir/spec.md" "$snap"
   [ "$status" -eq 0 ]
   [ "$output" = "no-op" ]
@@ -790,7 +803,7 @@ EOF
   mkdir -p "$snap"
   load_lib
   snapshot_spec "$spec_dir/spec.md" "$snap"
-  sed -i 's/test fixture body./EDITED CONTENT HERE./' "$spec_dir/spec.md"
+  sed_inplace 's/test fixture body./EDITED CONTENT HERE./' "$spec_dir/spec.md"
   run diff_against_snapshot "$spec_dir/spec.md" "$snap"
   [ "$status" -eq 0 ]
   [ "$output" = "changed" ]

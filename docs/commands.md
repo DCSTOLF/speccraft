@@ -235,7 +235,7 @@ blocker only when a developer decision is genuinely required.
 ```
 > /speccraft:spec:close
 
-All tasks complete (7/7).
+Running tasks-verify --run ... clean (7/7 tasks, 5 predicates executed).
 
 memory-keeper proposes:
 [1] history.md ADR — "Rate limiting on public API: token bucket, fail-open."  [approve]
@@ -244,6 +244,21 @@ memory-keeper proposes:
 Consolidating requirements into specs/domains/http.md...
 Wrote changelog.md, updated history.md, conventions.md. Active spec cleared.
 ```
+
+**The completion gate (spec 0047).** Step 2 is mechanical, not an eyeball check:
+`speccraft-state tasks-verify <tasks.md> --run` exits `0` clean, `1` violations,
+`2` malformed. It catches a `[x]` parent with a `[ ]` sub-checkbox, a missing
+`done:` line under `contract: done-means-v1`, and any failing `done: $ <cmd>`
+predicate.
+
+- Exit `2` is a bug to hand-fix and is **never** bypassable.
+- Exit `1` is a decision. A blanket "approve all" does **not** bypass it — that is
+  the mode in which prematurely-ticked tasks historically shipped. Bypass requires
+  the literal token `SKIP-TASKS-VERIFY`, and the skipped findings are recorded
+  verbatim in the spec's `changelog.md` under `## Skipped task verification`.
+
+Predicates run under `/bin/sh -c` from the repo root, bounded by
+`SPECCRAFT_TASKS_VERIFY_TIMEOUT` (default `30s`). `--run` is unix-only.
 
 ## Auxiliary agents
 

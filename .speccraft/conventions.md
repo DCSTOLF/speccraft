@@ -132,6 +132,13 @@ runtime "unknown subcommand", never a build error) at ZERO additional override.
   symbol rides an existing runtime RED (unexported helpers added while editing an
   already-red exported function; new subcommands via the `run()` seam). A later spec
   MAY relocate cmd-package logic into `internal` once an internal RED anchor exists.
+- **Count the budget in EDITS, not tasks (spec 0049).** `ConsumeOverride` is consumed per
+  Edit/Write call, so one "atomic" task can spend several. Spec 0049 budgeted 3, estimated
+  a spend of 1 for its single-task enum migration, and spent 3: two non-adjacent regions
+  of `revision.go` (~110 lines apart — a single Edit spanning both would have cost 2, not
+  1) plus the `main.go` call site. When an atomic change spans multiple files or distant
+  regions of one file, budget one override per EDIT you will actually issue, and prefer
+  one wide Edit over two narrow ones when both are unavoidable.
 
 ### One shared parser entrypoint, pinned by a source-scan assertion
 
@@ -150,6 +157,14 @@ entrypoint and route both paths through it — never a second parser that can dr
 - This is the spec-0032 source-scanning-meta-test discipline applied to a
   single-entrypoint invariant: the assertion reads the LIVE source, so it fails the
   moment someone hand-rolls a parallel scan.
+- **Caveat — the assertion's blast radius is `tools/internal/speccraft` only.**
+  Spec 0047 added `hasFrontmatterFence` in the **cmd** package: a fence-only
+  detector needed because the exported `ReadFrontmatterField` cannot distinguish
+  "no frontmatter block at all" from "key absent", which `tasks-verify` must tell
+  apart to return exit 2. The two agree today, but the source-scan cannot see the
+  cmd-package one. A cmd-package reader of a grammar owned by `internal/` must stay
+  **fence-or-presence only** and must never grow key parsing — the moment it does,
+  promote the shared parser instead and pay the override.
 
 ### Fixture-first, per-tool meta-guard matching regime
 
@@ -175,6 +190,54 @@ different position for each tool:
   Assert flags-and-passes on the fixtures, THEN assert the live tree clean.
 - **Canonical reference.** `tests/hooks/frontmatter-writer-guard.bats` (spec 0036).
 
+#### A meta-guard covers every artifact kind, excludes `specs/`, and has no escape hatch
+
+Introduced by spec 0049 — three amendments to the regime above, each paid for in a
+production bug.
+
+- **The path-shape filter must cover EVERY artifact kind.** Spec 0036's guard scoped its
+  target filter to `spec\.md|SPEC_MD|spec_md`, so spec 0022's `design.md` and `brief.md`
+  writers were never in scope and two hand-rolled in-place `status:` edits shipped under
+  a convention that forbade them. **A guard scoped to one artifact kind is a guard that
+  will miss the next two.** When adding a third instance of anything speccraft already
+  guards, re-read the guard's filter before trusting it. The filter now covers all three
+  literal shapes plus the non-literal holders (`$file`, `$FILE`, `$DESIGN`, `$BRIEF`,
+  `design_md`, `brief_md`) per the scope-conservatively-IN rule.
+- **A repo-scanning guard's scan root must exclude `specs/` — archive-safety, not an
+  oversight.** `tests/hooks/frontmatter-writer-guard.bats` scans `commands/` ONLY. A spec
+  that documents a forbidden form quotes it verbatim, and consolidation moves that spec
+  to `specs/.archive/NNNN-slug/`, so a scan root widened to `specs/**` would flag the
+  project's own historical evidence and wedge the guard on its own archive. State the
+  boundary in the guard's header comment AND assert it: spec 0049 greps the live scan
+  call for `commands/`, asserts no `specs/`-rooted call exists, and plants an offender
+  under a `specs/`-shaped tree to prove a `commands/`-rooted scan does not reach it.
+  Write such self-scanning assertions with bracket-escaped patterns (`command[s]`,
+  `spec[s]`) or the test matches its own source line, making the positive assertion
+  vacuous and the negative one permanently false.
+- **Patterns are COMMAND-SHAPED and comment-blind, with no suppression marker.** A
+  commented-out or markdown-fenced occurrence is FLAGGED, not skipped — a guard that
+  parsed comments is evadable by moving code into a heredoc. A
+  `# speccraft-guard: allow-gnu-form`-style annotation is rejected on principle: a guard
+  silenceable by annotation is evadable by annotation, which is the property it exists to
+  deny. Claim only what the guard does: a prose mention in backticks ("`tac` is
+  GNU-only") is not in command position and does not match — that is the pattern being
+  command-shaped, not an exemption for comments. **The cost is accepted explicitly:**
+  documentation under a scanned surface that must name a forbidden form gets reworded, or
+  moved to `.speccraft/` or `specs/`, both outside every scan root.
+- **Prefix collisions are matching semantics, and both spellings ship as fixtures.**
+  Where a forbidden form is a string prefix of a permitted one, the rule is two-stage:
+  `sed -i` matches only when followed by whitespace and a non-suffix token, so it never
+  matches `sed -i.bak` or `sed -i ''` — and both permitted spellings are PASSES fixtures,
+  not a claim in the header comment.
+- **Land the permitted fixture in the SAME commit as the fix it permits.** In the other
+  order the guard rejects the very change that satisfies the other AC, wedging the work
+  behind its own enforcement. Spec 0049's `tac` → POSIX `awk` reversal and the guard that
+  permits that exact reversal form are one task, one commit, deliberately not split.
+- **Canonical reference.** `tests/hooks/portability-guard.bats` (spec 0049: the shipped
+  surfaces `hooks/ commands/ tools/ templates/ agents/ skills/`, eight GNU-only forms;
+  `tests/**` and `tools/**/*_test.go` excluded as test-side, never installed) plus the
+  widened `tests/hooks/frontmatter-writer-guard.bats`.
+
 ## Revision & artifact numbering
 
 Introduced by spec 0036.
@@ -191,18 +254,76 @@ it). `Effective = hasArchived ? max(fmRev, maxArchived+1) : fmRev`.
   heal-only (raises a counter that has fallen behind provable archives; a no-op when the
   counter already leads). Do NOT auto-bump on in-place edits.
 - **`status:` / `revision:` are mutated ONLY through the sanctioned writer** —
-  `speccraft-state set-status <spec.md> <status>` / `set-revision <spec.md> <N>`, backed
+  `speccraft-state set-status [--kind spec|design|brief] <artifact.md> <status>` /
+  `set-revision <spec.md> <N>`, backed
   by the exported `SetStatus` / `SetRevision` (which enforce status-enum, `uint64`
   domain, monotonic-forward, and closed-spec immutability IN the exported op) over the
   unexported byte-safe `setFrontmatterField`. Command libs never hand-roll a `sed -i`
   frontmatter edit (enforced by the AC10 meta-guard above). This is the
-  `state.json`-single-writer discipline extended to spec.md frontmatter.
+  `state.json`-single-writer discipline extended to artifact frontmatter — spec.md since
+  spec 0036, and design.md / brief.md since spec 0049 (see the next section).
 - **Archiving is self-healing, not fail-closed.** `archive_rename` computes
   `A = effective-revision` (provably free) once, archives the disposable set
   (`review`, plus `plan`/`tasks` for `planned` source) via `archive-artifact` with
   no-clobber `link(2)`-then-unlink semantics, then heals the counter, then flips
   `status: draft` LAST (fixed order archive → counter → status, interruption-safe). A
   stray `review-r<N>.md` can no longer deadlock revise.
+
+### The sanctioned writer covers all three artifact kinds
+
+Introduced by spec 0049, extending the rule above from `spec.md` to `design.md` and
+`brief.md`.
+
+`status:` on a **design** or a **brief** is mutated only through
+`speccraft-state set-status --kind design|brief <artifact.md> <status>`, exactly as
+`spec.md` is. Spec 0022 added the PM and Architect artifact kinds OUTSIDE the spec-0036
+guardrail, and both of their command libs then hand-rolled the same GNU-only in-place
+`sed` edit, which silently no-opped on macOS while reporting success.
+
+- **The status enum is per-kind, never flat.** `kindStatuses`
+  (`tools/internal/speccraft/revision.go`) maps `ArtifactKind` → allowed statuses: spec
+  `draft/reviewed/planned/in-progress/blocked/closed`, design `draft/decided/closed`,
+  brief `draft/prioritized/closed`. Do NOT widen one flat map with
+  `decided`/`prioritized`: that lets a `spec.md` be set to `decided` and dissolves three
+  distinct state machines into one. Granting design/brief the spec-only values is the
+  same error in the other direction. Closed-artifact immutability is kind-INdependent
+  and applies to all three.
+- **`ArtifactKind` has no meaningful zero value.** The kinds are explicit non-empty
+  constants (`KindSpec`/`KindDesign`/`KindBrief`), and `SetStatus(path, kind, status)`
+  validates the KIND FIRST — rejecting the empty or unknown kind before it looks at the
+  status — so an uninitialised kind is a loud failure and never a silent
+  reinterpretation as `spec`. When the signature changed, NO compatibility wrapper was
+  kept: a wrapper that defaults the kind IS the silent-default surface this rule exists
+  to remove.
+- **A convenience default lives in the flag-parsing layer only.** The no-`--kind` CLI
+  default maps to `KindSpec` in `tools/cmd/speccraft-state/set_status_cmd.go` (cmd
+  package, riding the `run()` seam per the §"Place fault-injectable logic in the cmd
+  package" rule) — visible, documented, one hop from the usage string — and nowhere
+  inside the Go API. `--kind` validates only the status enum, never that the target path
+  really is an artifact of that kind: the caller knows the kind, and path-sniffing would
+  be a second, weaker authority over artifact identity. `--kind X` and `--kind=X` are
+  both accepted, only BEFORE the positionals; a flag after them is a usage error, never
+  a silent ignore.
+- **A command lib that delegates resolves the binary explicitly.**
+  `$SPECCRAFT_STATE_BIN` → `PATH` → plugin-local `bin/` (derived from the lib's own
+  `${BASH_SOURCE[0]:-$0}` location), naming the resolved path in the failure diagnostic.
+  Because PATH wins over the plugin-local copy, any CI job that builds the binaries must
+  put them on PATH (`$GITHUB_PATH`) or a stale ambient copy is picked up and the suite
+  fails for the wrong reason — which is live in this devcontainer, where
+  `command -v speccraft-state` resolves to a cached older build.
+- **Every non-zero path writes a diagnostic.** A silent `return 1` is a defect on this
+  surface: the original bug's essence was the caller being unable to tell what happened,
+  so non-zero-with-empty-stderr is only half a fix. Pin the underlying-write failure
+  with a deterministic, uid-independent seam AT EACH LAYER — a `PATH`-shimmed
+  `speccraft-state` stub for the shell helper, spec 0035's `atomicRename` for Go — and
+  **never** with file permissions: `AtomicWriteFile`'s same-directory temp + `os.Rename`
+  succeeds into a writable parent regardless of the target file's mode, and a read-only
+  parent silently degrades to a no-op under root, passing for the wrong reason in any
+  privileged environment.
+- **Canonical reference.** `commands/arch/decide.lib.sh` + `commands/pm/prioritize.lib.sh`
+  (the delegating helpers), `tools/cmd/speccraft-state/set_status_cmd.go` (the flag
+  layer), `tests/hooks/{arch-decide,pm-prioritize}.bats` (per-layer non-zero-path
+  coverage, including the stray-sibling assertion).
 
 ## Ledger write-lock invariant
 
@@ -357,6 +478,37 @@ command / test-file shape" is the detection surface, not inlined language litera
 - All filesystem writes to `.speccraft/` go through the `speccraft-state` binary — hooks do not edit `state.json` directly.
 - Hooks emit Claude Code hook-protocol JSON on stdout and exit non-zero on guardrail violations.
 - **`scripts/*.sh` and their sibling shell tests are NOT gated by `speccraft-guard` (introduced by spec 0021).** The guard's TDD red→green invariant applies only to the four supported source languages (Go, Python, Rust, JS/TS — see §"Dispatch by language"); it does not classify `.sh` files as production code. Editing or creating a shell script — including the create-file edit that introduces a brand-new script — therefore never triggers a TDD-gate block and never needs a `/speccraft:spec:override`. (Spec 0021's plan wrongly assumed each new-script create-file edit would hit the build-failure-is-not-RED case like a new Go symbol; it does not.) Shell work is still expected to follow the spec's own RED→GREEN discipline via sibling shell tests wired into `run_helper_unit_tests()`, but that discipline is author-enforced, not guard-enforced.
+
+### Prove every negative assertion bites
+
+Introduced by spec 0049, which hit three near-identical false-pass bugs in one
+implementation — all the same shape: **an assertion that cannot fail.**
+
+- **`! grep -q …` on its own line in a bats `@test` is INERT.** POSIX `set -e` is
+  specified to ignore a command whose failure is negated by `!`, so the line never aborts
+  the test and the `@test` passes on whatever its LAST line returns. Spec 0049's "the lib
+  has no hand-rolled in-place edit" test passed while the lib still contained the
+  forbidden token. Correct form:
+
+  ```bash
+  run grep -nE '<pattern>' "$LIB"
+  [ "$status" -ne 0 ] || { echo "still present:"; echo "$output"; false; }
+  ```
+
+- **A `;` or `|| true` mid-chain discards every earlier assertion.** In `a && b ; c && d`
+  the result of `a && b` is thrown away and the predicate reduces to `c && d`; `|| true`
+  does the same thing more quietly, and in spec 0049 it neutralised the single most
+  important check in the spec (that the GNU-only `sed` was gone from both libs). A
+  `done:` predicate must be ONE `&&` chain — no `;`, no `|| true`.
+- **The rule: after writing any negative assertion, temporarily reintroduce the thing it
+  forbids, watch the check go red, then revert.** Cheap, and it caught all three. When a
+  `done:` predicate disagrees with a test that supposedly checks the same thing, do not
+  "fix" either until you know which one is lying — that divergence is how the inert
+  `! grep -q` was found.
+- **Why this is not a nit.** speccraft's durable wins are all mechanical; a mechanism
+  that structurally cannot fail is worse than no mechanism, because it reports success
+  and earns trust it has not got. That is the exact bug class spec 0049 exists to fix,
+  reproduced in the tests *for* that fix.
 
 ### PreToolUse hook tool enumeration
 
@@ -715,6 +867,62 @@ reserves-specs: ["0006"]
 
 - Spec IDs are zero-padded four-digit (`0001`, `0002`, …) and never reused.
 - Closed specs (`status: closed`) are immutable. Corrections go in a follow-up spec.
+
+### tasks.md decomposition contract (`contract: done-means-v1`)
+
+Introduced by spec 0047.
+
+New plans emit `contract: done-means-v1` in `tasks.md` frontmatter. Under it:
+
+- **One deliverable per checkbox.** "Implement the seam *and* write the tests" is
+  two sub-checkboxes, not one task. `speccraft-state tasks-verify` fails the close
+  when a `[x]` parent has a `[ ]` sub-checkbox — and that check applies to **every**
+  tasks.md, contract key or not.
+- **Every task carries exactly one non-empty `done:` line**, indented exactly 2
+  spaces, whatever its tick state, so an omission surfaces at plan time.
+- **Prefer the `$` executable form** whenever completion is command-observable. For
+  a knob or flag the predicate must prove the **reader**, not just the declaration:
+  `done: $ grep -q KNOB <definer> && grep -q KNOB <reader>`. A bare `$` with no
+  command is malformed, not prose.
+- **A predicate must never invoke the verifier that runs it.** `tasks-verify --run`
+  inside a `done:` line is unbounded self-recursion; use the structural form.
+- Only **indentation** makes a sub-checkbox — a column-0 id may be dotted
+  (`T0.1`, `T0.5.1`), as specs 0001 and 0016 already are.
+- **`[~]` is not a valid marker (spec 0049).** `parseTasksFile` accepts only `[ ]`,
+  `[x]`, and `[X]`, so a `[~]` line parses as PROSE and its `done:` line attaches to the
+  PREVIOUS task — making that task malformed, which is exit 2 and unbypassable. For a
+  deliberately skipped task use `[x]` with "SKIPPED, deliberately" plus the reason in the
+  title, and state what was weighed. (Spec 0022's `[~] T16` predates the contract and is
+  held only to the unambiguous checks.)
+- **A `done:` predicate is ONE `&&` chain (spec 0049).** A `;` or `|| true` mid-chain
+  silently discards every assertion before it, so the predicate reports success for work
+  it never checked. See §"Prove every negative assertion bites".
+
+### A build-tag split ships both halves, always
+
+Introduced by spec 0045's `ledger_flock_unix.go` / `ledger_flock_other.go` pair;
+**violated and then fixed** by spec 0047, whose `tasks_predicate.go` shipped
+`//go:build unix` with no counterpart and broke `GOOS=windows go build ./...` with
+`undefined: runPredicates`.
+
+A platform-gated file must ship its complementary-tag sibling. A loud stub is fine;
+an absent file is a cross-compile break that no host-GOOS test catches. Keep the two
+halves free of cross-references to each other's helpers, so neither can break the
+other's build. Cheap oracle: assert `GOOS=windows go build ./...` succeeds.
+
+### A behavioral contract added to a command runbook gets a bats pin
+
+Introduced by spec 0047 (as a correction to its own first attempt).
+
+When a spec adds a *decision rule* to a `commands/**/*.md` runbook — a bypass token,
+an unbypassable exit code, a required artifact section, an ordering constraint — pin
+it in `tests/hooks/*.bats`. Nine such files already assert over command markdown, and
+markdown is ungated by `speccraft-guard`, so this costs **zero overrides**.
+
+A `grep` inside the spec's own `tasks.md` `done:` predicate is **not** a substitute:
+predicates execute only during that spec's close, and the archive sweep runs without
+`--run`, so the guarantee evaporates the moment the spec closes. Spec 0047's AC9/AC10
+shipped that way initially and had no durable coverage until `close-gate.bats` landed.
 
 ### Mid-implementation amendment
 

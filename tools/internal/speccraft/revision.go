@@ -179,10 +179,41 @@ type revErr string
 
 func (e revErr) Error() string { return string(e) }
 
-// validStatuses is the allowed set for SetStatus (AC8).
-var validStatuses = map[string]bool{
-	"draft": true, "reviewed": true, "planned": true,
-	"in-progress": true, "blocked": true, "closed": true,
+// ArtifactKind names which of speccraft's three artifact state machines a
+// status: write belongs to (spec 0049). It is a distinct type rather than a
+// bare string so an omitted kind is a compile-visible mistake at every call
+// site, and it has NO meaningful zero value: the empty kind is an error, never
+// a silent synonym for KindSpec. The no-flag CLI default maps to KindSpec in
+// the flag-parsing layer only, where the default is visible and documented.
+type ArtifactKind string
+
+const (
+	KindSpec   ArtifactKind = "spec"
+	KindDesign ArtifactKind = "design"
+	KindBrief  ArtifactKind = "brief"
+)
+
+// kindStatuses is the per-kind allowed set for SetStatus (spec 0049 AC4,
+// superseding spec 0036's flat validStatuses).
+//
+// Each kind is scoped to exactly its own documented lifecycle — spec
+// draft→reviewed→planned→in-progress→closed (plus blocked), design
+// draft→decided→closed, brief draft→prioritized→closed. A single flat map
+// widened with "decided" and "prioritized" would let a spec.md be set to
+// "decided" and dissolve three distinct state machines into one; equally,
+// granting design/brief the spec-only values would make the enum broader than
+// any real lifecycle. Both are the same error in opposite directions.
+var kindStatuses = map[ArtifactKind]map[string]bool{
+	KindSpec: {
+		"draft": true, "reviewed": true, "planned": true,
+		"in-progress": true, "blocked": true, "closed": true,
+	},
+	KindDesign: {
+		"draft": true, "decided": true, "closed": true,
+	},
+	KindBrief: {
+		"draft": true, "prioritized": true, "closed": true,
+	},
 }
 
 // rawLine is one source line split into its text (terminator stripped) and its
@@ -286,11 +317,21 @@ func currentStatusClosed(specMd string) (bool, error) {
 }
 
 // SetStatus is the sanctioned writer for the status: frontmatter field: it
-// validates the value (AC8) and refuses an already-closed spec (AC9) before
-// delegating to the byte-safe writer.
-func SetStatus(specMd, status string) error {
-	if !validStatuses[status] {
-		return revErr("SetStatus: invalid status " + status)
+// validates the kind (spec 0049 AC4), then the value against that kind's
+// enum (AC8), then refuses an already-closed artifact (AC9, kind-independent)
+// before delegating to the byte-safe writer.
+//
+// The kind is checked FIRST and on its own, so an unrecognized kind reports
+// itself even when the status would also have been invalid — an empty
+// ArtifactKind is a caller bug, not a request for the spec enum.
+func SetStatus(specMd string, kind ArtifactKind, status string) error {
+	allowed, ok := kindStatuses[kind]
+	if !ok {
+		return revErr("SetStatus: unknown artifact kind " + string(kind) +
+			" (want spec, design, or brief)")
+	}
+	if !allowed[status] {
+		return revErr("SetStatus: invalid status " + status + " for kind " + string(kind))
 	}
 	closed, err := currentStatusClosed(specMd)
 	if err != nil {
