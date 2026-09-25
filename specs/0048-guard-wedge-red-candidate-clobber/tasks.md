@@ -82,14 +82,14 @@ contract: done-means-v1
   done: $ head -1 tools/internal/speccraft/buildrepair_policy_test.go | grep -qx 'package speccraft' && grep -q 'buildRepairMaxEdits' tools/internal/speccraft/buildrepair_policy_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_Guardrails_CarveOut|Test_Conventions_BuildFailureEntry_NoLongerClaimsNeverRelaxed' -count=1
 - [x] **T25** — GREEN: amend `.speccraft/guardrails.md` and `.speccraft/conventions.md` together (both or neither, spec §A.5). Predicate retargeted: it named two test functions that were never written (`Test_Guardrails_CarveOut`, `Test_Conventions_BuildFailureEntry`) and asserted the absence of `must not be relaxed`, a phrase that never appeared in conventions.md — so that clause was VACUOUS. It now names the real tests and the real stale sentence (`Do not "fix" this by relaxing the build-failure-is-not-RED rule`), which spec 0048 had to remove because 0048 IS the deferred follow-up that note pointed at
   done: $ grep -qi 'build-repair' .speccraft/guardrails.md && grep -q 'at most 10 edits per session' .speccraft/guardrails.md && ! grep -qF 'Do not "fix" this by relaxing the build-failure-is-not-RED rule' .speccraft/conventions.md && grep -qi 'build-repair' .speccraft/conventions.md && (cd tools && go test ./internal/speccraft/ -run 'Test_BuildRepairCap_AppearsInGuardrailCarveOutSentence|Test_Conventions_NoLongerForbidsTheRelaxationThisSpecShipped' -count=1)
-- [ ] **T26** — REFACTOR + full verification: dedupe test helpers, whole suite, vet, drift, cross-compile
-  - [ ] **T26.a** — `go test ./... -count=1` and `go vet ./...` green
-  - [ ] **T26.b** — full `bats tests/hooks/` suite green. NOTE: the `done:` predicate below deliberately EXCLUDES `tasks-verify.bats`, because that suite invokes `speccraft-state tasks-verify`, which is the verifier executing this predicate — the spec-0047 no-self-recursion rule. Run it manually as part of this task; it is not a silent omission.
-  - [ ] **T26.c** — `speccraft-drift scan-all` clean
-  - [ ] **T26.d** — `GOOS=windows go build ./...` green (proves the no-build-tag decision)
-  - [ ] **T26.e** — overrides actually spent are recorded in `changelog.md` against the stated budget of 1
-  - [ ] **T26.f** — R1 follow-up spec filed for the test-compile blind spot
-  done: $ cd tools && go test ./... -count=1 && go vet ./... && GOOS=windows go build ./... && cd .. && bats $(ls tests/hooks/*.bats | grep -v tasks-verify)
+- [x] **T26** — REFACTOR + full verification: dedupe test helpers, whole suite, vet, drift, cross-compile
+  - [x] **T26.a** — `go test ./... -count=1` and `go vet ./...` green
+  - [x] **T26.b** — full `bats tests/hooks/` suite green. The predicate below also BUILDS the binaries into `bin/` and prefixes `PATH="$PWD/bin:$PATH"`, which spec 0049 established as mandatory: without it `speccraft-state` resolves to the cached plugin build (1.11.0 in this devcontainer), which predates `--kind`, and 0049's arch/pm tests fail for a reason that has nothing to do with this spec. Verified: omitting the prefix produced exactly those two failures. NOTE: the `done:` predicate below deliberately EXCLUDES `tasks-verify.bats`, because that suite invokes `speccraft-state tasks-verify`, which is the verifier executing this predicate — the spec-0047 no-self-recursion rule. Run it manually as part of this task; it is not a silent omission.
+  - [x] **T26.c** — `speccraft-drift scan-all` clean
+  - [x] **T26.d** — `GOOS=windows go build ./...` green (proves the no-build-tag decision)
+  - [x] **T26.e** — overrides actually spent are recorded in `changelog.md` against the stated budget of 1
+  - [x] **T26.f** — R1 needed NO follow-up spec: plan §Risk records it as RESOLVED at plan time via correction C1, with the residual being only that the spec text still says `go build` alone. Implementation went further (one `go test -overlay` command, because `go build -o <dir> ./...` fails on a library-only module), so the recorded correction is wider than R1 anticipated. Both are in changelog.md §Corrections and §Follow-ups
+  done: $ (cd tools && go test ./... -count=1 && go vet ./... && GOOS=windows go build ./... && go build -o ../bin/speccraft-state ./cmd/speccraft-state && go build -o ../bin/speccraft-guard ./cmd/speccraft-guard) && PATH="$PWD/bin:$PATH" bats $(ls tests/hooks/*.bats | grep -v tasks-verify)
 
 ## Bypasses
 
