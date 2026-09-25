@@ -64,7 +64,26 @@ type deps struct {
 	// (e.g. unconfigured JS/TS command) and the guard must fail closed
 	// (spec 0018, Decision D2). Production wiring goes through productionDeps().
 	runnerForLang func(lang string, cfg speccraft.SpeccraftConfig) (runner.Runner, bool)
-	stderr        io.Writer // optional: captures Rust dispatch log messages
+	// proberForLang resolves the build prober for a language, shaped exactly like
+	// runnerForLang. ok=false means this language has no prober, and the guard
+	// falls back to today's blocking behaviour on a build failure (spec 0048 AC7:
+	// only Go gains repair mode; Python/JS/TS are unchanged).
+	proberForLang func(lang string, cfg speccraft.SpeccraftConfig) (BuildProber, bool)
+	// toolInput carries the in-flight edit so the OutcomeBuildFailed branch can
+	// model the POST-edit content for the probe.
+	//
+	// DEVIATION from plan §Step 14, deliberate and recorded: the plan threaded
+	// ToolInput through siblingRedCheck's signature. That signature has SIX call
+	// sites (two production, four test), so changing it is only safe as one atomic
+	// edit — and the Edit tool cannot span them. Any intermediate state leaves the
+	// package uncompilable, at which point the red-check returns
+	// OutcomeBuildFailed and the guard forbids the rest of its own change: the
+	// exact wedge this spec exists to remove, hit while removing it. Carrying the
+	// input on `deps` — already constructed per hook invocation and threaded
+	// everywhere — keeps every step compilable and costs no overrides. It does mix
+	// request data into a dependency bag, which is the trade.
+	toolInput ToolInput
+	stderr    io.Writer // optional: captures Rust dispatch log messages
 }
 
 // redCheckTimeout bounds a single non-Rust red-check adapter invocation so a
@@ -116,7 +135,16 @@ func productionDeps() deps {
 		},
 		runnerFor:     runner.AdapterFor,
 		runnerForLang: runner.AdapterForLanguage,
-		stderr:        os.Stderr,
+		// Only Go gets a prober. Every other language resolves ok=false and keeps
+		// today's blocking behaviour on a build failure (AC7) — repair mode is not
+		// silently extended to a language whose probe has not been designed.
+		proberForLang: func(lang string, _ speccraft.SpeccraftConfig) (BuildProber, bool) {
+			if lang == "go" {
+				return goBuildProber{}, true
+			}
+			return nil, false
+		},
+		stderr: os.Stderr,
 	}
 }
 
@@ -168,6 +196,9 @@ func dispatchByLanguage(input HookInput, absPath, root string, cfg speccraft.Spe
 	// captureRedCandidates and computeJustAddedForEdit) models the post-edit
 	// content by tool identity, not payload shape (spec 0031).
 	input.ToolInput.ToolName = input.ToolName
+	// Carry the in-flight edit to the red-check so its OutcomeBuildFailed branch
+	// can model post-edit content for the build probe (spec 0048).
+	d.toolInput = input.ToolInput
 	switch {
 	case speccraft.IsRustFile(absPath):
 		return rustDispatch(input, absPath, root, cfg, d)
@@ -588,10 +619,15 @@ func siblingRedCheck(absPath, root string, cfg speccraft.SpeccraftConfig, lang s
 				return fmt.Errorf("red-check runner: %w", err)
 			}
 			if res.Outcome == runner.OutcomeBuildFailed {
-				return fmt.Errorf(
-					"red-check: build/collection failed (not a valid RED state):\n%s\n\n"+
-						"Fix the build error so the just-added test can run and fail.",
-					strings.TrimSpace(res.Stderr))
+				// Spec 0048 defect A. "A build failure is not a valid RED" is the
+				// right rule, but blocking here also blocks the edit that REPAIRS
+				// the break — the tree is unbuildable and the guard forbids making
+				// it buildable. Probe whether the PROPOSED edit leaves the module
+				// building, and branch on that instead.
+				if err := buildRepairBranch(absPath, root, cfg, lang, d, res.Stderr); err != nil {
+					return err
+				}
+				return nil
 			}
 			for _, rec := range res.Records {
 				if rec.Status == "failed" {
