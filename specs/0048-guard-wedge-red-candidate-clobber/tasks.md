@@ -36,9 +36,9 @@ contract: done-means-v1
   done: $ grep -q 'Test_TestFileEdit_CaptureFailure_BlocksEdit_AndLeavesDiskByteUnchanged' tools/cmd/speccraft-guard/redbaseline_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_TestFileEdit_|Test_SiblingLookup_FindsEntryWrittenViaSymlinkedPath' -count=1
 - [x] **T9** — GREEN: guard capture path calls the atomic op, blocks on failure, reports on stderr, and normalizes both sides of the sibling lookup
   done: $ grep -q 'speccraft.CaptureRedCandidates(' tools/cmd/speccraft-guard/main.go && grep -q 'speccraft.NormalizeStateKey(' tools/cmd/speccraft-guard/main.go && ! grep -q 'Best-effort: a capture error never blocks' tools/cmd/speccraft-guard/main.go && cd tools && go test ./cmd/speccraft-guard/ -count=1
-- [ ] **T10** — RED: one normalizer, pinned by an anchored per-function source-scan
+- [x] **T10** — RED: one normalizer, pinned by an anchored per-function source-scan
   done: $ grep -q 'Test_NormalizeStateKey_IsTheSoleEntrypoint' tools/internal/speccraft/statekey_normalizer_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_NormalizeStateKey_IsTheSoleEntrypoint|Test_StateKeyConstruction_RoutesThroughNormalizer' -count=1
-- [ ] **T11** — GREEN: every remaining state-key construction routes through `NormalizeStateKey`
+- [x] **T11** — GREEN: every remaining state-key construction routes through `NormalizeStateKey`
   done: $ [ "$(grep -rc 'func NormalizeStateKey(' tools/internal/speccraft/buildrepair.go)" = 1 ] && cd tools && go test ./internal/speccraft/ -run 'Test_StateKeyConstruction_RoutesThroughNormalizer' -count=1
 - [ ] **T12** — RED: prober behaviour through the compile-stable `processToolUse` seam (AC1/AC2) plus the R1 known-gap pin
   - [ ] **T12.a** — clean overlay allows silently, writes no entry (AC1)

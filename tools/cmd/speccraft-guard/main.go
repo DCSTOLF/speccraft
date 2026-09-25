@@ -384,7 +384,13 @@ func captureRedCandidates(ti ToolInput, absPath, root string) error {
 	preIDs := extractTestIDs(absPath, pre)
 	postIDs := extractTestIDs(absPath, post)
 
-	if _, err := speccraft.CaptureRedCandidates(root, absPath, preIDs, postIDs); err != nil {
+	// Normalized HERE as well as inside CaptureRedCandidates. The second call is
+	// idempotent, and the point is not defence in depth but explicitness: this is
+	// the write side of the key that siblingRedCheck reads, so a later refactor
+	// that starts using `absPath` directly as a key has to notice. AC15's scan
+	// requires the call at both touchpoints for that reason.
+	key := speccraft.NormalizeStateKey(absPath)
+	if _, err := speccraft.CaptureRedCandidates(root, key, preIDs, postIDs); err != nil {
 		return fmt.Errorf(
 			"speccraft-guard: could not record the just-added test ids for %s:\n  %v\n\n"+
 				"The edit was NOT applied. Without this record the next production edit\n"+
