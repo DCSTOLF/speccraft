@@ -63,3 +63,34 @@ setup() {
   grep -qi 'malformed' "$CLOSE_MD"
   grep -qi 'violations' "$CLOSE_MD"
 }
+
+# --- Spec 0048 AC17 — the build-repair log gets reported at close ------------
+#
+# Same reasoning as the header above, one spec later: the report is prose in
+# close.md, and 0048's own tasks.md predicate stops executing the moment 0048
+# closes. Without these pins, deleting the report tomorrow breaks nothing in CI —
+# and the build-repair log would go back to being an audit trail nobody reads.
+
+@test "close.md: step 2 also reports the build-repair log" {
+  grep -q 'build-repair-log' "$CLOSE_MD"
+}
+
+@test "close.md: the build-repair report is informational and does not gate" {
+  # The distinction is the whole point: a report that could fail the close would
+  # make honest mid-repair work look like a failure, and people would route around
+  # repair mode instead of using it.
+  run grep -n -A 6 'build-repair-log' "$CLOSE_MD"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qiE 'informational|does not gate|never gates|report only'
+}
+
+@test "close.md: the report runs alongside tasks-verify, before the diff" {
+  tv="$(grep -n 'tasks-verify' "$CLOSE_MD" | head -1 | cut -d: -f1)"
+  br="$(grep -n 'build-repair-log' "$CLOSE_MD" | head -1 | cut -d: -f1)"
+  diffline="$(grep -n 'git diff' "$CLOSE_MD" | head -1 | cut -d: -f1)"
+  [ -n "$tv" ] && [ -n "$br" ] && [ -n "$diffline" ]
+  # Both mechanical steps precede the diff; the report sits with the gate, not
+  # buried after the narrative steps where nobody would read it.
+  [ "$br" -lt "$diffline" ]
+  [ "$tv" -lt "$diffline" ]
+}

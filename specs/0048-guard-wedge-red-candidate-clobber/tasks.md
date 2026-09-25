@@ -67,21 +67,21 @@ contract: done-means-v1
   done: $ grep -q 'Test_BuildProbe_OverlayAndCacheResolveOutsideRepoRoot' tools/cmd/speccraft-guard/buildprobe_nomutation_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_BuildProbe_(NeverMutatesWorkingTree|OverlayAndCacheResolveOutsideRepoRoot)' -count=1
 - [x] **T19** — RED/PIN: the ordinary red-check path is behaviourally unchanged — full branch table plus a one-call-site source-scan (AC16)
   done: $ grep -q 'Test_Prober_ReachedFromExactlyOneCallSite' tools/cmd/speccraft-guard/buildprobe_fallback_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_SiblingRedCheck_OrdinaryPaths_Unchanged_ZeroProberInvocations|Test_Prober_ReachedFromExactlyOneCallSite' -count=1
-- [ ] **T20** — RED: gated write tools pinned by paired enumeration across `hooks.json`, `pre-tool-use.sh`, `applyEdit` and the prober table (AC10)
+- [x] **T20** — RED: gated write tools pinned by paired enumeration across `hooks.json`, `pre-tool-use.sh`, `applyEdit` and the prober table (AC10)
   done: $ grep -q 'Test_GatedWriteTools_EnumerationIsTheSingleSource' tools/cmd/speccraft-guard/writetools_test.go && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_GatedWriteTools_EnumerationIsTheSingleSource|Test_BuildProbe_EveryGatedWriteTool_ReachesProberWithDerivedContent' -count=1
-- [ ] **T21** — GREEN: land `var gatedWriteTools` in `main.go` as the single source the three consumers agree with
+- [x] **T21** — GREEN: land `var gatedWriteTools` in `main.go` as the single source the three consumers agree with
   done: $ grep -q 'gatedWriteTools' tools/cmd/speccraft-guard/main.go && grep -q 'Edit|Write|MultiEdit|NotebookEdit' hooks/hooks.json && grep -q 'GATED_TOOLS="Edit Write MultiEdit NotebookEdit"' hooks/pre-tool-use.sh && cd tools && go test ./cmd/speccraft-guard/ -run 'Test_GatedWriteTools_' -count=1
-- [ ] **T22** — RED: the log gets a consumer — `speccraft-state build-repair-log` (run() seam) plus durable bats cases in `close-gate.bats` (AC17)
+- [x] **T22** — RED: the log gets a consumer — `speccraft-state build-repair-log` (run() seam) plus durable bats cases in `close-gate.bats` (AC17)
   done: $ grep -q 'build-repair-log' tests/hooks/close-gate.bats && grep -q 'Test_StateCmd_BuildRepairLog_NonEmpty_ListsSeqPathSummary' tools/cmd/speccraft-state/buildrepair_log_test.go && cd tools && go test ./cmd/speccraft-state/ -run 'Test_StateCmd_BuildRepairLog_' -count=1
-- [ ] **T23** — GREEN: `case "build-repair-log":` plus the informational report in `commands/spec/close.md` step 2
+- [x] **T23** — GREEN: `case "build-repair-log":` plus the informational report in `commands/spec/close.md` step 2
   done: $ grep -q 'case "build-repair-log":' tools/cmd/speccraft-state/main.go && grep -q 'build-repair-log' commands/spec/close.md && bats tests/hooks/close-gate.bats
-- [ ] **T24** — RED: AC18's bidirectional anti-drift pin — the compiled cap must appear inside the guardrail's carve-out sentence
-  - [ ] **T24.a** — internal test file (`package speccraft`) so the unexported constant is readable
-  - [ ] **T24.b** — regex anchored on the carve-out SENTENCE, never on a bare numeral
-  - [ ] **T24.c** — `conventions.md` no longer claims the build-failure rule is never relaxed
+- [x] **T24** — RED: AC18's bidirectional anti-drift pin — the compiled cap must appear inside the guardrail's carve-out sentence
+  - [x] **T24.a** — internal test file (`package speccraft`) so the unexported constant is readable
+  - [x] **T24.b** — regex anchored on the carve-out SENTENCE, never on a bare numeral
+  - [x] **T24.c** — `conventions.md` no longer claims the build-failure rule is never relaxed
   done: $ head -1 tools/internal/speccraft/buildrepair_policy_test.go | grep -qx 'package speccraft' && grep -q 'buildRepairMaxEdits' tools/internal/speccraft/buildrepair_policy_test.go && cd tools && go test ./internal/speccraft/ -run 'Test_Guardrails_CarveOut|Test_Conventions_BuildFailureEntry_NoLongerClaimsNeverRelaxed' -count=1
-- [ ] **T25** — GREEN: amend `.speccraft/guardrails.md` and `.speccraft/conventions.md` together (both or neither, spec §A.5)
-  done: $ grep -q 'build-repair' .speccraft/guardrails.md && grep -q '10' .speccraft/guardrails.md && ! grep -q 'must not be relaxed' .speccraft/conventions.md && cd tools && go test ./internal/speccraft/ -run 'Test_Guardrails_CarveOut|Test_Conventions_BuildFailureEntry' -count=1
+- [x] **T25** — GREEN: amend `.speccraft/guardrails.md` and `.speccraft/conventions.md` together (both or neither, spec §A.5). Predicate retargeted: it named two test functions that were never written (`Test_Guardrails_CarveOut`, `Test_Conventions_BuildFailureEntry`) and asserted the absence of `must not be relaxed`, a phrase that never appeared in conventions.md — so that clause was VACUOUS. It now names the real tests and the real stale sentence (`Do not "fix" this by relaxing the build-failure-is-not-RED rule`), which spec 0048 had to remove because 0048 IS the deferred follow-up that note pointed at
+  done: $ grep -qi 'build-repair' .speccraft/guardrails.md && grep -q 'at most 10 edits per session' .speccraft/guardrails.md && ! grep -qF 'Do not "fix" this by relaxing the build-failure-is-not-RED rule' .speccraft/conventions.md && grep -qi 'build-repair' .speccraft/conventions.md && (cd tools && go test ./internal/speccraft/ -run 'Test_BuildRepairCap_AppearsInGuardrailCarveOutSentence|Test_Conventions_NoLongerForbidsTheRelaxationThisSpecShipped' -count=1)
 - [ ] **T26** — REFACTOR + full verification: dedupe test helpers, whole suite, vet, drift, cross-compile
   - [ ] **T26.a** — `go test ./... -count=1` and `go vet ./...` green
   - [ ] **T26.b** — full `bats tests/hooks/` suite green. NOTE: the `done:` predicate below deliberately EXCLUDES `tasks-verify.bats`, because that suite invokes `speccraft-state tasks-verify`, which is the verifier executing this predicate — the spec-0047 no-self-recursion rule. Run it manually as part of this task; it is not a silent omission.

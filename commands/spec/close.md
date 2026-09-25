@@ -49,6 +49,22 @@ Steps:
    `memory-keeper` (step 4), so a close that will be refused does no downstream
    work.
 
+   **Then report the build-repair log (spec 0048 AC17):**
+   ```bash
+   speccraft-state build-repair-log
+   ```
+   This is **informational and does not gate** the close — it always exits `0`,
+   even when the log is full. Repair mode admits a bounded number of edits while
+   the build is broken so a multi-step repair is possible; a report that could
+   fail the close would make that honest work look like a failure, and the
+   rational response would be to avoid repair mode rather than use it, which
+   would put back the wedge 0048 removed.
+
+   Surface the output to the user, and if the log is non-empty include it in the
+   changelog's implementation notes: a session that admitted edits against a
+   broken build is a fact about how the work went, and the override budget's
+   credibility depends on it being visible rather than inferred.
+
 3. Compute the diff between when the spec started (commit at
    `started_at_sha` in spec frontmatter if set, else creation time resolved
    to a commit SHA) and HEAD:

@@ -451,6 +451,24 @@ func extractTestIDs(absPath, content string) []string {
 // is the spec-0031 fix: the pre-0031 code inferred "Write" from
 // `old_string == ""` and read `new_string`, but the Write tool sends `content`
 // — so Write-authored test files captured zero red-candidates.
+// gatedWriteTools is the single source of truth for which tool names the guard
+// gates (spec 0048 AC10). It has FOUR consumers, and nothing but the test below
+// connects them:
+//
+//   - applyEdit's switch, immediately following — how each tool's post-edit content
+//     is derived.
+//   - hooks/hooks.json, the PreToolUse matcher.
+//   - hooks/hooks.json, the PostToolUse matcher.
+//   - hooks/pre-tool-use.sh, GATED_TOOLS.
+//
+// Adding a write tool to some but not all of those fails SILENTLY in the worst
+// way: the hook never fires for the new tool, so every guard rule quietly stops
+// applying to edits made with it — no error, no output, just an unguarded write
+// path. Test_GatedWriteTools_EnumerationIsTheSingleSource pins all four against
+// this list, and Test_BuildProbe_EveryGatedWriteTool_ReachesProberWithDerivedContent
+// is driven off it so a tool added here without post-edit modelling fails too.
+var gatedWriteTools = []string{"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
 func applyEdit(preContent string, ti ToolInput) string {
 	switch ti.ToolName {
 	case "Write":

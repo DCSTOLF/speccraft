@@ -292,6 +292,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, st.Effective)
 		return 0
 
+	case "build-repair-log":
+		// Spec 0048 AC17: report the session's build-repair log. Read-only and
+		// always exit 0 — informational, never a gate (see buildrepair_log.go).
+		root, err := speccraft.FindRoot(".")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return buildRepairLogCmd(root, stdout, stderr)
+
 	case "set-status":
 		// Spec 0036 AC8/AC9: the sanctioned status writer (enum-validated,
 		// refuses an already-closed artifact, byte-safe). Spec 0049 moved the
