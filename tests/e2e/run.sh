@@ -256,6 +256,44 @@ if [ "$LANGUAGE_ONLY" = "1" ]; then
   exit 0
 fi
 
+# ---- 0. Make the plugin's binaries HEAD's, not the last release's ----
+#
+# Spec 0050 AC14. `--plugin-dir "$PLUGIN_DIR"` loads HEAD's commands, hooks and
+# skills, but the binaries they shell out to came from somewhere else entirely:
+# the SessionStart hook runs scripts/install-binaries.sh, which — finding no
+# `.binary-version` stamp, since it is gitignored and absent on a fresh checkout —
+# DOWNLOADS the last release into $PLUGIN_DIR/bin/. So this suite was validating
+# HEAD's markdown against RELEASE Go, and any command referencing a subcommand added
+# since that release silently degraded.
+#
+# It did. `/speccraft:spec:close` step 2 calls `speccraft-state tasks-verify` (spec
+# 0047, unreleased); against the v1.16.0 binary the agent reported "tasks-verify is
+# not present in the installed binary", fell back to running each `done:` predicate by
+# hand, and — being a real agent facing a gate whose bypass needs a token the prompt
+# never supplied — correctly STOPPED for a decision. The run failed at
+# `exists changelog.md`, which named the symptom and hid the cause.
+#
+# Building here (and stamping, so the hook's fast path skips the download) is the same
+# fix the bats CI jobs got, for the same reason: nothing in this repo should test HEAD
+# against a release.
+echo "==> [0/9] Building plugin binaries from source (never a release download)"
+( cd "$PLUGIN_DIR/tools" \
+  && for c in speccraft-state speccraft-guard speccraft-drift; do
+       go build -o "$PLUGIN_DIR/bin/$c" "./cmd/$c" || exit 1
+     done ) || fail "[0/9] could not build plugin binaries from source"
+jq -r '.version' "$PLUGIN_DIR/.claude-plugin/plugin.json" > "$PLUGIN_DIR/.binary-version"
+echo source > "$PLUGIN_DIR/.binary-provenance"
+# Fail loudly if the built binary lacks a subcommand HEAD's commands rely on: a silent
+# fallback to release behaviour is what this step exists to make impossible.
+#
+# `|| rc=$?` rather than a bare call: `tasks-verify` with no path exits 2 by design
+# (malformed/usage), and under `set -e` that would abort this script. Exit 1 is what an
+# UNKNOWN subcommand returns, so 1 is the failure signal here and 2 is success.
+E2E_TV_RC=0
+"$PLUGIN_DIR/bin/speccraft-state" tasks-verify >/dev/null 2>&1 || E2E_TV_RC=$?
+[ "$E2E_TV_RC" -ne 1 ] || fail "[0/9] built speccraft-state does not support tasks-verify"
+pass "plugin binaries built from HEAD ($(jq -r '.version' "$PLUGIN_DIR/.claude-plugin/plugin.json"))"
+
 # ---- 1. Set up a throwaway Go module ----
 echo "==> [1/9] Creating throwaway Go module"
 git init -q
@@ -384,7 +422,21 @@ pass "go test passes"
 
 # ---- 10. /speccraft:spec:close ----
 echo "==> [10/13] /speccraft:spec:close"
-run_claude "/speccraft:spec:close. Approve all proposed memory updates. DECLINE / defer the spec-consolidation step (spec 0025) — do NOT fold this spec into a domain file and do NOT move its directory; leave the closed spec directory in place under specs/." 10-close.log
+# The task-completion-gate clause (spec 0050 AC15) is not padding. close.md step 2
+# runs `tasks-verify --run` and, on violations, STOPS to ask whether to finish the work
+# or bypass — and bypass deliberately requires the literal token SKIP-TASKS-VERIFY,
+# which "approve all" does not satisfy. This prompt said nothing about the gate, so the
+# run's outcome depended on whether the `done:` predicates the agent authored back at
+# step [8/13] happened to still match the code it wrote at step [9/13]. Twice they did
+# not — a test renamed by a refactor, a `grep -v './main.go'` filter defeated by a path
+# printed without `./` — and the agent correctly refused to proceed. The suite then
+# failed at `exists changelog.md`, blaming close for a stale locator upstream.
+#
+# The token is deliberately NOT supplied: bypassing would stop exercising the gate
+# entirely. Instead the ambiguity is resolved the way close.md's own option (a) does —
+# reconcile the locator, re-run, and only stop if work is genuinely unfinished. The
+# oracle keeps its teeth: the work must still be done AND provable.
+run_claude "/speccraft:spec:close. Approve all proposed memory updates. DECLINE / defer the spec-consolidation step (spec 0025) — do NOT fold this spec into a domain file and do NOT move its directory; leave the closed spec directory in place under specs/. If the task-completion gate reports violations, first check whether each one is a STALE LOCATOR — a done: predicate naming a test or path that a later refactor renamed, while the behaviour it checks is still implemented and passing. If so, correct the predicate to match reality, re-run the gate, and continue the close. Do NOT bypass the gate and do NOT weaken a predicate into something that would pass without the behaviour. Only stop and ask if actual work is unfinished." 10-close.log
 exists "$SPEC_DIR/changelog.md"
 status_is "$SPEC_DIR/spec.md" "closed"
 # spec 0027: consolidation was declined above, so the closed spec dir must stay in

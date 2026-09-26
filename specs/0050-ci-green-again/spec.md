@@ -167,6 +167,32 @@ the same pipeline failure and were only observable once C was fixed.
     still checks the binary's fingerprint against a separately computed sha256
     rather than comparing the binary to itself.
 
+### The E2E devcontainer job — the SAME clobber, one layer down
+
+`E2E (devcontainer)` failed on runs #87 and #88 for a cause that is defect B again,
+reaching a different consumer. It passed on #86 only because the failure depends on
+a non-deterministic agent judgement.
+
+14. `tests/e2e/run.sh` must build the plugin's binaries from source (and stamp the
+    version, so the SessionStart hook's fast path skips the download) BEFORE the
+    claude lifecycle. `--plugin-dir` loads HEAD's commands, hooks and skills, but the
+    binaries they shell out to were being DOWNLOADED from the last release by the
+    SessionStart hook — so the suite validated HEAD's markdown against release Go.
+    `/speccraft:spec:close` step 2 calls `tasks-verify` (spec 0047, unreleased); the
+    agent reported it "not present in the installed binary", ran each `done:`
+    predicate by hand, and the run failed at `exists changelog.md` — a symptom three
+    steps from its cause. The step asserts the built binary answers `tasks-verify`
+    (exit ≠ 1) so a silent fallback to release behaviour is impossible.
+15. The `[10/13]` close prompt must say what to do when the task-completion gate
+    reports violations. Without that, the run's outcome depended on whether the
+    `done:` predicates the agent authored at `[8/13]` still matched the code it wrote
+    at `[9/13]`; twice they did not (a test renamed by a refactor; a
+    `grep -v '^\./main.go$'` filter defeated by a path printed without `./`) and the
+    agent correctly refused to proceed. The prompt instructs it to reconcile a stale
+    LOCATOR and re-run — close.md's own option (a) — and deliberately does NOT supply
+    `SKIP-TASKS-VERIFY`, because bypassing would stop exercising the gate altogether.
+    Weakening a predicate remains forbidden: the work must still be done AND provable.
+
 ## Out of scope
 
 - `TrackEdit` writes `edited_test_files` / `edited_prod_files` with a bare

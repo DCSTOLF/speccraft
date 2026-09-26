@@ -34,6 +34,16 @@ tests in two clusters, both production portability defects (AC10-AC13).
 - [x] **T12** — full re-verification after AC10-AC13 (AC9)
   done: $ bats tests/hooks/ && cd tools && go vet ./... && go test ./... -count=1
 
+The E2E devcontainer job failed on #87 and #88 for defect B reaching a second
+consumer: run.sh loaded HEAD's commands but RELEASE binaries (AC14-AC15).
+
+- [x] **T13** — `tests/e2e/run.sh` builds + stamps HEAD's binaries before the lifecycle, and proves `tasks-verify` answers (AC14)
+  done: $ bash -n tests/e2e/run.sh && grep -q 'go build -o "$PLUGIN_DIR/bin/' tests/e2e/run.sh && grep -q 'binary-version' tests/e2e/run.sh && bats tests/hooks/e2e-head-binaries.bats
+- [x] **T14** — the `[10/13]` close prompt resolves the task-completion gate without bypassing or weakening it (AC15)
+  done: $ grep -q 'task-completion gate reports violations' tests/e2e/run.sh && [ -z "$(grep -n 'SKIP-TASKS-VERIFY' tests/e2e/run.sh | grep -vE '^[0-9]+:[[:space:]]*#')" ] && grep -q 'do NOT weaken a predicate' tests/e2e/run.sh
+- [x] **T15** — final verification: whole bats suite + Go suite + vet + drift + the locally runnable e2e cycles (AC9)
+  done: $ bats tests/hooks/ && bash tests/e2e/workspace_consolidate_cycle.sh >/dev/null && cd tools && go vet ./... && go test ./... -count=1
+
 ## Bypasses
 
 - 2026-09-25 — override: the plugin actually running this session's hooks is the
