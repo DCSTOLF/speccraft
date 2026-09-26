@@ -66,6 +66,15 @@ setup() {
   printf '%s\n' "sed -i 's/x/y/' \\\\" '  f.md'               > "$FIX/forbidden/g12.sh"
   # A DOUBLE-QUOTED script with no suffix.
   printf '%s\n' 'sed -i "s/x/y/" f.md'                        > "$FIX/forbidden/g13.sh"
+  # Spec 0050 AC12 — the two forms that broke the macOS job on the FIRST run of
+  # this suite on BSD userland. Both were shipped under a scanned root and both
+  # walked past this guard, so the enumeration was incomplete, not merely unlucky.
+  # `sha256sum` is GNU coreutils only; macOS ships `shasum -a 256`.
+  printf '%s\n' 'fp="$(cat "$f" | sha256sum | awk "{print \$1}")"' > "$FIX/forbidden/g14.sh"
+  # `realpath -m` — macOS ships realpath WITHOUT -m, so this fails under set -e
+  # rather than degrading. In hooks/pre-tool-use.sh that aborted the hook before
+  # it delegated to speccraft-guard, making the TDD invariant inert on macOS.
+  printf '%s\n' 'ABS="$(realpath -m -- "$FILE_PATH")"'             > "$FIX/forbidden/g15.sh"
 
   # --- permitted: the portable counterpart of each ---
   printf '%s\n' "sed -i.bak 's/a/b/' f.txt && rm -f f.txt.bak" > "$FIX/permitted/q1.sh"
@@ -81,6 +90,19 @@ setup() {
   printf '%s\n' 'b="$(base64 <"$f" | tr -d "\\n")"'            > "$FIX/permitted/q9.sh"
   # `tac` must match as a COMMAND, not inside an identifier or a word.
   printf '%s\n' 'contact_list=1; syntactic=2; echo "$contact_list$syntactic"' > "$FIX/permitted/q10.sh"
+  # The portable counterparts of g14/g15. Both MUST pass in the same change that
+  # forbids the GNU spelling, or the guard rejects the very fix it demands.
+  # sha256: delegate to the binary that already computes this value.
+  printf '%s\n' 'fp="$(speccraft-state design-fingerprint "$d")"'  > "$FIX/permitted/q11.sh"
+  # And the `command -v` probe form, which is a PROBE, not an execution — the
+  # spelling scripts/install-binaries.sh already uses.
+  printf '%s\n' 'if command -v sha256sum >/dev/null 2>&1; then :; else shasum -a 256; fi' > "$FIX/permitted/q12.sh"
+  # realpath: canonicalise via cd+pwd -P, which needs only the DIRECTORY to exist.
+  printf '%s\n' 'ABS="$(cd -- "$(dirname -- "$p")" && pwd -P)/$(basename -- "$p")"' > "$FIX/permitted/q13.sh"
+  # A Go file naming either form in PROSE is not a shipped GNU-ism — Go reaches
+  # sha256 through crypto/sha256 and cannot run a shell form. Pinned so the
+  # `--exclude=*.go` scoping on clause (e) is a tested decision, not a silent one.
+  printf '%s\n' '// equals `speccraft-state reconcile <design> | sha256sum`, via realpath -m' > "$FIX/permitted/q14.go"
 
   export PLUGIN_DIR FIX
 }
@@ -122,11 +144,35 @@ scan_gnu_forms() {
   grep -rnE --exclude="*_test.go" "(^|[|;&(]|[[:space:]])tac([[:space:]]|$|[|;&)])" "$root" 2>/dev/null || true
   # (d) the remaining enumerated GNU-only flag forms.
   grep -rnE --exclude="*_test.go" "readlink[[:space:]]+-f|grep[[:space:]]+-[A-Za-z]*P|stat[[:space:]]+-c|date[[:space:]]+-d[[:space:]]|base64[[:space:]]+-w" "$root" 2>/dev/null || true
+  # (e) spec 0050 AC12: `realpath -m` (macOS ships realpath WITHOUT -m, so this
+  #     aborts under set -e) and `sha256sum` (GNU coreutils only; macOS ships
+  #     `shasum -a 256`). Both were shipped under a scanned root and both walked
+  #     past clauses (a)–(d), so the enumeration was incomplete.
+  #
+  #     `command -v sha256sum` is excluded because it PROBES for the tool rather
+  #     than running it — that is the portable-fallback idiom, not the defect. The
+  #     exclusion is the smallest possible and is not an escape hatch: it cannot be
+  #     written around, since a line that actually pipes into `sha256sum` does not
+  #     contain `command -v sha256sum`.
+  #
+  #     `--exclude=*.go` (not just *_test.go) is specific to THIS clause, and is a
+  #     scoping correction rather than a concession. Both forms are dangerous only as
+  #     SHELL invocations: Go reaches sha256 through crypto/sha256 and paths through
+  #     path/filepath, so it cannot execute either form the way a script does. The one
+  #     shape it could — `exec.Command("sha256sum", …)` — is already outside this
+  #     guard's reach by its own STATED LIMIT below, and is covered by the macOS Go
+  #     runner. Evidence the clause was mis-scoped without this: it flagged
+  #     ledger_archive_cmd.go's pre-existing comment, which documents the shell
+  #     equivalent of a value that file computes correctly in Go. A guard that fires
+  #     on prose about a defect, in a language that cannot commit it, trains readers
+  #     to weaken guards.
+  grep -rnE --exclude="*.go" "realpath[[:space:]]+-[A-Za-z]*m([[:space:]]|$)|sha256sum" "$root" 2>/dev/null \
+    | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum" || true
 }
 
 @test "portability guard FLAGS every forbidden GNU-only fixture" {
   out="$(scan_gnu_forms "$FIX/forbidden")"
-  for f in g1 g2 g3 g4 g5 g6 g7 g8 g9 g10 g11 g12 g13; do
+  for f in g1 g2 g3 g4 g5 g6 g7 g8 g9 g10 g11 g12 g13 g14 g15; do
     echo "$out" | grep -q "$f\." || { echo "missed $f:"; echo "$out"; return 1; }
   done
 }

@@ -187,10 +187,25 @@ sync_resolve_design_dir() {
 }
 
 # sync_design_fingerprint <root> <design> — sha256 of the design's reconcile output;
-# identical to `speccraft-state reconcile <design> | sha256sum` and to ledger-archive's
-# --expect fingerprint.
+# identical to ledger-archive's --expect fingerprint.
+#
+# DELEGATES to the binary (spec 0050 AC10/AC11). This used to pipe `reconcile` into
+# the GNU coreutils checksum tool, which macOS does not ship: the helper and every
+# caller of it — including sync_consolidate_design — died with "command not found" on
+# BSD userland. That was five of the eleven failures in the first-ever run of the bats
+# suite on macOS.
+#
+# A probe-and-fall-back shim would have fixed the portability alone. Delegation was
+# chosen instead because `designFingerprint` in Go ALREADY computes this exact value
+# for `ledger-archive --expect`, so the shell version was a second implementation of
+# one number — and a fingerprint whose two producers can drift is worse than no
+# fingerprint. One producer now, and no checksum arithmetic in shell at all.
+#
+# (The forbidden tool name is not spelled here on purpose: commands/ is a scanned
+# root for the portability meta-guard, which has no escape hatch and flags the form
+# in a comment as readily as in code. See specs/0050-ci-green-again/spec.md.)
 sync_design_fingerprint() {
-  ( cd "$1" && speccraft-state reconcile "$2" ) | sha256sum | awk '{print $1}'
+  ( cd "$1" && speccraft-state design-fingerprint "$2" )
 }
 
 # sync_design_rollup_body <root> <design> <fingerprint> — the outcome.md body: a

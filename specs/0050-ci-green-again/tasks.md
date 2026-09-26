@@ -20,6 +20,20 @@ contract: done-means-v1
 - [x] **T7** — full verification: whole bats suite + Go suite + vet + drift (AC9)
   done: $ bats tests/hooks/ && cd tools && go vet ./... && go test ./... -count=1
 
+Found by fixing AC6 — the macOS bats suite ran for the first time and failed 11
+tests in two clusters, both production portability defects (AC10-AC13).
+
+- [x] **T8** — extend both portability meta-guards to cover `realpath -m` and the GNU checksum tool, fixture-first (AC12)
+  done: $ grep -q 'g14 g15' tests/hooks/portability-guard.bats && grep -q 'q14.go' tests/hooks/portability-guard.bats && grep -q 'realpath\[\[:space:\]\]+-\[A-Za-z\]\*m' tests/hooks/tests-portability-sweep.bats && bats tests/hooks/portability-guard.bats tests/hooks/tests-portability-sweep.bats
+- [x] **T9** — `speccraft-state design-fingerprint <design>` exposes the Go fingerprint; usage documents every dispatched subcommand (AC11)
+  done: $ grep -q 'case "design-fingerprint"' tools/cmd/speccraft-state/main.go && cd tools && go test ./cmd/speccraft-state/ -run 'Test_DesignFingerprint|Test_Usage_DocumentsEverySubcommand' -count=1
+- [x] **T10** — port `hooks/pre-tool-use.sh` off `realpath -m` and pin canonicalisation through the hook's contract (AC10)
+  done: $ [ -z "$(grep -nE 'realpath' hooks/pre-tool-use.sh | grep -vE '^[0-9]+:[[:space:]]*#')" ] && grep -q 'canon_path()' hooks/pre-tool-use.sh && bats tests/hooks/pre-tool-use-state-guard.bats
+- [x] **T11** — port `commands/sync.lib.sh` to delegate, and the bats suite's own checksum use to a guarded probe (AC11, AC13)
+  done: $ grep -q 'speccraft-state design-fingerprint' commands/sync.lib.sh && grep -q 'sha256_stdin' tests/hooks/sync-workspace.bats && bats tests/hooks/sync-workspace.bats
+- [x] **T12** — full re-verification after AC10-AC13 (AC9)
+  done: $ bats tests/hooks/ && cd tools && go vet ./... && go test ./... -count=1
+
 ## Bypasses
 
 - 2026-09-25 — override: the plugin actually running this session's hooks is the
@@ -31,3 +45,14 @@ contract: done-means-v1
   from the code. The repo's own `bin/speccraft-guard` allows that edit silently via
   its `-overlay` probe of the POST-edit content. One override consumed to complete
   the rename.
+- 2026-09-26 — override: same stale 1.11.0 plugin, its OTHER known defect. Spec
+  0048 defect B: an edit to a test file that adds no new `func Test…` recomputes
+  that file's red candidates as `postIDs − preIDs` = `[]`. `usage_parity_test.go`
+  was created with a failing `Test_Usage_DocumentsEverySubcommand`, then edited to
+  correct an overstatement in its header comment — a comment-only change, which
+  cleared its candidates. The failing test is right there and fails on demand, but
+  the installed guard can no longer see it. HEAD's guard computes candidates from a
+  first-touch-only `red_baseline` and would still see it. One override consumed to
+  add the four missing `usage()` lines.
+  Both overrides in this spec were caused by the installed plugin being older than
+  the fixes in this repository, not by the work bypassing a real RED.

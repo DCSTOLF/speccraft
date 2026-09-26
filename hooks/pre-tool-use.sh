@@ -9,9 +9,12 @@
 # Update hooks/hooks.json matcher in lockstep so new tool names actually
 # reach this script.
 #
-# Runtime dependencies: jq, realpath -m (devcontainer image ships both
-# at /usr/bin/{jq,realpath}). If portability to a minimal image becomes
-# a concern, fold this guard into a small Go helper.
+# Runtime dependencies: jq. Path canonicalisation is done in pure shell —
+# see canon_path below. It used to use `realpath -m`, which macOS does not
+# support (spec 0050 AC10): the invocation failed under `set -e`, so the hook
+# exited BEFORE delegating to speccraft-guard, leaving both the state.json
+# guard and the whole TDD invariant inert on macOS while printing a confusing
+# `realpath: illegal option -- m`.
 set -euo pipefail
 export PATH="${CLAUDE_PLUGIN_ROOT}/bin:$PATH"
 
@@ -29,19 +32,46 @@ INPUT="$(cat)"
 # (tools/internal/speccraft/state_single_writer_test.go); this hook covers
 # the runtime axis a `claude -p` session can otherwise bypass.
 #
-# Path comparison uses `realpath -m` for canonicalisation (-m allows
-# components that don't exist, so we can canonicalise paths the model is
-# about to *create*). We deliberately do NOT call realpath -e or
-# filepath.EvalSymlinks — no current path uses a symlinked .speccraft/
-# and the extra stat round-trip would run on every write tool call.
+# canon_path <path> — absolute, symlink-resolved path of a file that need NOT
+# exist. Only its DIRECTORY has to, which is what makes this a safe replacement
+# for the `realpath -m` this used to call:
+#
+#   - `cd "$(dirname …)" && pwd -P` resolves `.`, `..` and symlinks exactly as
+#     realpath would, for any path whose parent directory exists.
+#   - When the parent does NOT exist, the target cannot be
+#     <root>/.speccraft/state.json — whose directory always exists, since ROOT
+#     was found by locating it. So the lexical fallback below can never turn a
+#     real match into a miss, which is the only property this comparison needs.
+#
+# Portable everywhere: it invokes neither realpath nor the GNU-only recursive
+# flag of readlink, both of which differ or are absent on BSD userland.
+# Splits with parameter expansion rather than dirname/basename: this runs on
+# EVERY write tool call, so two subshells per call is a real cost, and BSD's
+# dirname/basename take their operand positionally — relying on them to accept
+# `--` is the kind of assumption that produced the defect being fixed here.
+canon_path() {
+  local p="${1%/}" d b dabs
+  case "$p" in
+    */*) d="${p%/*}"; b="${p##*/}"; [ -n "$d" ] || d="/" ;;
+    *)   d="."; b="$p" ;;
+  esac
+  if dabs="$(cd "$d" 2>/dev/null && pwd -P)"; then
+    printf '%s/%s\n' "${dabs%/}" "$b"
+  elif [ "${p#/}" != "$p" ]; then
+    printf '%s\n' "$p"
+  else
+    printf '%s/%s\n' "${PWD%/}" "$p"
+  fi
+}
+
 GATED_TOOLS="Edit Write MultiEdit NotebookEdit"
 TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
 FILE_PATH="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')"
 if [ -n "$TOOL_NAME" ] && [ -n "$FILE_PATH" ]; then
   for t in $GATED_TOOLS; do
     if [ "$TOOL_NAME" = "$t" ]; then
-      ABS="$(realpath -m -- "$FILE_PATH")"
-      STATE="$(realpath -m -- "$ROOT/.speccraft/state.json")"
+      ABS="$(canon_path "$FILE_PATH")"
+      STATE="$(canon_path "$ROOT/.speccraft/state.json")"
       if [ "$ABS" = "$STATE" ]; then
         cat >&2 <<'EOF'
 .speccraft/state.json is single-writer: speccraft-state is the only

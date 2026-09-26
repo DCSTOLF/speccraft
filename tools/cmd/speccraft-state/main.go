@@ -402,6 +402,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return reconcileCmd(args[1], stdout, stderr)
 
+	case "design-fingerprint":
+		// Spec 0050 AC11: the sha256 that commands/sync.lib.sh used to compute with
+		// GNU-only `sha256sum`. Exposing the value Go already computes for
+		// `ledger-archive --expect` keeps one implementation, not two.
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: speccraft-state design-fingerprint <design>")
+			return 1
+		}
+		return designFingerprintCmd(args[1], stdout, stderr)
+
 	case "ledger-get":
 		// Spec 0043 AC2: raw-dump oracle for the stored ledger pointer fields.
 		filter := ""
@@ -619,7 +629,14 @@ Usage:
   speccraft-state ledger-get [<design>]  Dump raw stored ledger rows as <design>\t<member>\t<spec>\t<last_completed_phase>\t<in_flight>\t<blocked> (spec 0043)
   speccraft-state ledger-archive <design> [--expect <fp>]
                                           Archive a done design's rows to ledger.archive.md (spec 0044)
+  speccraft-state design-fingerprint <design>
+                                          sha256 of a design's reconcile output — the --expect value (spec 0050)
   speccraft-state config-kind <dir>      Print the strict config kind of <dir> (repo|workspace) (spec 0042)
   speccraft-state find-workspace-root    Print the nearest workspace-root ancestor of cwd (spec 0042)
+  speccraft-state tasks-verify <tasks.md> [--run]
+                                          Mechanical task-completion oracle; 0 clean / 1 violations / 2 malformed (spec 0047)
+  speccraft-state review-commit <spec-dir> <fingerprint>
+                                          Record the reviewed fingerprint in spec.md (spec 0035)
+  speccraft-state build-repair-log       Report edits admitted while the build was broken (spec 0048)
   speccraft-state --version              Print version`)
 }

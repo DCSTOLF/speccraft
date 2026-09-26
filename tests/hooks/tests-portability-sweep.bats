@@ -21,7 +21,12 @@ setup() {
 
 # The enumerated GNU-only forms, same set as the shipped-surface guard.
 gnu_form_pattern() {
-  printf '%s' "sed[[:space:]]+-i[[:space:]]+([^'\"[:space:]]|'[^']|\"[^\"])|sed[^|;]*[[:space:]]['\"]?0,/|(^|[|;&(]|[[:space:]])tac([[:space:]]|\$|[|;&)])|readlink[[:space:]]+-f|grep[[:space:]]+-[A-Za-z]*P|stat[[:space:]]+-c|date[[:space:]]+-d[[:space:]]|base64[[:space:]]+-w"
+  # `realpath -m` and `sha256sum` added by spec 0050 AC12: the macOS bats job ran
+  # for the first time and both forms broke it, one in a shipped hook and one
+  # right here in tests/hooks — which this sweep walked straight past.
+  printf '%s' "sed[[:space:]]+-i[[:space:]]+([^'\"[:space:]]|'[^']|\"[^\"])|sed[^|;]*[[:space:]]['\"]?0,/|(^|[|;&(]|[[:space:]])tac([[:space:]]|\$|[|;&)])|readlink[[:space:]]+-f|grep[[:space:]]+-[A-Za-z]*P|stat[[:space:]]+-c|date[[:space:]]+-d[[:space:]]|base64[[:space:]]+-w|realpath[[:space:]]+-[A-Za-z]*m([[:space:]]|\$)|sha256sum"
+  # NOTE: this sweep scans tests/hooks, which is all bats — no *.go exclusion is
+  # needed here, unlike the shipped-surface guard's clause (e).
 }
 
 # Lines that MENTION a form without running it:
@@ -36,9 +41,10 @@ mention_only_filter() {
   grep -vE "^[^:]+:[0-9]+:[[:space:]]*#" \
     | grep -vE "(printf|echo|cat >)" \
     | grep -vE "(unset -f|export -f|\(\)[[:space:]]*\{)" \
-    | grep -vE "grep -rnE|grep -qE|grep -nE|gnu_form_pattern" \
+    | grep -vE "grep -rnE|grep -qE|grep -nE|grep -vE|gnu_form_pattern" \
     | grep -vE "^[^:]+:[0-9]+:@test " \
-    | grep -vE "make_gnu_tool|make_bsd_path|for t in "
+    | grep -vE "make_gnu_tool|make_bsd_path|make_versioned_tool|for t in " \
+    | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum"
 }
 
 # executing_files — the files in tests/hooks that actually RUN a GNU-only form.
@@ -73,6 +79,12 @@ executing_files() {
   #     what remains is the comment explaining why the GNU form was removed.
   #   no-gnu-userland — builds synthetic GNU/BSD tool stubs by name (tac, gsed,
   #     …) to exercise the assertion script; it never runs a real GNU tool.
+  #   sync-workspace — added by spec 0050 AC13. It names the GNU checksum tool
+  #     inside a single-line `command -v … ; then … ; else shasum -a 256; fi`
+  #     probe, which RUNS the tool only where it exists. That is the portable
+  #     fallback idiom, not an unguarded execution, and the `executing_files`
+  #     filter exempts the probe spelling specifically. Before this spec the file
+  #     piped straight into the GNU tool and failed on every BSD runner.
   expected="$(printf '%s\n' \
     frontmatter-writer-guard.bats \
     init-workspace.bats \
@@ -80,6 +92,7 @@ executing_files() {
     portability-guard.bats \
     spec-consolidate.bats \
     spec-revise-preflight.bats \
+    sync-workspace.bats \
     tests-portability-sweep.bats | sort -u)"
   actual="$(grep -rlE "$(gnu_form_pattern)" "$HOOKS" 2>/dev/null \
     | sed "s|^$HOOKS/||" | sort -u)"

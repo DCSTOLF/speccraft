@@ -311,9 +311,27 @@ seed_done_design() {
 
 # --- T5: sync_design_fingerprint + sync_design_rollup_body (AC5) ---
 
+# Portable sha256-of-stdin. GNU coreutils ships `sha256sum`; macOS/BSD ships
+# `shasum`. The bare `sha256sum` this replaces is what broke this test and four
+# others on the first run of the suite on BSD userland (spec 0050 AC13).
+#
+# The computation is kept in the TEST on purpose. `sync_design_fingerprint` now
+# delegates to `speccraft-state design-fingerprint`, so calling the binary here
+# too would compare the implementation against itself; the assertion worth making
+# is that the shell helper's value equals a sha256 computed independently of it.
+# Kept on ONE line deliberately: the portability meta-guard flags `sha256sum` in
+# command position and exempts only a `command -v sha256sum` probe on the same
+# line. That exemption cannot be written around — a line that actually runs the
+# tool unguarded does not contain the probe — so collapsing the branch is how a
+# guarded fallback is spelled here, matching the permitted fixture in
+# tests/hooks/portability-guard.bats.
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi
+}
+
 @test "sync_design_fingerprint: equals sha256 of reconcile output" {
   source "$SYNC_LIB"; mk_ws "#"; seed_done_design D ./api 0007-a
-  want="$( ( cd "$TEST_WS" && speccraft-state reconcile D ) | sha256sum | awk '{print $1}')"
+  want="$( ( cd "$TEST_WS" && speccraft-state reconcile D ) | sha256_stdin | awk '{print $1}')"
   run sync_design_fingerprint "$TEST_WS" D
   [ "$status" -eq 0 ]; [ "$output" = "$want" ]
 }

@@ -133,6 +133,40 @@ against the environment that hid it.
 9. The whole bats suite and `go test ./...` pass on Linux, unchanged in count
    except for the tests this spec adds.
 
+### Found by fixing AC6 — the first-ever run of the macOS bats suite
+
+Fixing defect C let `hooks-macos` reach bats for the first time. It ran 339
+tests and failed 11, in two clusters, both production defects of exactly the
+class spec 0049 was written to catch. They are in scope here because they are
+the same pipeline failure and were only observable once C was fixed.
+
+10. `hooks/pre-tool-use.sh` must not depend on `realpath -m`. macOS ships
+    `realpath` without `-m`, so on BSD userland the invocation fails under
+    `set -e` and the hook exits before reaching `speccraft-guard` — which means
+    **both** the `state.json` single-writer guard and the entire TDD invariant
+    delegation are inert on macOS, and the operator sees `realpath: illegal
+    option -- m` instead of either guard's message. Replaced with the portable
+    `cd "$(dirname …)" && pwd -P` idiom the repo already uses. Correctness
+    argument for dropping `-m`: only the *directory* need exist, and when it does
+    not, the target cannot be `<root>/.speccraft/state.json`, whose directory
+    always exists — so exact-match behaviour is preserved.
+11. `commands/sync.lib.sh`'s `sync_design_fingerprint` must not shell out to
+    `sha256sum` (GNU coreutils only; macOS ships `shasum`). It delegates to a new
+    `speccraft-state design-fingerprint <design>`, which exposes the
+    `designFingerprint` Go helper that ALREADY computes this exact value for
+    `ledger-archive --expect`. Delegation rather than a `command -v` fallback:
+    the shell copy was a second implementation of a value Go already produces, so
+    porting it in place would have kept two things that can drift.
+12. Both portability meta-guards gain `sha256sum` and `realpath -m`, fixture-first
+    (each forbidden form and its portable counterpart), and the live-tree scan is
+    observed FAILING on the two real sites before they are ported. The guards
+    passed over both defects, so extending them is not optional bookkeeping —
+    a guard that missed the forms that took the job down would miss them again.
+13. The bats suite's own `sha256sum` use (`tests/hooks/sync-workspace.bats`) is
+    made portable while KEEPING an independent shell computation, so the test
+    still checks the binary's fingerprint against a separately computed sha256
+    rather than comparing the binary to itself.
+
 ## Out of scope
 
 - `TrackEdit` writes `edited_test_files` / `edited_prod_files` with a bare
