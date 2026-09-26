@@ -83,6 +83,21 @@ jobs:
         run: |
           go build -o ../bin/speccraft-state ./cmd/speccraft-state
           go build -o ../bin/speccraft-guard ./cmd/speccraft-guard
+      # Spec 0050 (AC8): stamp the version so scripts/install-binaries.sh takes its
+      # fast path. Without this, session-start.bats — which runs the real
+      # SessionStart hook against the real plugin root — invoked the installer,
+      # which found no stamp (it is gitignored) and DOWNLOADED the last release over
+      # the binaries just built above. Since that file sorts before
+      # tasks-verify.bats, the suite then tested a released binary and failed on
+      # `tasks-verify`, a subcommand that exists at HEAD and not in v1.16.0.
+      #
+      # Read from plugin.json rather than hardcoded: the installer compares against
+      # that exact value, so a literal would quietly stop matching at the next
+      # version bump and the clobber would return.
+      - name: Stamp built binaries so the installer never downloads a release
+        run: |
+          jq -r '.version' .claude-plugin/plugin.json > .binary-version
+          echo source > .binary-provenance
       # Spec 0049: commands/{arch,pm}/*.lib.sh now shell out to
       # `speccraft-state set-status --kind ...`. Their resolver prefers PATH
       # over the plugin-local bin/, so the freshly built binary must be on
@@ -129,6 +144,12 @@ jobs:
         run: |
           go build -o ../bin/speccraft-state ./cmd/speccraft-state
           go build -o ../bin/speccraft-guard ./cmd/speccraft-guard
+      # Spec 0050 (AC8) — same clobber as the Linux `hooks` job; see the comment
+      # there. Stamped per-job because each job builds its own bin/.
+      - name: Stamp built binaries so the installer never downloads a release
+        run: |
+          jq -r '.version' .claude-plugin/plugin.json > .binary-version
+          echo source > .binary-provenance
       - name: Put freshly built binaries on PATH
         run: echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
       # Runs BEFORE bats: if the runner is not actually BSD-userland-on-Bash-5,

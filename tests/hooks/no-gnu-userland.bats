@@ -64,10 +64,85 @@ EOS
   chmod +x "$dir/$name"
 }
 
+# A stub that ACCEPTS --version and prints the given line verbatim. Spec 0050
+# defect C: the original fixture modelled BSD tools as *rejecting* --version, and
+# real macOS tools do not. macos-14's /usr/bin/grep accepts it and answers
+#
+#   grep (BSD grep, GNU compatible) 2.6.0-FreeBSD
+#
+# which is BSD grep truthfully advertising GNU COMPATIBILITY. A substring test for
+# "GNU" read that as a GNU build and failed the hooks-macos job before bats ran at
+# all — so the macOS suite never once executed. The rejecting stubs above are kept
+# as a second shape because both exist in the wild (`stat`, `readlink`).
+make_versioned_tool() {
+  local dir="$1" name="$2" line="$3"
+  mkdir -p "$dir"
+  cat > "$dir/$name" <<EOS
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    --version) echo "$line"; exit 0 ;;
+  esac
+done
+exit 0
+EOS
+  chmod +x "$dir/$name"
+}
+
+# The real macos-14 userland: every required tool present, each answering
+# --version the way the shipped BSD build actually does.
+make_bsd_versioned_path() {
+  local d="$FIX/bsdver"; mkdir -p "$d"
+  make_versioned_tool "$d" grep     'grep (BSD grep, GNU compatible) 2.6.0-FreeBSD'
+  make_versioned_tool "$d" awk      'awk version 20200816'
+  make_versioned_tool "$d" sed      'illegal option -- -'
+  make_versioned_tool "$d" stat     'illegal option -- -'
+  make_versioned_tool "$d" date     'illegal option -- -'
+  make_versioned_tool "$d" readlink 'illegal option -- -'
+  make_versioned_tool "$d" base64   'illegal option -- -'
+  printf '%s\n' "$d"
+}
+
 @test "assert-no-gnu-userland PASSES a synthetic BSD-only PATH" {
   bsd="$(make_bsd_path)"
   SPECCRAFT_PROBE_PATH="$bsd" run bash "$SCRIPT"
   [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
+# Spec 0050 AC6. This is the case that took the macOS job down: BSD grep declaring
+# GNU compatibility must NOT be read as a GNU build.
+@test "assert-no-gnu-userland PASSES a BSD userland whose grep reports 'GNU compatible'" {
+  bsd="$(make_bsd_versioned_path)"
+  SPECCRAFT_PROBE_PATH="$bsd" run bash "$SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "BSD grep advertising GNU COMPATIBILITY is not a GNU build; rejecting it stops"
+    echo "the macOS job before bats runs, which is no signal at all:"
+    echo "$output"
+    false
+  }
+}
+
+# The other polarity, per real GNU --version first lines. `GNU Awk` is included
+# deliberately: gawk prints "GNU Awk 5.1.0, API: 3.1" with NO parenthesis, so a
+# pattern anchored only on "(GNU " would let the most common GNU awk through.
+@test "assert-no-gnu-userland FLAGS every real GNU --version shape" {
+  local bsd; bsd="$(make_bsd_versioned_path)"
+  local i=0
+  while IFS='|' read -r tool line; do
+    [ -n "$tool" ] || continue
+    i=$((i + 1))
+    local d="$FIX/gnu$i"
+    make_versioned_tool "$d" "$tool" "$line"
+    SPECCRAFT_PROBE_PATH="$d:$bsd" run bash "$SCRIPT"
+    [ "$status" -ne 0 ] || { echo "a GNU $tool announcing itself as '$line' must be flagged"; echo "$output"; false; }
+    echo "$output" | grep -q "$tool"
+  done <<'EOS'
+grep|grep (GNU grep) 3.11
+sed|sed (GNU sed) 4.9
+date|date (GNU coreutils) 9.4
+awk|GNU Awk 5.1.0, API: 3.1 (GNU MPFR 4.1.0, GNU MP 6.2.1)
+EOS
+  [ "$i" -eq 4 ]
 }
 
 @test "assert-no-gnu-userland FLAGS a gnubin-shadowed sed" {

@@ -69,17 +69,45 @@ for t in $required_tools; do
       continue
       ;;
   esac
-  # Behavioural probe: GNU tools accept --version; BSD tools reject it.
+  # Behavioural probe: does the tool NAME ITSELF as a GNU implementation?
+  #
+  # The original phrasing was "accepts --version and mentions GNU", on the premise
+  # that BSD tools reject --version. They do not. macos-14's /usr/bin/grep accepts
+  # it and answers
+  #
+  #   grep (BSD grep, GNU compatible) 2.6.0-FreeBSD
+  #
+  # — BSD grep truthfully advertising GNU COMPATIBILITY. A bare substring test read
+  # that as a GNU build and failed the hooks-macos job at this step, so the macOS
+  # suite never ran at all (spec 0050 defect C). A job that cannot start is worse
+  # than the GNU-greened job AC10 was written to prevent: it yields no signal in
+  # either direction rather than a false one.
   #
   # Invoke the RESOLVED path, not the bare name: `PATH=x cmd` does not reliably
   # affect the lookup of `cmd` itself in bash (the assignment applies to the
   # command's environment; resolution may already have happened). Using
   # "$resolved" is deterministic and is what we actually want to interrogate.
-  if ver="$("$resolved" --version 2>/dev/null)" \
-     && printf '%s' "$ver" | grep -q 'GNU'; then
-    note "FAIL: '$t' at $resolved is a GNU build (accepted --version and reported GNU)."
-    note "      This is the case a path check alone misses — e.g. reached via an unusual symlink."
-    fail=1
+  if ver="$("$resolved" --version 2>/dev/null)"; then
+    # First line only: the implementation name always sits there, while GNU's
+    # later lines carry "GNU General Public License" — boilerplate a GPL-licensed
+    # BSD tool can print too.
+    first="$(printf '%s\n' "$ver" | head -1)"
+    # Strip COMPATIBILITY claims before deciding. Keeping this as an explicit
+    # removal rather than relying on the pattern below is the point: a BSD tool
+    # that printed "(GNU compatible)" with no "BSD" prefix would otherwise slip
+    # back into the same false positive.
+    claim="${first//GNU compatible/}"
+    claim="${claim//GNU-compatible/}"
+    # A GNU build names itself either parenthetically — "grep (GNU grep) 3.11",
+    # "date (GNU coreutils) 9.4" — or at the head of the line, which is how gawk
+    # does it: "GNU Awk 5.1.0, API: 3.1". The leading-anchor alternative is not
+    # redundant; gawk's name carries no parenthesis and a paren-only pattern would
+    # let the most common GNU awk through.
+    if printf '%s' "$claim" | grep -qE '(^|\()GNU '; then
+      note "FAIL: '$t' at $resolved is a GNU build (its --version names a GNU implementation: $first)."
+      note "      This is the case a path check alone misses — e.g. reached via an unusual symlink."
+      fail=1
+    fi
   fi
 done
 

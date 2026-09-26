@@ -41,10 +41,10 @@ func Test_MultiEditSiblingRed_NoOverride_Allows_Go(t *testing.T) {
 	if err := processToolUse(in, deps{}); err != nil {
 		t.Fatalf("MultiEdit to a test file should be allowed, got: %v", err)
 	}
-	abs, _ := filepath.Abs(sib)
+	key := speccraft.NormalizeStateKey(sib)
 	rc, _ := speccraft.GetRedCandidates(root)
-	if !containsStr(rc[abs], "TestNew") {
-		t.Fatalf("MultiEdit envelope must capture the just-added TestNew, got %v", rc[abs])
+	if !containsStr(rc[key], "TestNew") {
+		t.Fatalf("MultiEdit envelope must capture the just-added TestNew, got %v", rc[key])
 	}
 
 	// Call 2: Edit the production file; the runner reports TestNew failing → the

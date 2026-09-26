@@ -823,12 +823,15 @@ func captureCase(t *testing.T, root, testFile, diskContent, newContent string) [
 	if err := processToolUse(input, deps{}); err != nil {
 		t.Fatalf("test-file edit should be allowed, got: %v", err)
 	}
-	abs, _ := filepath.Abs(testFile)
+	// Read through the same normalizer the capture path writes with. A bare
+	// filepath.Abs matched only while no ancestor was a symlink — which is every
+	// macOS `t.TempDir()` (spec 0050 defect A).
+	key := speccraft.NormalizeStateKey(testFile)
 	got, err := speccraft.GetRedCandidates(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return got[abs]
+	return got[key]
 }
 
 func Test_TestFileEdit_CapturesRedCandidates_Go(t *testing.T) {
@@ -1253,12 +1256,12 @@ func writeCaptured(t *testing.T, root, testFile, content string) []string {
 	if err := processToolUse(in, deps{}); err != nil {
 		t.Fatalf("Write to a test file must be allowed, got: %v", err)
 	}
-	abs, _ := filepath.Abs(testFile)
+	key := speccraft.NormalizeStateKey(testFile)
 	rc, err := speccraft.GetRedCandidates(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return rc[abs]
+	return rc[key]
 }
 
 func Test_WriteEnvelope_CapturesRedCandidates_Go_Create(t *testing.T) {
@@ -1478,10 +1481,10 @@ func Test_MultiEditEnvelope_CapturesRedCandidate(t *testing.T) {
 	if err := processToolUse(in, deps{}); err != nil {
 		t.Fatalf("MultiEdit to a test file should be allowed, got: %v", err)
 	}
-	abs, _ := filepath.Abs(testFile)
+	key := speccraft.NormalizeStateKey(testFile)
 	rc, _ := speccraft.GetRedCandidates(root)
-	if !containsStr(rc[abs], "TestX") {
-		t.Errorf("MultiEdit edits[] must capture the just-added TestX as a red-candidate, got %v", rc[abs])
+	if !containsStr(rc[key], "TestX") {
+		t.Errorf("MultiEdit edits[] must capture the just-added TestX as a red-candidate, got %v", rc[key])
 	}
 }
 
@@ -1505,10 +1508,10 @@ func Test_NotebookEditEnvelope_CapturesRedCandidate(t *testing.T) {
 	if err := processToolUse(in, deps{}); err != nil {
 		t.Fatalf("NotebookEdit to a test file should be allowed, got: %v", err)
 	}
-	abs, _ := filepath.Abs(testFile)
+	key := speccraft.NormalizeStateKey(testFile)
 	rc, _ := speccraft.GetRedCandidates(root)
-	if !containsStr(rc[abs], "test_new") {
-		t.Errorf("NotebookEdit new_source must capture the just-added test_new as a red-candidate, got %v", rc[abs])
+	if !containsStr(rc[key], "test_new") {
+		t.Errorf("NotebookEdit new_source must capture the just-added test_new as a red-candidate, got %v", rc[key])
 	}
 }
 

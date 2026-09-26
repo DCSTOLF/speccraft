@@ -357,7 +357,18 @@ func GetRedCandidates(root string) (map[string][]string, error) {
 // SetRedCandidates records the deduplicated set of test ids the session added
 // to the given file, overwriting any prior entry for that file. Single-writer:
 // acquires mu once around load → mutate → save.
+//
+// The key goes through NormalizeStateKey (spec 0048 AC15, spec 0050 AC1), which
+// is not optional bookkeeping: `siblingRedCheck` READS this map through the same
+// normalizer, so storing the caller's spelling verbatim wrote an entry the reader
+// could never find. Wherever the path reaches the repo through a symlinked
+// ancestor — every macOS `t.TempDir()`, and any checkout under a symlinked home —
+// that turned a registered red candidate into "No test was added this session",
+// the exact refusal spec 0048 set out to eliminate. Normalizing HERE rather than
+// at each call site is deliberate: closing the trap is the writer's job, not
+// every future caller's to remember.
 func SetRedCandidates(root, file string, ids []string) error {
+	key := NormalizeStateKey(file)
 	mu.Lock()
 	defer mu.Unlock()
 	s, err := loadStateLocked(root)
@@ -376,7 +387,7 @@ func SetRedCandidates(root, file string, ids []string) error {
 		seen[id] = struct{}{}
 		deduped = append(deduped, id)
 	}
-	s.Session.RedCandidates[file] = deduped
+	s.Session.RedCandidates[key] = deduped
 	return saveStateLocked(root, s)
 }
 

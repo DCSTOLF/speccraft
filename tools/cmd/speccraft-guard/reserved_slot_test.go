@@ -39,9 +39,12 @@ func dispatchCapturesTestID(t *testing.T, toolName string, toolInput map[string]
 	if err := processToolUse(in, deps{}); err != nil {
 		t.Fatalf("%s to a test file should be allowed, got: %v", toolName, err)
 	}
-	abs, _ := filepath.Abs(testFile)
+	// Read the key the way the capture path WRITES it. A bare filepath.Abs was
+	// equivalent only while no ancestor was a symlink — true of Linux CI, false of
+	// every macOS `t.TempDir()` under /var/folders (spec 0050 defect A).
+	key := speccraft.NormalizeStateKey(testFile)
 	rc, _ := speccraft.GetRedCandidates(root)
-	return rc[abs], abs
+	return rc[key], key
 }
 
 // AC8 — the MultiEdit envelope only captures a candidate if dispatchByLanguage

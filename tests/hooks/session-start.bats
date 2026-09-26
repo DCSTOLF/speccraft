@@ -7,6 +7,19 @@ setup() {
   TEST_REPO="$(mktemp -d)"
   export CLAUDE_PLUGIN_ROOT="$PLUGIN_DIR"
   export PATH="$PLUGIN_DIR/bin:$PATH"
+  # Spec 0050 defect B. The hook runs the REAL scripts/install-binaries.sh against
+  # the REAL plugin root, so with no `.binary-version` stamp present — it is
+  # gitignored, hence absent on every fresh checkout — the installer downloaded the
+  # last RELEASE tarball and untarred it over this repo's bin/. In CI that replaced
+  # the binaries built from HEAD minutes earlier, and because this file sorts before
+  # tasks-verify.bats, four later tests failed with `unknown subcommand:
+  # tasks-verify` — a subcommand that exists at HEAD and not in the release.
+  #
+  # Pinning the base at an unreachable file:// URL keeps the real installer under
+  # test while making the download branch fail deterministically: it falls back to
+  # building from THIS tree, which can only ever produce current binaries. The
+  # suite must never be able to make the repo's bin/ older than its source.
+  export SPECCRAFT_RELEASE_BASE="file:///nonexistent/speccraft-release-base"
 }
 
 teardown() {
