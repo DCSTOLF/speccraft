@@ -868,6 +868,36 @@ Introduced by spec 0008.
 
 Anything that invokes `claude -p` belongs in the lifecycle job. Anything that exercises `speccraft-guard` against a representative project layout (no API calls) belongs in the language-only job.
 
+### Every job that runs the suite must build the binaries AND stamp `.binary-version`
+
+Introduced by spec 0050, after this cost eight consecutive red runs on `main`.
+
+`scripts/install-binaries.sh` compares `.binary-version` against `plugin.json`'s version and, on a mismatch, **downloads the last release and untars it over `bin/`**. The stamp is gitignored, so it is absent on every fresh checkout — which means any job or test that reaches the SessionStart hook silently replaces freshly built binaries with the last *released* ones. Build then stamp:
+
+```yaml
+- name: Stamp built binaries so the installer never downloads a release
+  run: |
+    jq -r '.version' .claude-plugin/plugin.json > .binary-version
+    echo source > .binary-provenance
+```
+
+Read the version from `plugin.json`, never a literal — the installer compares against that exact value, so a hardcoded number stops matching at the next bump and the download quietly returns. `tests/e2e/run.sh` does the same before its lifecycle, and additionally **asserts** the built binary answers a subcommand added since the last release (exit ≠ 1, since an unknown subcommand exits 1 while `tasks-verify` with no path exits 2 by design).
+
+**Why this bit three times.** It hit the Linux bats job, the macOS bats job, and the E2E job as three unrelated-looking symptoms — `unknown subcommand: tasks-verify`, then the same, then an agent reporting a subcommand "not present in the installed binary" and stopping at a gate. The clobber was as old as the tests and harmless only while no test needed a subcommand newer than the last release. **Nothing in this repo may test HEAD against a release**; a test that provisions its own plugin root must point `SPECCRAFT_RELEASE_BASE` somewhere unreachable rather than letting the download happen.
+
+### A behavioural tool probe must match the IMPLEMENTATION name, not the string "GNU"
+
+Introduced by spec 0050. macOS `/usr/bin/grep` accepts `--version` and answers `grep (BSD grep, GNU compatible) 2.6.0-FreeBSD` — BSD grep truthfully advertising GNU *compatibility*. A substring test for `GNU` read that as a GNU build and failed the `hooks-macos` job **before bats ran**, so the macOS suite never executed at all. Two rules follow:
+
+- Match `(GNU ` **or** a line-leading `GNU `. The second alternative is not redundant: gawk prints `GNU Awk 5.1.0, API: 3.1` with no parenthesis, so a paren-anchored pattern alone admits the commonest GNU awk.
+- Strip compatibility CLAIMS (`GNU compatible`, `GNU-compatible`) before deciding, and use the FIRST line only — GNU's later lines carry `GNU General Public License`, boilerplate a GPL-licensed BSD tool can print too.
+
+And the fixture lesson that let this ship: **BSD tools do not uniformly reject `--version`.** `grep`, `awk` and `date` accept it on macOS. A synthetic "BSD userland" that models only rejecting stubs tests the wrong environment.
+
+### A job that cannot START is worse than one that is green for the wrong reason
+
+Introduced by spec 0050. Spec 0049 AC10 added a runtime assertion so a GNU-shimmed macOS runner could not pass vacuously. The assertion itself then failed on a legitimate runner, and because it runs *before* bats, the suite produced **no signal in either direction** for every run of its existence — while the job's red status was read as "the macOS work is still in progress". When a precondition assertion guards a suite, its false-positive cost is the entire suite, so it must be pinned against the real environment's actual output, not against an assumption about it.
+
 ### Release automation jobs are cheap-hermetic (`auto-tag`, `release.yml` self-verify)
 
 Introduced by spec 0021. The release/distribution CI surfaces are cheap-hermetic — they invoke no `claude -p` and require no `ANTHROPIC_API_KEY`:
@@ -1060,6 +1090,19 @@ Rust's red-check is backed by a persisted `rust_test_baseline` that attests a pr
 
   Two cautions carried from implementing it. The probe is Go-only: Python, JS/TS and Rust still block on a build failure exactly as before. And budget is counted in edits, not tasks — spec 0048 itself budgeted 1 and spent 3, twice because one logical change spanned two non-adjacent regions of a file and once because a forward reference to a not-yet-written helper broke the build and the guard then forbade its own repair. Write the callee before the caller.
 - **A no-new-test edit to a test file used to CLEAR its just-added RED — FIXED by spec 0048, and the workaround survives only for a stale cached guard.** Before 0048, `Session.RedCandidates` was REPLACED per test-file path from `postIDs − preIDs` on each capture, so an edit introducing no new test identifier computed an empty just-added set, overwrote that file's candidates with empty, and re-blocked the paired production edit. It recurred continuously: spec 0031's two-step edit to `speccraft-state/version_test.go`, spec 0032's `strings` import, spec 0049's blocked GREEN, and **four times inside spec 0048's own implementation** — one of which cost an override. Spec 0048 replaced the difference with `postIDs − red_baseline[file]`, where the per-file baseline is captured **first-touch-only** per session (`CaptureRedCandidates`, one lock, one save), so a no-new-test edit now recomputes the SAME candidate set while a genuine deletion still shrinks it. The old recipe — keep the decisive RED as the last test-file touch, or re-register by RENAMING a test — is therefore needed in exactly one case: a **stale cached pre-0048 `speccraft-guard` first on `PATH`**. When dogfooding, rebuild and invoke `./bin/speccraft-guard` explicitly; do not reach for the workaround in fresh work.
+
+### A state-key writer normalizes; a caller-normalizes contract is not a contract
+
+Introduced by spec 0050, which found the previous rule already broken.
+
+Spec 0048 declared `NormalizeStateKey` "the single canonical path normalizer for every state key this package writes" and `state.go` documents `red_candidates` as "keys produced by `NormalizeStateKey`". `SetRedCandidates` did not apply it — it stored the caller's spelling verbatim — while `siblingRedCheck` reads through `redCand[NormalizeStateKey(sib)]`. Any caller passing a merely-absolute path wrote an entry the reader could never find, and the guard reported **"No test was added this session"** for a session that had added one: the exact refusal spec 0048 existed to remove.
+
+- **Normalize inside the writer, not at the call sites.** A documented expectation that every present and future caller pre-normalizes is unenforceable; the writer is the one place that cannot be forgotten.
+- **Read with the same function you wrote with.** Tests that computed the key with a bare `filepath.Abs` matched only while no ancestor was a symlink — true of Linux CI, false of every macOS `t.TempDir()` under `/var/folders`.
+
+**Run the Go suite under a symlinked `TMPDIR` when touching path-keyed state.** `TMPDIR=<dir containing a symlink> go test ./...` reproduced all **25** macOS-only failures on Linux, byte-for-byte the same set. This is the general technique for "passes on Linux, fails on macOS" path bugs, and it is cheap enough to run before pushing rather than after a red run.
+
+Still outstanding, so the 0048 claim is not yet literally true: `TrackEdit` keys `edited_test_files`/`edited_prod_files` with a bare `filepath.Abs`. Nothing reads those through the normalizer today, so there is no defect — but either honour the claim or narrow it.
 
 ### JSON-envelope-boundary RED for a change to a gated package's own surface
 

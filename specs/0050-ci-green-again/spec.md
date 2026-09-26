@@ -1,7 +1,7 @@
 ---
 id: "0050"
 title: "CI green again: unnormalized red-candidate keys, a release-binary clobber, and a GNU-compatible BSD grep"
-status: in-progress
+status: closed
 created: 2026-09-25
 authors: [claude]
 packages: ["tools/internal/speccraft", "tools/cmd/speccraft-guard", "scripts", ".github/workflows", "tests/hooks"]
