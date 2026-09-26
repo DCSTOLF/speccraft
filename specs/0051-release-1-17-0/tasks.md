@@ -15,5 +15,5 @@ contract: done-means-v1
   done: $ [ -z "$(grep -rn 'const version = "1\.16\.0"' --include='*.go' . | grep -v '^\./specs/')" ] && [ -z "$(grep -rn '"version": "1\.16\.0"' --include='*.json' . | grep -v '^\./specs/')" ] && grep -q '"1.16.0"' tools/cmd/speccraft-state/version_test.go && grep -q 'const stale = "1.16.0"' tools/internal/speccraft/manifest_version_test.go
 - [x] **T5** — rebuild `./bin/` from the bumped source and re-stamp `.binary-version` (AC5)
   done: $ ./bin/speccraft-state --version | grep -q '1.17.0' && ./bin/speccraft-guard --version | grep -q '1.17.0' && ./bin/speccraft-drift --version | grep -q '1.17.0' && [ "$(cat .binary-version)" = "1.17.0" ]
-- [x] **T6** — full verification before the push (AC4)
-  done: $ bats tests/hooks/ && ./bin/speccraft-drift scan-all && cd tools && go vet ./... && go test ./... -count=1
+- [x] **T6** — full verification before the push, with the repo's own binaries on PATH (AC4)
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/ && ./bin/speccraft-drift scan-all && cd tools && go vet ./... && go test ./... -count=1

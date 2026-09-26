@@ -1,7 +1,7 @@
 ---
 id: "0051"
 title: "Release 1.17.0 — done-means contract, build-repair mode, portability, CI green"
-status: in-progress
+status: closed
 created: 2026-09-26
 authors: [claude]
 packages: ["tools/cmd/speccraft-state", "tools/cmd/speccraft-guard", "tools/cmd/speccraft-drift"]

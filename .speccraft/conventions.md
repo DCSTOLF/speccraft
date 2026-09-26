@@ -989,6 +989,24 @@ New plans emit `contract: done-means-v1` in `tasks.md` frontmatter. Under it:
   command is malformed, not prose.
 - **A predicate must never invoke the verifier that runs it.** `tasks-verify --run`
   inside a `done:` line is unbounded self-recursion; use the structural form.
+- **A predicate must be self-contained — never dependent on ambient `PATH` (spec 0051).**
+  A `done:` line that runs `bats tests/hooks/` bare passes or fails according to which
+  `speccraft-state` happens to be first on `PATH`. In this repo that is routinely the
+  CACHED INSTALLED plugin, which is older than HEAD, so spec-0049's `--kind` tests fail
+  for a reason that has nothing to do with the task. Set it in the predicate:
+  `done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/ && …`. Spec 0051's T6 failed at close
+  time having passed during implementation, purely because the implementation runs had a
+  hand-typed `PATH=` prefix; spec 0050's T7/T12/T15 carry the same latent flaw and passed
+  by the same accident. An oracle whose verdict depends on the caller's shell is not an
+  oracle. See [[dogfood-stale-cached-guard-on-path]].
+- **A predicate asserts POLARITY, not absence, when a value is being replaced (spec
+  0051).** A version bump's oracles legitimately still contain the OLD version — that is
+  what their stale-version negative checks are for — so "no occurrence of `1.16.0`
+  remains" is false by construction, and so is the same shape applied to comments that
+  narrate history. Assert that the positive expectation names the NEW value and the
+  negative check names the OLD one. Reaching instead for `grep -v` exclusions until the
+  predicate goes green ends with a predicate that asserts nothing. Three predicates in one
+  session failed this way.
 - Only **indentation** makes a sub-checkbox — a column-0 id may be dotted
   (`T0.1`, `T0.5.1`), as specs 0001 and 0016 already are.
 - **`[~]` is not a valid marker (spec 0049).** `parseTasksFile` accepts only `[ ]`,
