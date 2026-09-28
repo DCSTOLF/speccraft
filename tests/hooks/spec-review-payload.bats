@@ -200,14 +200,51 @@ assert_named_failure() {
 
 # ---- AC5: the behavioural arm of the interval guard ----------------------
 
-@test "the environment's awk silently matches nothing for a {n,m} interval" {
-  # This is the PREMISE of AC5, asserted rather than assumed. mawk does not
-  # implement interval expressions and reports no error; if this machine's awk
-  # ever gains them, the behavioural arm below stops being load-bearing and
-  # this test tells us so.
-  run bash -c "printf '## a\n### b\n' | awk '/^#{2,3} /{print}'"
+@test "the extractor is immune to the interval hazard on whichever awk this host has" {
+  source "$LIB"
+  # DETECT the host's behavior; never ASSERT it. mawk — this devcontainer's awk,
+  # and Debian's default — implements no interval expressions and matches
+  # NOTHING for the form, silently, exit 0. gawk (the Linux runner) and BSD awk
+  # (the macOS runner) both implement them and match.
+  #
+  # An earlier version of this test asserted the mawk outcome unconditionally as
+  # "the premise of AC5". That pinned the RUNNER rather than the code, and it
+  # red-ed BOTH bats jobs the first time this suite ran in CI — spec 0051's T6
+  # class (a test depending on the ambient environment, passing during
+  # implementation and failing elsewhere), landing inside the very spec about
+  # silent cross-environment divergence.
+  run bash -c "printf '## a\n' | awk '/^#{2,2} /{print}'"
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+
+  # The property that must hold EVERYWHERE, and the one worth asserting: the
+  # shipped extractor contains no interval at all, so its output does not depend
+  # on which awk answered. Exact expected index, on every runner.
+  run review_heading_index "$FIX/headings/h02-h2-only.md"
+  [ "$status" -eq 0 ]
+  [ "$output" = "## Alpha
+## Beta" ]
+}
+
+@test "the interval hazard is demonstrated where it exists and absent where it does not" {
+  source "$LIB"
+  # BOTH branches assert, so this is non-vacuous on every runner — and it uses no
+  # `skip`, which would ERROR here: review.lib.sh carries `set -euo pipefail`, and
+  # under `set -u` bats 1.2.1's skip path dies on an unbound BATS_TEARDOWN_STARTED.
+  local via_interval shipped
+  via_interval="$(awk '/^#{2,3} /{print}' "$FIX/headings/h02-h2-only.md" || true)"
+  run review_heading_index "$FIX/headings/h02-h2-only.md"
+  shipped="$output"
+  [ -n "$shipped" ]
+  if [ -z "$via_interval" ]; then
+    # mawk: the interval spelling silently emits NOTHING while the shipped
+    # spelling emits the full index. That divergence IS the hazard.
+    [ "$shipped" != "$via_interval" ]
+  else
+    # gawk / BSD awk: the two spellings agree — which is exactly why the hazard is
+    # invisible on these hosts, and why the SOURCE guard rather than any
+    # behavioural test is what has to catch it.
+    [ "$shipped" = "$via_interval" ]
+  fi
 }
 
 @test "review_heading_index emits a NON-EMPTY index under the environment's own awk" {
@@ -1455,13 +1492,19 @@ largest_archived_spec() {
 }
 
 @test "the live .speccraft plus the largest archived spec composes under the argv limit while a full paste exceeds it by more than 2x" {
-  source "$LIB"
   local archive="$PLUGIN_DIR/specs/.archive" spec tiered full
   # A fresh clone or a shallow CI checkout has no archive. SKIP with a stated
   # reason rather than failing or — worse — passing vacuously.
+  #
+  # The skip decision is taken BEFORE `source "$LIB"`, and that ordering is
+  # load-bearing: the lib carries `set -euo pipefail`, and under `set -u` bats
+  # 1.2.1's skip path dies on an unbound BATS_TEARDOWN_STARTED. Sourcing first
+  # would turn this stated skip into a hard ERROR on exactly the fresh clone it
+  # exists to accommodate. Pinned structurally below.
   [ -d "$archive" ] || skip "specs/.archive is absent (fresh clone or shallow checkout)"
   spec="$(largest_archived_spec "$archive")"
   [ -n "$spec" ] || skip "specs/.archive contains no spec.md"
+  source "$LIB"
   cd "$PLUGIN_DIR"
   # Selected DYNAMICALLY: no hard-coded path and no hard-coded byte count, so an
   # unrelated spec:close cannot red this and neither can a new archive entry.
@@ -1640,4 +1683,38 @@ TOML
   # Every `>> "$OUTCOMES"` in the runbook is dead unless OUTCOMES is assigned.
   grep -qE '^\s*OUTCOMES=' "$f"
   grep -qF 'review_agent_cmd' "$f"
+}
+
+# skip_ordering_clean <bats-file> — no `skip` may appear after `source "$LIB"`
+# within a @test block. A NAMED predicate so it can be run twice: against this
+# suite (must pass) and against the committed forbidden fixture (must reject).
+#
+# Asserted on the SOURCE rather than by provoking the bats bug, so upgrading bats
+# cannot red this — the ordering is good practice regardless of the harness.
+skip_ordering_clean() {
+  local f="$1" hits
+  hits="$(awk '
+    /^@test /             { insource = 0; next }
+    /^[ \t]*#/            { next }          # a comment is not code
+    /source "\$LIB"/       { insource = 1; next }
+    /(^|[ \t;&|])skip[ \t]/ { if (insource) print FILENAME ":" NR ": skip after source \"$LIB\"" }
+  ' "$f")"
+  [ -z "$hits" ] || { printf '%s\n' "$hits"; return 1; }
+  return 0
+}
+
+@test "no test in this suite sources the lib before calling skip" {
+  # `source "$LIB"` enables `set -euo pipefail`, and under `set -u` bats 1.2.1's
+  # skip path dies on an unbound BATS_TEARDOWN_STARTED — so a test that sources
+  # and THEN skips ERRORS instead of skipping. AC17's stated skip shipped with
+  # exactly that ordering and would have hard-failed on a fresh clone.
+  run skip_ordering_clean "$BATS_TEST_FILENAME"
+  [ "$status" -eq 0 ] || { echo "these tests would ERROR instead of skipping:"; echo "$output"; return 1; }
+}
+
+@test "the skip-ordering checker REJECTS the committed forbidden fixture" {
+  run skip_ordering_clean "$FIX/forbidden/fb07-skip-after-source.bats"
+  [ "$status" -eq 1 ]
+  # It must flag ONLY the bad ordering, not the well-ordered test above it.
+  [ "$(printf '%s\n' "$output" | grep -c 'skip after source')" = "1" ]
 }
