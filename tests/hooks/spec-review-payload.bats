@@ -953,3 +953,214 @@ RANKED="41000  .speccraft/guardrails.md
   REVIEW_MAX_ARGV_BYTES=1024 run review_budget_check "$scoped" argv
   [ "$output" = "refuse:argv-limit" ]
 }
+
+# ---- AC10/AC11/AC12/AC13/AC13b/AC14: materialize once, dispatch exactly ---
+#
+# ONE compound envelope, because these criteria share a single seam: the bytes
+# are composed, written once, measured, and handed to a CLI. Splitting them into
+# one test per clause would assert the same seam five times over.
+
+# mode_of <path> — the permission string, via ls rather than stat: `stat -c` is
+# GNU-only and `stat -f` is BSD-only, and this suite runs on both runners.
+mode_of() {
+  ls -ld "$1" | cut -c1-10
+}
+
+@test "the round temp dir is 0700 and the payload artifact is 0600" {
+  source "$LIB"
+  review_round_tmpdir
+  [ -d "$REVIEW_ROUND_TMPDIR" ]
+  # A full review prompt is the most sensitive artifact this command produces;
+  # it must not be world-readable even for the seconds it exists.
+  [ "$(mode_of "$REVIEW_ROUND_TMPDIR")" = "drwx------" ]
+  review_materialize_payload "$REVIEW_ROUND_TMPDIR/payload.txt" printf 'hello\n'
+  [ "$(mode_of "$REVIEW_ROUND_TMPDIR/payload.txt")" = "-rw-------" ]
+}
+
+@test "measured bytes equal wc -c of the artifact actually dispatched, for a payload ending in several newlines" {
+  source "$LIB"
+  review_round_tmpdir
+  local art="$REVIEW_ROUND_TMPDIR/payload.txt" measured actual
+  # Trailing newlines are the whole point: `bytes="$(compose)"` strips them, so
+  # measured and dispatched bytes would differ silently. Redirection cannot.
+  measured="$(review_materialize_payload "$art" printf 'body\n\n\n\n')"
+  actual="$(wc -c < "$art" | tr -d ' ')"
+  [ "$measured" = "$actual" ]
+  [ "$measured" = "8" ]   # 'body' + four newlines, none of them lost
+}
+
+@test "review_round_tmpdir does not destroy the caller's EXIT trap" {
+  source "$LIB"
+  # Not a hypothetical: a helper that clobbers EXIT makes a FAILING bats test
+  # report nothing at all, so every assertion in the tests above would be inert
+  # — and a driver with its own cleanup would silently lose it.
+  run bash -c "source '$LIB'; trap 'printf CALLER-EXIT-RAN > \"$TEST_DIR/prior\"' EXIT; review_round_tmpdir; exit 0"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$TEST_DIR/prior")" = "CALLER-EXIT-RAN" ]
+}
+
+@test "review_materialize_payload refuses to overwrite an existing artifact" {
+  source "$LIB"
+  review_round_tmpdir
+  local art="$REVIEW_ROUND_TMPDIR/payload.txt"
+  review_materialize_payload "$art" printf 'first\n'
+  run review_materialize_payload "$art" printf 'second\n'
+  assert_named_failure "$art"
+  # The first bytes survive: a second materialization is refused, not merged.
+  [ "$(cat "$art")" = "first" ]
+}
+
+@test "exactly one payload artifact is created per round at the instrumented seams" {
+  source "$LIB"; make_corpus
+  review_round_tmpdir
+  export REVIEW_MATERIALIZE_LOG="$TEST_DIR/materialize.log"
+  : > "$REVIEW_MATERIALIZE_LOG"
+  review_materialize_payload "$REVIEW_ROUND_TMPDIR/payload.txt" \
+    review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+      --inline .speccraft/guardrails.md \
+      --reference .speccraft/architecture.md \
+      --digest-out "$TEST_DIR/digests.txt"
+  # Bounded to NAMED seams: an unbounded "no copy anywhere on the filesystem"
+  # check would itself be the vacuous negative this spec argues against.
+  run review_seam_single_creation "$REVIEW_MATERIALIZE_LOG"
+  [ "$status" -eq 0 ]
+  # …and dispatch adds no copy of its own, for any mode.
+  review_dispatch_payload "true" file "$REVIEW_ROUND_TMPDIR/payload.txt"
+  run review_seam_single_creation "$REVIEW_MATERIALIZE_LOG"
+  [ "$status" -eq 0 ]
+}
+
+@test "the seam checker REJECTS the committed two-creation log fixture" {
+  source "$LIB"
+  # AC29: the negative is pinned against a committed artifact, so "exactly one"
+  # cannot pass by never being exercised against two.
+  run review_seam_single_creation "$FIX/forbidden/fb03-double-materialization.log"
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -qF 'payload.debug.txt'
+}
+
+@test "the round temp dir is removed on clean exit" {
+  source "$LIB"
+  # The trap belongs to the shell that called review_round_tmpdir, so the whole
+  # lifecycle has to be exercised in a child shell.
+  run bash -c "source '$LIB'; review_round_tmpdir; printf '%s' \"\$REVIEW_ROUND_TMPDIR\" > '$TEST_DIR/dir'; exit 0"
+  [ "$status" -eq 0 ]
+  [ ! -e "$(cat "$TEST_DIR/dir")" ]
+}
+
+@test "the round temp dir is removed on SIGINT and on SIGTERM" {
+  source "$LIB"
+  local sig
+  # A crash must not leave a full review prompt on disk indefinitely. `trap`
+  # cannot catch SIGKILL, and that boundary is stated in the lib rather than
+  # claimed away — so it is deliberately not asserted here.
+  for sig in INT TERM; do
+    bash -c "source '$LIB'; review_round_tmpdir; printf '%s' \"\$REVIEW_ROUND_TMPDIR\" > '$TEST_DIR/dir.$sig'; kill -$sig \$\$; sleep 5" || true
+    [ -s "$TEST_DIR/dir.$sig" ]
+    [ ! -e "$(cat "$TEST_DIR/dir.$sig")" ] || {
+      echo "temp dir survived SIG$sig: $(cat "$TEST_DIR/dir.$sig")"; return 1; }
+  done
+}
+
+@test "a NUL-bearing payload is refused with a diagnostic naming NUL" {
+  source "$LIB"
+  # POSIX argv cannot carry an embedded NUL, so measured-equals-dispatched is
+  # unimplementable for argv mode on such a payload. Refuse, and say which of
+  # the two representability rules failed.
+  run review_payload_representable "$FIX/binary/b01-nul.bin"
+  assert_named_failure "NUL"
+}
+
+@test "an invalid-UTF-8 payload is refused with a diagnostic naming UTF-8" {
+  source "$LIB"
+  run review_payload_representable "$FIX/binary/b02-invalid-utf8.bin"
+  assert_named_failure "UTF-8"
+  # The two fixtures are independent: the NUL one is VALID UTF-8 and the invalid
+  # one is NUL-free, so neither diagnostic can be reached by accident.
+  run review_payload_representable "$FIX/digest/d01-known-vector.txt"
+  [ "$status" -eq 0 ]
+}
+
+# A stub CLI standing in for the boundary: it digests exactly what it received,
+# from argv or from stdin, so "the bytes that reached the CLI" is a measurement
+# rather than an assumption.
+install_boundary_stub() {
+  mkdir -p "$TEST_DIR/cli"
+  cat > "$TEST_DIR/cli/codex" <<'STUB'
+#!/usr/bin/env bash
+# One stub for all four transports, so a single digest comparison covers them.
+case "${1:-}" in
+  --file) cat "$2" > "$BOUNDARY_RAW" ;;
+  "")     cat > "$BOUNDARY_RAW" ;;
+  *)      printf '%s' "$1" > "$BOUNDARY_RAW" ;;
+esac
+STUB
+  chmod +x "$TEST_DIR/cli/codex"
+  export BOUNDARY_RAW="$TEST_DIR/boundary.raw"
+  export PATH="$TEST_DIR/cli:$PATH"
+}
+
+@test "argv and acp dispatch deliver a digest equal to the artifact digest for zero, one and several trailing newlines" {
+  source "$LIB"
+  install_boundary_stub
+  review_round_tmpdir
+  local body mode art n=0
+  # AC13b: reading an artifact into a shell variable for argv dispatch strips
+  # trailing newlines — the same defect AC10 closes for composition, arriving
+  # one step later. Every trailing-newline shape is exercised.
+  for body in 'no trailing newline' 'one trailing newline
+' 'several trailing newlines
+
+
+'; do
+    for mode in argv acp stdin file; do
+      n=$((n + 1))
+      art="$REVIEW_ROUND_TMPDIR/p$n.txt"
+      printf '%s' "$body" > "$art"
+      : > "$BOUNDARY_RAW"
+      review_dispatch_payload "codex" "$mode" "$art"
+      [ "$(review_digest "$BOUNDARY_RAW")" = "$(review_digest "$art")" ] || {
+        echo "mode=$mode lost bytes: artifact=$(wc -c < "$art") boundary=$(wc -c < "$BOUNDARY_RAW")"
+        return 1
+      }
+    done
+  done
+}
+
+@test "file mode passes the artifact itself rather than writing a second copy" {
+  source "$LIB"
+  review_round_tmpdir
+  mkdir -p "$TEST_DIR/cli"
+  # `input = "file"` is where a second copy would appear most naturally, so the
+  # argument the CLI receives is asserted to BE the round's artifact.
+  cat > "$TEST_DIR/cli/codex" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$SEEN_ARGS"
+STUB
+  chmod +x "$TEST_DIR/cli/codex"
+  export SEEN_ARGS="$TEST_DIR/seen.args"
+  export PATH="$TEST_DIR/cli:$PATH"
+  local art="$REVIEW_ROUND_TMPDIR/payload.txt"
+  printf 'body\n' > "$art"
+  review_dispatch_payload "codex" file "$art"
+  grep -qxF -- "$art" "$SEEN_ARGS"
+}
+
+@test "aux-delegator's review path dispatches a precomposed artifact and forbids recomposition" {
+  local f="$PLUGIN_DIR/agents/aux-delegator.md"
+  # Left as it was, a review round would compose TWICE: the delegator would
+  # re-prefix the template, re-inline context, and for input = "file" write a
+  # second copy — so the bytes measured by the budget would not be the bytes
+  # dispatched, violated by the component furthest from the check.
+  grep -qF 'review_dispatch_payload' "$f"
+  grep -qF 'precomposed' "$f"
+  grep -qiF 'must not' "$f"
+}
+
+@test "aux-delegator's non-review mode instructions are byte-identical to the committed golden" {
+  # Content-equality of every line naming a non-review mode. The review path may
+  # be rewritten freely; these lines may not drift as a side effect.
+  run bash -c "grep -iE 'implement|analyze' '$PLUGIN_DIR/agents/aux-delegator.md'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(cat "$FIX/golden/aux-delegator-nonreview.golden")" ]
+}

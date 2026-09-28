@@ -365,6 +365,176 @@ review_finalize_round() {
 }
 
 # ---------------------------------------------------------------------------
+# Spec 0052 — the round's temp directory, the ONE payload artifact, and dispatch.
+#
+# "Bytes exactly as handed to the CLI" cannot be guaranteed through shell command
+# substitution, which strips trailing newlines. So the payload is written to a
+# single file, the budget is measured over THAT file, and THAT file is what gets
+# piped to stdin, passed with --file, or read for an argv-mode invocation.
+# Measured bytes and dispatched bytes are the same bytes by construction rather
+# than by convention.
+#
+# This is the ONLY materialization permitted. No debug or convenience copy may be
+# written anywhere else: a cached full prompt would reintroduce the unbounded
+# artifact through a side channel while the budget check still reported success.
+# ---------------------------------------------------------------------------
+
+REVIEW_ROUND_TMPDIR="${REVIEW_ROUND_TMPDIR:-}"
+
+_review_round_cleanup() {
+  [ -z "${REVIEW_ROUND_TMPDIR:-}" ] || rm -rf "$REVIEW_ROUND_TMPDIR"
+}
+
+# The caller's EXIT handler, saved so installing ours does not DESTROY it.
+# Silently clobbering EXIT is not a theoretical concern: it makes a failing bats
+# test report nothing at all, so an assertion added to such a test would be
+# inert — and a driver that had its own cleanup would simply lose it.
+_REVIEW_PRIOR_EXIT="${_REVIEW_PRIOR_EXIT:-}"
+
+_review_fire_prior_exit() {
+  local spec="${_REVIEW_PRIOR_EXIT:-}" body raw
+  [ -n "$spec" ] || return 0
+  _REVIEW_PRIOR_EXIT=""          # fire once, never recurse
+  body="${spec#trap -- }"
+  body="${body% EXIT}"
+  # `trap -p` emits a re-evalable single-quoted word, which is why this is a
+  # quoting-safe unwrap rather than a hopeful one.
+  eval "raw=$body" 2>/dev/null || return 0
+  eval "$raw" || true
+}
+
+# review_round_tmpdir — create the round's 0700 temp directory, set
+# REVIEW_ROUND_TMPDIR, and install the cleanup trap IMMEDIATELY after creation.
+#
+# It sets a variable rather than echoing the path ON PURPOSE. A caller writing
+# `d="$(review_round_tmpdir)"` would install the trap inside the command
+# substitution's subshell, which exits at once — deleting the directory before
+# the round could use it. There is no spelling of this helper that is safe to
+# call in a subshell, so it does not offer one.
+#
+# The trap covers EXIT HUP INT TERM, so a crash cannot leave a full review
+# prompt on disk indefinitely. It CANNOT cover SIGKILL — that is a stated
+# boundary, not an oversight: `kill -9` leaves the directory behind.
+review_round_tmpdir() {
+  REVIEW_ROUND_TMPDIR="$(mktemp -d)"
+  chmod 700 "$REVIEW_ROUND_TMPDIR"
+  _REVIEW_PRIOR_EXIT="$(trap -p EXIT)"
+  trap '_review_round_cleanup; _review_fire_prior_exit' EXIT
+  trap '_review_round_cleanup; _review_fire_prior_exit; exit 130' HUP INT TERM
+}
+
+# review_materialize_payload <artifact> <composer-command…>
+# — run the composer with stdout REDIRECTED into a single mode-0600 artifact,
+# and echo the artifact's byte count.
+#
+# Redirected, never captured: `bytes="$(compose)"` would strip the trailing
+# newlines and the measured count would then describe bytes nobody dispatches.
+# An artifact that already exists is REFUSED rather than overwritten, which is
+# the single-materialization invariant enforced where it can actually be checked.
+review_materialize_payload() {
+  local art="${1:-}"
+  [ -n "$art" ] || { review_error "review_materialize_payload: artifact path required"; return 1; }
+  shift
+  [ "$#" -gt 0 ] || { review_error "review_materialize_payload: a composer command is required"; return 1; }
+  [ ! -e "$art" ] || {
+    review_error "review_materialize_payload: refusing to materialize twice — '$art' already exists"
+    return 1
+  }
+  ( umask 077; : > "$art" ) || return 1
+  chmod 600 "$art"
+  # The instrumented seam AC11 counts. Bounded to NAMED call sites: an unbounded
+  # "no copy anywhere on the filesystem" check would be the vacuous negative
+  # this spec argues against.
+  [ -z "${REVIEW_MATERIALIZE_LOG:-}" ] || printf 'materialize %s\n' "$art" >> "$REVIEW_MATERIALIZE_LOG"
+  "$@" > "$art" || {
+    review_error "review_materialize_payload: composer failed; '$art' is incomplete"
+    return 1
+  }
+  LC_ALL=C wc -c < "$art" | tr -d ' '
+}
+
+# review_seam_single_creation <log> — exit 0 iff exactly one payload artifact was
+# created this round, naming every creation otherwise.
+review_seam_single_creation() {
+  local log="${1:-}" n
+  [ -n "$log" ] && [ -f "$log" ] || {
+    review_error "review_seam_single_creation: instrumentation log not found: '${log:-}'"; return 1; }
+  n="$(grep -c . "$log" || true)"
+  [ "$n" = "1" ] || {
+    review_error "review_seam_single_creation: expected exactly ONE payload materialization this round, found $n:"
+    review_error "$(cat -- "$log")"
+    return 1
+  }
+  return 0
+}
+
+# review_payload_representable <artifact> — the stated representability boundary.
+#
+# The payload domain is NUL-free, valid UTF-8. A NUL byte is refused because
+# POSIX argv cannot carry one, which would make the measured-equals-dispatched
+# claim unimplementable for argv mode; invalid UTF-8 is refused because two
+# hosts could otherwise disagree about the same bytes. The diagnostic names
+# WHICH of the two failed — "unrepresentable" alone would not tell the developer
+# what to look for.
+review_payload_representable() {
+  local f="${1:-}" total stripped
+  [ -n "$f" ] && [ -f "$f" ] || {
+    review_error "review_payload_representable: artifact not found: '${f:-}'"; return 1; }
+  total="$(LC_ALL=C wc -c < "$f" | tr -d ' ')"
+  stripped="$(LC_ALL=C tr -d '\000' < "$f" | LC_ALL=C wc -c | tr -d ' ')"
+  [ "$total" = "$stripped" ] || {
+    review_error "review_payload_representable: '$f' contains a NUL byte; POSIX argv cannot carry one, so this payload cannot be dispatched byte-for-byte"
+    return 1
+  }
+  if command -v iconv >/dev/null 2>&1; then
+    iconv -f UTF-8 -t UTF-8 < "$f" >/dev/null 2>&1 || {
+      review_error "review_payload_representable: '$f' is not valid UTF-8"
+      return 1
+    }
+  else
+    review_error "review_payload_representable: iconv is absent, so the UTF-8 arm was NOT checked for '$f' (the NUL arm was)"
+  fi
+  return 0
+}
+
+# review_dispatch_bytes <artifact> — set REVIEW_DISPATCH_PAYLOAD to the artifact's
+# bytes EXACTLY, trailing newlines included.
+#
+# `var="$(cat f)"` strips them — the same defect review_materialize_payload
+# closes for composition, arriving one step later, at the file-to-argv
+# conversion. `read -d ''` reads to EOF without a NUL delimiter and returns
+# non-zero there while still assigning, which is why the failure is tolerated.
+review_dispatch_bytes() {
+  local f="${1:-}"
+  [ -n "$f" ] && [ -f "$f" ] || {
+    review_error "review_dispatch_bytes: artifact not found: '${f:-}'"; return 1; }
+  IFS= read -r -d '' REVIEW_DISPATCH_PAYLOAD < "$f" || true
+  return 0
+}
+
+# review_dispatch_payload <agent-cmd> <input-mode> <artifact>
+# — send the artifact's bytes to the CLI, unmodified, by the mode's transport.
+#
+# `file` mode passes the ROUND'S ARTIFACT itself. Writing a tempfile here would
+# be the second copy AC11 forbids, and it is the most natural place for one to
+# appear.
+review_dispatch_payload() {
+  local cmd="${1:-}" mode="${2:-}" art="${3:-}"
+  [ -n "$cmd" ] || { review_error "review_dispatch_payload: agent command required"; return 1; }
+  [ -n "$art" ] && [ -f "$art" ] || {
+    review_error "review_dispatch_payload: payload artifact not found: '${art:-}'"; return 1; }
+  case "$mode" in
+    ''|stdin) $cmd < "$art" ;;
+    file)     $cmd --file "$art" ;;
+    argv|acp)
+      review_dispatch_bytes "$art" || return 1
+      $cmd "$REVIEW_DISPATCH_PAYLOAD"
+      ;;
+    *) review_error "review_dispatch_payload: unknown input mode '$mode' (known: argv, acp, stdin, file; empty normalizes to stdin)"; return 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
 # Spec 0052 — the pre-dispatch byte budget.
 #
 # The failure this replaces is a 600 s timeout, which is the least informative
