@@ -11,8 +11,8 @@ spec: "0052"
 - [x] T4 — GREEN: `review_responses_complete` / `review_approval_quorum_met` / `review_finalize_round`; `review.md` drops `--promote` and gates steps 5-7
 - [x] T5 — RED: digest primitive on both polarities, FIFO single-scan proof, sweep exact-set update
 - [x] T6 — GREEN: `_review_digest_cmd` / `review_digest` / `_review_scan_reference`; land the sweep update in the same commit
-- [ ] T7 — RED: composer envelope (tier mismatch, order, no body, no digest, missing vs empty reference set, digest-out, scoped substitution, spec-src indirection, locale determinism)
-- [ ] T8 — GREEN: `review_compose_payload`
+- [x] T7 — RED: composer envelope (tier mismatch, order, no body, no digest, missing vs empty reference set, digest-out, scoped substitution, spec-src indirection, locale determinism)
+- [x] T8 — GREEN: `review_compose_payload`
 - [ ] T9 — RED: budget mode matrix, boundary triples, reason enum, refusal-message arms, override validation
 - [ ] T10 — GREEN: the three constants with derivation + raise-me comments, `review_effective_limit`, `review_budget_check`, `review_refusal_message`
 - [ ] T11 — RED: materialize-once, measured==dispatched, trap on clean and interrupted exit, NUL/UTF-8 refusal, byte-preserving argv, aux-delegator pure dispatch
@@ -21,7 +21,7 @@ spec: "0052"
 - [ ] T14 — GREEN: `review_validate_reference_access`, `review_agent_reference_read`, `templates/prompts/review.md`, `templates/speccraft/agents.toml`
 - [ ] T15 — RED: static-corpus and live-corpus ratio assertions, largest-archived-spec selection, stated skip
 - [ ] T16 — GREEN: `review_full_paste_bytes` + the static corpus fixtures
-- [ ] T17 — RED: runbook marker order, no-full-paste, and the three AC29 bite proofs against committed forbidden fixtures
+- [ ] T17 — RED: runbook marker order, no-full-paste, and the remaining AC29 bite proof (fb04); fb01/fb02 landed in T7, fb03 in T11, fb05 in T3
 - [ ] T18 — GREEN: rewrite `commands/spec/review.md` step 3 with the compose → budget-check → dispatch markers
 - [ ] T19 — REFACTOR: retire `review_build_payload`, re-point `spec-review-diff.bats`, factor shared bats helpers
 - [ ] T20 — Verify: `bats tests/hooks/` and `go test ./...` green, portability gates green
@@ -35,7 +35,7 @@ spec: "0052"
 | AC3 heading fixtures | T1/T2 |
 | AC4 fence grammar | T1/T2 |
 | AC5 interval scan + behavioural arm | T1/T2 |
-| AC6 payload order / no body / no digest | T7/T8 (+ bite proofs T17/T18) |
+| AC6 payload order / no body / no digest | T7/T8, incl. the fb01/fb02 bite proofs |
 | AC7 missing vs empty reference set | T7/T8 |
 | AC8 single scan (FIFO) | T5/T6 |
 | AC9 digest primitive both polarities | T5/T6 |
@@ -59,4 +59,4 @@ spec: "0052"
 | AC26 capability, both halves | T13/T14 |
 | AC27 runbook + prompt pins | T17/T18 |
 | AC28 shipped agents.toml | T13/T14 |
-| AC29 bite proofs | T17/T18, with fb03 asserted in T11 |
+| AC29 bite proofs | fb01/fb02 in T7, fb03 in T11, fb04 in T17/T18, fb05 in T3 |

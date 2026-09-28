@@ -364,6 +364,154 @@ review_finalize_round() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Spec 0052 — the single composer.
+# ---------------------------------------------------------------------------
+
+# _review_each_path <newline-separated-list> — emit the non-empty entries.
+_review_each_path() {
+  printf '%s' "$1" | while IFS= read -r p; do
+    [ -n "$p" ] && printf '%s\n' "$p"
+  done
+  return 0
+}
+
+# review_compose_payload <template> <spec-src>
+#     --inline <f…> --reference <f…> --digest-out <path>
+#     [--diff <diff>] [--changed <sections>]
+# — emit the composed reviewer payload on STDOUT.
+#
+# This is the SOLE composer for both the full round and the spec-0035 scoped
+# `--diff` round, which is why the template substitution and the evidence
+# attachment live here: one place decides what bytes are sent, so the budget
+# measures the bytes that are dispatched rather than a close-enough approximation.
+#
+# It writes NO payload file. The command driver redirects this stream once into
+# the round's single mode-0600 artifact (AC10) — redirected, never captured into
+# a variable, because command substitution strips trailing newlines and would
+# make measured and dispatched bytes differ silently. The `--digest-out` sidecar
+# is the one other thing it writes, and it never enters the payload (AC6): if
+# the reviewer could see the expected digest it could echo it without opening
+# the file, which is the read-sentinel theatre review round 3 killed.
+#
+# Path policy, per tier:
+#   --reference  must classify as reference-tier and must EXIST. A named-but-
+#                missing file is an error, never a quietly smaller payload.
+#   --inline     must not classify as reference-tier (AC2) and must exist. A
+#                path outside the tier table is permitted here — that is how the
+#                prior review.md rides along as scoped-round evidence — and a
+#                typo cannot hide in that allowance, because it will not exist.
+review_compose_payload() {
+  local template="${1:-}" spec_src="${2:-}"
+  [ -n "$template" ] && [ -f "$template" ] || {
+    review_error "review_compose_payload: template not found: '${template:-}'"; return 1; }
+  [ -n "$spec_src" ] && [ -f "$spec_src" ] || {
+    review_error "review_compose_payload: spec source not found: '${spec_src:-}'"; return 1; }
+  shift 2
+
+  local mode="" digest_out="" diff="" changed=""
+  local inline_set="" reference_set="" nl=$'\n'
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --inline)     mode=inline ;;
+      --reference)  mode=reference ;;
+      --digest-out) digest_out="${2:-}"; shift; mode="" ;;
+      --diff)       diff="${2:-}"; shift; mode="" ;;
+      --changed)    changed="${2:-}"; shift; mode="" ;;
+      --*) review_error "review_compose_payload: unknown option '$1'"; return 1 ;;
+      *)
+        case "$mode" in
+          inline)    inline_set="${inline_set}${1}${nl}" ;;
+          reference) reference_set="${reference_set}${1}${nl}" ;;
+          *) review_error "review_compose_payload: unexpected argument '$1' (expected --inline/--reference first)"; return 1 ;;
+        esac
+        ;;
+    esac
+    shift
+  done
+  [ -n "$digest_out" ] || {
+    review_error "review_compose_payload: --digest-out <path> is required (the digests must travel OUTSIDE the payload)"
+    return 1
+  }
+
+  # Validate EVERY path before reading any of them, so a failure late in the
+  # reference set cannot leave a half-written digest sidecar behind.
+  local p tier rc
+  while IFS= read -r p; do
+    rc=0; tier="$(review_context_tier "$p" 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq 0 ] && [ "$tier" = "reference" ]; then
+      review_error "review_compose_payload: '$p' is a reference-tier file and must not be pasted inline"
+      return 1
+    fi
+    [ -e "$p" ] || { review_error "review_compose_payload: inline file not found: '$p'"; return 1; }
+  done < <(_review_each_path "$inline_set")
+  while IFS= read -r p; do
+    rc=0; tier="$(review_context_tier "$p" 2>/dev/null)" || rc=$?
+    [ "$rc" -eq 0 ] && [ "$tier" = "reference" ] || {
+      review_error "review_compose_payload: '$p' is not a reference-tier file"; return 1; }
+    [ -e "$p" ] || { review_error "review_compose_payload: reference file not found: '$p'"; return 1; }
+  done < <(_review_each_path "$reference_set")
+
+  : > "$digest_out"
+
+  # 1. the template, with the scoped-round markers substituted. Unset values
+  #    substitute to EMPTY rather than surviving: a payload carrying a literal
+  #    {{DIFF}} would be a reviewer-visible bug.
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '{{DIFF}}')             printf '%s\n' "$diff" ;;
+      '{{CHANGED_SECTIONS}}') printf '%s\n' "$changed" ;;
+      *)                      printf '%s\n' "$line" ;;
+    esac
+  done < "$template"
+
+  # 2. the spec under review, from the round's frozen image. The composer never
+  #    names spec.md — it reads only the path it is given (AC16).
+  printf '\n## Spec under review (frozen for this round)\n\n'
+  cat -- "$spec_src"
+
+  # 3. each inline file, in full, under its repo-relative path.
+  while IFS= read -r p; do
+    printf '\n## File: %s\n\n' "$(_review_repo_relative "$p")"
+    cat -- "$p"
+  done < <(_review_each_path "$inline_set")
+
+  # 4. the reference records: path, byte size and heading index — never a body.
+  printf '\n## Reference files (read these yourself)\n\n'
+  if [ -z "$reference_set" ]; then
+    # Emitted, never omitted: a reviewer must be able to tell "none were sent"
+    # from "the section was dropped by a bug" (AC7).
+    printf '(none) — no reference-tier files were sent this round.\n'
+    return 0
+  fi
+  printf 'These files are NOT pasted. Open each path below with your own tools,\n'
+  printf 'read what you need, and return its sha256 in `reference_access`. Report\n'
+  printf 'any you could not read in `reference_access_failures` — a verdict given\n'
+  printf 'without a matching digest for every path does not count.\n\n'
+  local rec first heads size digest rel
+  while IFS= read -r p; do
+    rec="$(_review_scan_reference "$p")" || return 1
+    first="${rec%%$nl*}"
+    heads=""
+    case "$rec" in *"$nl"*) heads="${rec#*$nl}" ;; esac
+    size="${first%% *}"
+    digest="${first#* }"
+    rel="$(_review_repo_relative "$p")"
+    printf '%s  %s\n' "$digest" "$rel" >> "$digest_out"
+    printf -- '- path: %s\n' "$rel"
+    printf '  bytes: %s\n' "$size"
+    printf '  headings:\n'
+    if [ -n "$heads" ]; then
+      printf '%s\n' "$heads" | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    else
+      printf '    (no ## or ### headings)\n'
+    fi
+    printf '\n'
+  done < <(_review_each_path "$reference_set")
+  return 0
+}
+
 # review_reviewed_sha256 <review.md> — echo the single usable reviewed_sha256
 # value, or return non-zero. "Usable" (spec 0035 AC8) = exactly one line matching
 # the anchored grammar ^reviewed_sha256: <64 lowercase hex>$. Zero, multiple, or

@@ -552,3 +552,206 @@ start_single_use_source() {
   [ "$two_pass_size" -gt 0 ]
   [ -z "$two_pass_index" ]
 }
+
+# ---- AC2/AC6/AC7/AC13/AC15/AC16: the composer envelope -------------------
+#
+# One compound envelope per clause rather than one test per sentence: the
+# composer is a single seam, and atomizing it inflates the task count without
+# adding coverage (spec 0048's technique, and this spec's planning notes).
+
+# A synthetic repo whose root find-root will resolve, so tier classification
+# runs against real repo-relative paths instead of a stubbed answer.
+make_corpus() {
+  mkdir -p "$TEST_DIR/.speccraft" "$TEST_DIR/round" "$TEST_DIR/specs/0001-x"
+  printf '# Guardrails\n\nGUARDRAILS-BODY\n'  > "$TEST_DIR/.speccraft/guardrails.md"
+  printf '# Index\n\nINDEX-BODY\n'            > "$TEST_DIR/.speccraft/index.md"
+  # The reference bodies carry a marker the heading grammar CANNOT emit, so
+  # "the body did not leak" is decidable rather than eyeballed.
+  printf '# Arch\n\n## Arch One\n\nSPECCRAFT-REF-BODY-MUST-NOT-APPEAR\n\n### Arch Two\n' \
+    > "$TEST_DIR/.speccraft/architecture.md"
+  printf '# Conv\n\n## Conv One\n\nSPECCRAFT-REF-BODY-MUST-NOT-APPEAR\n' \
+    > "$TEST_DIR/.speccraft/conventions.md"
+  printf '# Spec\n\nFROZEN-SPEC-BODY\n'       > "$TEST_DIR/round/spec-frozen.md"
+  # The live spec.md differs from the frozen image: AC16 is decidable only if
+  # the two sources carry different markers.
+  printf '# Spec\n\nLIVE-SPEC-MUST-NOT-APPEAR\n' > "$TEST_DIR/specs/0001-x/spec.md"
+  printf 'TEMPLATE-HEAD\n\nDiff:\n{{DIFF}}\n\nSections:\n{{CHANGED_SECTIONS}}\n' \
+    > "$TEST_DIR/template.md"
+  cd "$TEST_DIR"
+}
+
+compose_default() {
+  review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+    --inline .speccraft/guardrails.md .speccraft/index.md \
+    --reference .speccraft/architecture.md .speccraft/conventions.md \
+    --digest-out "$TEST_DIR/digests.txt"
+}
+
+# first_index <text> <fixed-string> — 1-based line number of the first match, or
+# 0. The order assertions compare FOUND INDICES, never absolute line numbers, so
+# a legitimate change to the surrounding prose cannot break them.
+first_index() {
+  printf '%s\n' "$1" | grep -nF -- "$2" | head -1 | cut -d: -f1
+}
+
+@test "review_compose_payload rejects a reference-tier file passed in the inline position" {
+  source "$LIB"; make_corpus
+  # The payload bound must not depend on every caller remembering the policy.
+  run review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+    --inline .speccraft/guardrails.md .speccraft/conventions.md \
+    --reference .speccraft/architecture.md \
+    --digest-out "$TEST_DIR/digests.txt"
+  assert_named_failure ".speccraft/conventions.md"
+}
+
+@test "the composed payload orders template, then each inline file under ## File:, then the reference section" {
+  source "$LIB"; make_corpus
+  run compose_default
+  [ "$status" -eq 0 ]
+  local t g i r
+  t="$(first_index "$output" 'TEMPLATE-HEAD')"
+  g="$(first_index "$output" '## File: .speccraft/guardrails.md')"
+  i="$(first_index "$output" '## File: .speccraft/index.md')"
+  r="$(first_index "$output" '## Reference files')"
+  [ "$t" -gt 0 ] && [ "$g" -gt "$t" ] && [ "$i" -gt "$g" ] && [ "$r" -gt "$i" ]
+  # Inline files are pasted in FULL — the tier split bounds the reference half only.
+  printf '%s\n' "$output" | grep -qF 'GUARDRAILS-BODY'
+  printf '%s\n' "$output" | grep -qF 'INDEX-BODY'
+  # …and each reference record carries path, byte size and heading index.
+  printf '%s\n' "$output" | grep -qF '.speccraft/architecture.md'
+  printf '%s\n' "$output" | grep -qE 'bytes: [0-9]+'
+  printf '%s\n' "$output" | grep -qF '## Arch One'
+  printf '%s\n' "$output" | grep -qF '### Arch Two'
+}
+
+# The two AC6 negatives, as NAMED predicates so each can be run twice: against
+# the real payload (must pass) and against a committed forbidden fixture (must
+# reject). A bare `! grep -q` against the payload alone is inert — it passes on
+# an empty string just as happily (AC29).
+payload_has_no_reference_body() {
+  local hits
+  hits="$(printf '%s\n' "$1" | grep -nF 'SPECCRAFT-REF-BODY-MUST-NOT-APPEAR' || true)"
+  [ -z "$hits" ] || { echo "reference BODY leaked into the payload: $hits"; return 1; }
+  return 0
+}
+
+payload_has_no_expected_digest() {
+  local text="$1" digest hits
+  shift
+  for digest in "$@"; do
+    hits="$(printf '%s\n' "$text" | grep -nF "$digest" || true)"
+    [ -z "$hits" ] || { echo "composition-time digest leaked into the payload: $hits"; return 1; }
+  done
+  return 0
+}
+
+@test "the composed payload contains no reference BODY and no composition-time digest" {
+  source "$LIB"; make_corpus
+  run compose_default
+  [ "$status" -eq 0 ]
+  local payload="$output" d1 d2
+  d1="$(review_digest .speccraft/architecture.md)"
+  d2="$(review_digest .speccraft/conventions.md)"
+  run payload_has_no_reference_body "$payload"
+  [ "$status" -eq 0 ]
+  # If the expected value were in the prompt, a reviewer could echo it back
+  # without ever opening the file — the read-sentinel failure round 3 killed.
+  run payload_has_no_expected_digest "$payload" "$d1" "$d2"
+  [ "$status" -eq 0 ]
+}
+
+@test "the no-reference-body checker REJECTS the committed forbidden fixture" {
+  run payload_has_no_reference_body "$(cat "$FIX/forbidden/fb01-reference-body.md")"
+  [ "$status" -eq 1 ]
+}
+
+@test "the no-expected-digest checker REJECTS the committed forbidden fixture" {
+  run payload_has_no_expected_digest "$(cat "$FIX/forbidden/fb02-expected-digest.md")" \
+    "0000000000000000000000000000000000000000000000000000000000000000"
+  [ "$status" -eq 1 ]
+}
+
+@test "a reference file named but missing on disk is a named error" {
+  source "$LIB"; make_corpus
+  rm "$TEST_DIR/.speccraft/conventions.md"
+  # A missing conventions.md must not quietly shrink the payload and leave the
+  # reviewer unaware that a whole tier is absent.
+  run review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+    --inline .speccraft/guardrails.md \
+    --reference .speccraft/architecture.md .speccraft/conventions.md \
+    --digest-out "$TEST_DIR/digests.txt"
+  assert_named_failure ".speccraft/conventions.md"
+}
+
+@test "an empty reference set emits the section with an explicit none marker" {
+  source "$LIB"; make_corpus
+  run review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+    --inline .speccraft/guardrails.md \
+    --digest-out "$TEST_DIR/digests.txt"
+  [ "$status" -eq 0 ]
+  # Omitting the section would make "no reference files were sent" and "the
+  # section was dropped by a bug" indistinguishable to the reviewer.
+  printf '%s\n' "$output" | grep -qF '## Reference files'
+  printf '%s\n' "$output" | grep -qF '(none)'
+  [ -f "$TEST_DIR/digests.txt" ]
+  [ ! -s "$TEST_DIR/digests.txt" ]
+}
+
+@test "--digest-out receives one <sha256>  <path> line per reference and the payload receives none" {
+  source "$LIB"; make_corpus
+  run compose_default
+  [ "$status" -eq 0 ]
+  # The digests need a channel that is NOT the payload (AC6), and this is it.
+  [ "$(wc -l < "$TEST_DIR/digests.txt" | tr -d ' ')" = "2" ]
+  grep -qE '^[0-9a-f]{64}  \.speccraft/architecture\.md$' "$TEST_DIR/digests.txt"
+  grep -qE '^[0-9a-f]{64}  \.speccraft/conventions\.md$' "$TEST_DIR/digests.txt"
+  # The digest-out sidecar is the ONE other file the composer writes.
+  run payload_has_no_expected_digest "$output" \
+    "$(review_digest .speccraft/architecture.md)" "$(review_digest .speccraft/conventions.md)"
+  [ "$status" -eq 0 ]
+}
+
+@test "a scoped round substitutes {{DIFF}} and {{CHANGED_SECTIONS}} and leaves no placeholder surviving" {
+  source "$LIB"; make_corpus
+  run review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+    --inline .speccraft/guardrails.md \
+    --reference .speccraft/architecture.md \
+    --digest-out "$TEST_DIR/digests.txt" \
+    --diff "DIFF-MARKER" --changed "SECTIONS-MARKER"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qF 'DIFF-MARKER'
+  printf '%s\n' "$output" | grep -qF 'SECTIONS-MARKER'
+  run bash -c "printf '%s\n' \"\$1\" | grep -nF '{{'" _ "$output"
+  [ "$status" -ne 0 ]
+}
+
+@test "the composer reads spec content only from the <spec-src> it is given" {
+  source "$LIB"; make_corpus
+  # AC16 under AC24's deferral: there is no fresh review-snapshot.md at compose
+  # time, so the round's frozen image is the source and spec.md is never read.
+  run compose_default
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qF 'FROZEN-SPEC-BODY'
+  run bash -c "printf '%s\n' \"\$1\" | grep -nF 'LIVE-SPEC-MUST-NOT-APPEAR'" _ "$output"
+  [ "$status" -ne 0 ]
+}
+
+# a_utf8_locale — a UTF-8 locale this host actually has. Hard-coding one would
+# silently fall back to C on a host that lacks it, making the arm vacuous.
+a_utf8_locale() {
+  locale -a 2>/dev/null | grep -iE 'utf-?8' | grep -viE '^(c|posix)\.' | head -1
+}
+
+@test "heading records are byte-identical under LC_ALL=C and under a UTF-8 locale" {
+  source "$LIB"; make_corpus
+  printf '# T\n\n## Ünïcödé — héading\n\nSPECCRAFT-REF-BODY-MUST-NOT-APPEAR\n' \
+    > "$TEST_DIR/.speccraft/architecture.md"
+  local utf8; utf8="$(a_utf8_locale)"
+  [ -n "$utf8" ]
+  # Two hosts with different locales must not compose different records from
+  # the same bytes (AC13).
+  LC_ALL=C           run compose_default; local c_out="$output"
+  LC_ALL="$utf8"     run compose_default; local u_out="$output"
+  [ "$c_out" = "$u_out" ]
+  printf '%s\n' "$c_out" | grep -qF '## Ünïcödé — héading'
+}
