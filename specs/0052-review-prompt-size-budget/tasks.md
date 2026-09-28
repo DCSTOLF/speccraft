@@ -7,8 +7,8 @@ spec: "0052"
 - [x] T0 — Capture the 12 historical reviewer responses from /tmp into `tests/hooks/fixtures/spec-review-payload/responses/historical/` (CHORE — done during planning; they existed only in /tmp)
 - [x] T1 — RED: tier classification, heading/fence grammar fixtures, awk-interval guard fixtures
 - [x] T2 — GREEN: `review_context_tier`, `review_heading_index`, portability-guard clause (f)
-- [ ] T3 — RED: round predicates, inert all-refused round, promote deferral at the speccraft-state seam
-- [ ] T4 — GREEN: `review_responses_complete` / `review_approval_quorum_met` / `review_finalize_round`; `review.md` drops `--promote` and gates steps 5-7
+- [x] T3 — RED: round predicates, inert all-refused round, promote deferral at the speccraft-state seam
+- [x] T4 — GREEN: `review_responses_complete` / `review_approval_quorum_met` / `review_finalize_round`; `review.md` drops `--promote` and gates steps 5-7
 - [ ] T5 — RED: digest primitive on both polarities, FIFO single-scan proof, sweep exact-set update
 - [ ] T6 — GREEN: `_review_digest_cmd` / `review_digest` / `_review_scan_reference`; land the sweep update in the same commit
 - [ ] T7 — RED: composer envelope (tier mismatch, order, no body, no digest, missing vs empty reference set, digest-out, scoped substitution, spec-src indirection, locale determinism)

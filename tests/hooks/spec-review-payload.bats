@@ -211,3 +211,212 @@ assert_named_failure() {
   [ "$status" -eq 0 ]
   [ -n "$output" ]
 }
+
+# ---- AC22/AC23/AC24: round predicates, inert round, deferred promote ------
+#
+# The round's outcome set is a file of `<agent> <outcome> [detail…]` records,
+# one per REQUIRED reviewer. `responses_complete` and `approval_quorum_met` are
+# separate predicates over that file because they gate different things: the
+# first gates synthesis and the durable writes (and holds for ANY verdict,
+# including changes-requested — spec 0035 AC2), the second alone gates
+# `status: reviewed`. Conflating them would forbid exactly what a legitimate
+# changes-requested round does.
+
+# A speccraft-state stub that RECORDS every invocation. The inert-round
+# assertions are made HERE, at the seam, not inferred from unchanged bytes: a
+# round that wrote the same bytes back would also leave the file "unchanged".
+install_state_stub() {
+  mkdir -p "$TEST_DIR/stub"
+  cat > "$TEST_DIR/stub/speccraft-state" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SEAM_LOG"
+case "$1" in
+  find-root)       printf '%s\n' "$STUB_ROOT" ;;
+  review-snapshot) printf '%s\n' "1111111111111111111111111111111111111111111111111111111111111111" ;;
+esac
+exit 0
+STUB
+  chmod +x "$TEST_DIR/stub/speccraft-state"
+  export SEAM_LOG="$TEST_DIR/seam.log"
+  export STUB_ROOT="$TEST_DIR"
+  : > "$SEAM_LOG"
+  export PATH="$TEST_DIR/stub:$PATH"
+}
+
+# A real spec dir, so the durable-write arms run against the REAL binary and a
+# call that slipped through the gate would actually move bytes on disk.
+make_spec_dir() {
+  SPEC_DIR="$TEST_DIR/specs/0001-x"
+  mkdir -p "$SPEC_DIR"
+  printf '# Spec\n\nCURRENT-SPEC-MARKER\n' > "$SPEC_DIR/spec.md"
+  printf '# Spec\n\nBASELINE-SNAPSHOT-MARKER\n' > "$SPEC_DIR/review-snapshot.md"
+  printf '# Review\n\nPRIOR-REVIEW-MARKER\n' > "$SPEC_DIR/review.md"
+}
+
+outcomes() {
+  local f="$TEST_DIR/outcomes.txt"
+  printf '%s\n' "$@" > "$f"
+  printf '%s\n' "$f"
+}
+
+@test "review_responses_complete is false when any required reviewer refused" {
+  source "$LIB"
+  run review_responses_complete "$(outcomes 'codex approve' 'claude-p refused refuse:argv-limit')"
+  [ "$status" -eq 1 ]
+}
+
+@test "review_responses_complete is true for two changes-requested verdicts" {
+  source "$LIB"
+  # A timeout is not a verdict (spec 0035); a changes-requested IS one.
+  run review_responses_complete "$(outcomes 'codex changes-requested' 'claude-p changes-requested')"
+  [ "$status" -eq 0 ]
+}
+
+@test "review_responses_complete treats timeout, failure and a failed attestation as non-verdicts" {
+  source "$LIB"
+  run review_responses_complete "$(outcomes 'codex timeout')";            [ "$status" -eq 1 ]
+  run review_responses_complete "$(outcomes 'codex failed')";             [ "$status" -eq 1 ]
+  run review_responses_complete "$(outcomes 'codex attestation-failed')"; [ "$status" -eq 1 ]
+}
+
+@test "review_responses_complete is false for an empty outcome set" {
+  source "$LIB"
+  # Zero reviewers is not "everyone answered" — it is a round that never ran.
+  run review_responses_complete "$(outcomes)"
+  [ "$status" -eq 1 ]
+}
+
+@test "review_responses_complete names an unknown outcome token instead of silently not counting it" {
+  source "$LIB"
+  # Exit 2, distinct from the exit-1 "incomplete" answer: a typo'd outcome must
+  # not be indistinguishable from a legitimate refusal.
+  run review_responses_complete "$(outcomes 'codex approvd')"
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qF "approvd"
+}
+
+@test "review_approval_quorum_met counts only approve and approve-with-comments" {
+  source "$LIB"
+  run review_approval_quorum_met 2 "$(outcomes 'codex approve' 'claude-p approve-with-comments')"
+  [ "$status" -eq 0 ]
+  run review_approval_quorum_met 2 "$(outcomes 'codex approve' 'claude-p changes-requested')"
+  [ "$status" -eq 1 ]
+  run review_approval_quorum_met 1 "$(outcomes 'codex reject' 'claude-p changes-requested')"
+  [ "$status" -eq 1 ]
+}
+
+@test "a complete changes-requested round writes review.md, stamps the fingerprint, and leaves status draft" {
+  source "$LIB"
+  make_spec_dir
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'codex changes-requested' 'claude-p changes-requested')"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "responses_complete: true"
+  printf '%s\n' "$output" | grep -qxF "approval_quorum_met: false"
+  printf '%s\n' "$output" | grep -qxF "status: draft"
+  # Spec 0035 AC2 preserved: the durable write happens for ANY verdict.
+  grep -qE '^reviewed_sha256: [0-9a-f]{64}$' "$SPEC_DIR/review.md"
+  # …and the snapshot is promoted HERE, at the end of the round, not at its start.
+  grep -qF 'CURRENT-SPEC-MARKER' "$SPEC_DIR/review-snapshot.md"
+}
+
+@test "a complete round meeting quorum reports status reviewed" {
+  source "$LIB"
+  make_spec_dir
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'codex approve' 'claude-p changes-requested')"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "responses_complete: true"
+  printf '%s\n' "$output" | grep -qxF "approval_quorum_met: true"
+  printf '%s\n' "$output" | grep -qxF "status: reviewed"
+}
+
+@test "an all-refused round invokes neither review-snapshot write nor review-commit at the seam" {
+  source "$LIB"
+  install_state_stub
+  make_spec_dir
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'codex refused refuse:argv-limit' 'claude-p refused refuse:payload-limit')"
+  [ "$status" -eq 0 ]
+  run grep -c 'review-snapshot' "$SEAM_LOG"
+  [ "$output" = "0" ]
+  run grep -c 'review-commit' "$SEAM_LOG"
+  [ "$output" = "0" ]
+}
+
+@test "an all-refused round leaves review.md and review-snapshot.md byte-identical" {
+  source "$LIB"
+  make_spec_dir   # REAL speccraft-state on PATH: a call that slipped the gate moves bytes
+  before_review="$(cat "$SPEC_DIR/review.md")"
+  before_snap="$(cat "$SPEC_DIR/review-snapshot.md")"
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'codex refused refuse:argv-limit' 'claude-p timeout')"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$SPEC_DIR/review.md")" = "$before_review" ]
+  [ "$(cat "$SPEC_DIR/review-snapshot.md")" = "$before_snap" ]
+  # The baseline the NEXT --diff anchors on is untouched, so the following round
+  # is classified against the same reviewed version rather than a silent re-baseline.
+  grep -qF 'BASELINE-SNAPSHOT-MARKER' "$SPEC_DIR/review-snapshot.md"
+}
+
+@test "an all-refused round reports synthesis skipped, so cross-reviewer is never invoked" {
+  source "$LIB"
+  make_spec_dir
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'codex refused refuse:argv-limit')"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "synthesis: skipped"
+  printf '%s\n' "$output" | grep -qxF "responses_complete: false"
+}
+
+@test "a mixed round is inert and names both the refusal and the verdict obtained" {
+  source "$LIB"
+  make_spec_dir
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'codex refused refuse:argv-limit' 'claude-p approve')"
+  [ "$status" -eq 0 ]
+  # The two predicates are separately observable and DISAGREE here: an approval
+  # was obtained, yet the round is inert because a required reviewer never answered.
+  printf '%s\n' "$output" | grep -qxF "responses_complete: false"
+  printf '%s\n' "$output" | grep -qxF "approval_quorum_met: true"
+  printf '%s\n' "$output" | grep -qxF "status: draft"
+  # The report names every refusal AND every verdict obtained — a round that
+  # reported only the failure would hide a real verdict from the developer.
+  printf '%s\n' "$output" | grep -qF "no-verdict: codex refused refuse:argv-limit"
+  printf '%s\n' "$output" | grep -qF "verdict: claude-p approve"
+  [ "$(cat "$SPEC_DIR/review.md")" = "$(printf '# Review\n\nPRIOR-REVIEW-MARKER\n')" ]
+}
+
+@test "a failed attestation is reported in its own category" {
+  source "$LIB"
+  make_spec_dir
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'codex attestation-failed digest-mismatch')"
+  [ "$status" -eq 0 ]
+  # AC25: a chronically failing reviewer must be diagnosable, not merely excluded.
+  printf '%s\n' "$output" | grep -qF "attestation-failure: codex digest-mismatch"
+}
+
+# runbook_promote_free — a NAMED predicate, run twice: against the real runbook
+# (must pass) and against the committed forbidden fixture (must reject). Exit 2
+# for "no review-diff call at all" so that deleting the call cannot be mistaken
+# for compliance — the failure mode a bare `! grep -q --promote` would accept.
+runbook_promote_free() {
+  local f="$1" hits
+  grep -qF 'speccraft-state review-diff' "$f" || {
+    echo "no 'speccraft-state review-diff' call found in $f"
+    return 2
+  }
+  hits="$(grep -nE 'review-diff.*--promote' "$f" || true)"
+  [ -z "$hits" ] || { echo "forbidden --promote at round start: $hits"; return 1; }
+  return 0
+}
+
+@test "the round's opening review-diff call carries no --promote" {
+  run runbook_promote_free "$PLUGIN_DIR/commands/spec/review.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "the promote-free checker REJECTS the committed forbidden runbook fixture" {
+  run runbook_promote_free "$FIX/forbidden/fb05-runbook-promote.md"
+  [ "$status" -eq 1 ]
+}
+
+@test "the promote-free checker distinguishes a deleted call from a compliant one" {
+  printf '# Runbook with no review-diff call at all\n' > "$TEST_DIR/no-call.md"
+  run runbook_promote_free "$TEST_DIR/no-call.md"
+  [ "$status" -eq 2 ]
+}

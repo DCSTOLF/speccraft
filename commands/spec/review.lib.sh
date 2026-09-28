@@ -120,6 +120,165 @@ review_heading_index() {
   ' "$file"
 }
 
+# ---------------------------------------------------------------------------
+# Spec 0052 — round predicates and the round's single durable-write point.
+#
+# A round's result is a set of records, one per REQUIRED reviewer, of the shape
+#   <agent> <outcome> [detail…]
+# and TWO predicates are taken over it. They are deliberately separate because
+# they gate different things, and conflating them breaks a real path:
+#
+#   responses_complete  — every required reviewer returned a VERDICT. Gates
+#     synthesis, the review.md write and the reviewed_sha256 commit — and holds
+#     for ANY verdict, `changes-requested` included (spec 0035 AC2).
+#   approval_quorum_met — AGREEING verdicts >= the quorum. Gates `status:
+#     reviewed`, and nothing else.
+#
+# `review_quorum` counts agreement, so gating the durable write on it would
+# forbid exactly what a legitimate changes-requested round does: persist its
+# review. A refusal, a timeout, a failure and a failed digest attestation are
+# all non-verdicts — an over-budget agent is held to the same standard as the
+# timeout it replaces, or a round reaches quorum having consulted fewer models
+# than the developer believes.
+# ---------------------------------------------------------------------------
+
+REVIEW_VERDICTS="approve approve-with-comments changes-requested reject"
+REVIEW_AGREEING_VERDICTS="approve approve-with-comments"
+# A timeout is not a verdict (spec 0035 review.md step 6), and neither is a
+# pre-dispatch budget refusal or a reference read that could not be attested.
+REVIEW_NON_VERDICTS="refused timeout failed attestation-failed"
+
+# _review_outcome_kind <outcome> — echo "verdict" | "non-verdict"; return 2 and
+# name the token otherwise. An unrecognised outcome must NOT fall through to
+# "non-verdict": a typo would then read as a refusal, quietly making a round
+# inert with no indication why.
+_review_outcome_kind() {
+  local outcome="${1:-}" entry
+  for entry in $REVIEW_VERDICTS; do
+    [ "$outcome" = "$entry" ] && { printf 'verdict\n'; return 0; }
+  done
+  for entry in $REVIEW_NON_VERDICTS; do
+    [ "$outcome" = "$entry" ] && { printf 'non-verdict\n'; return 0; }
+  done
+  review_error "review: unknown outcome '$outcome' (verdicts: $REVIEW_VERDICTS; non-verdicts: $REVIEW_NON_VERDICTS)"
+  return 2
+}
+
+# review_responses_complete <outcomes-file>
+#   0 — every required reviewer returned a verdict
+#   1 — at least one did not, or the set is empty (a round that never ran is
+#       not a round in which everyone answered)
+#   2 — malformed record, named on stderr
+review_responses_complete() {
+  local file="${1:-}" agent outcome rest kind seen=0 rc
+  [ -n "$file" ] && [ -f "$file" ] || {
+    review_error "review_responses_complete: an outcomes file is required (got '${file:-}')"
+    return 2
+  }
+  while IFS=' ' read -r agent outcome rest || [ -n "$agent" ]; do
+    [ -n "$agent" ] || continue
+    [ -n "$outcome" ] || { review_error "review_responses_complete: record for '$agent' has no outcome"; return 2; }
+    rc=0; kind="$(_review_outcome_kind "$outcome")" || rc=$?
+    [ "$rc" -eq 0 ] || return 2
+    seen=$((seen + 1))
+    [ "$kind" = "verdict" ] || return 1
+  done < "$file"
+  [ "$seen" -gt 0 ] || return 1
+  return 0
+}
+
+# review_approval_quorum_met <quorum> <outcomes-file>
+#   0 — agreeing verdicts (approve / approve-with-comments) >= quorum
+#   1 — below quorum
+#   2 — malformed quorum or record
+review_approval_quorum_met() {
+  local quorum="${1:-}" file="${2:-}" agent outcome rest entry count=0 rc kind
+  case "$quorum" in
+    ''|*[!0-9]*) review_error "review_approval_quorum_met: quorum must be a base-10 integer (got '${quorum:-}')"; return 2 ;;
+  esac
+  [ -n "$file" ] && [ -f "$file" ] || {
+    review_error "review_approval_quorum_met: an outcomes file is required (got '${file:-}')"
+    return 2
+  }
+  while IFS=' ' read -r agent outcome rest || [ -n "$agent" ]; do
+    [ -n "$agent" ] || continue
+    [ -n "$outcome" ] || { review_error "review_approval_quorum_met: record for '$agent' has no outcome"; return 2; }
+    rc=0; kind="$(_review_outcome_kind "$outcome")" || rc=$?
+    [ "$rc" -eq 0 ] || return 2
+    for entry in $REVIEW_AGREEING_VERDICTS; do
+      [ "$outcome" = "$entry" ] && count=$((count + 1))
+    done
+  done < "$file"
+  [ "$count" -ge "$quorum" ]
+}
+
+# review_finalize_round <spec-dir> <quorum> <outcomes-file>
+# — the ONLY place a review round performs a durable write. Emits the round
+# report on stdout and returns 0 whether or not the round was productive: a
+# refusal is data, not a shell failure.
+#
+# When `responses_complete` is false the round is INERT — no snapshot promote,
+# no fingerprint commit, review.md untouched — and the report says so while
+# still naming every verdict that WAS obtained. That is what stops a
+# refusal-only round wiping the prior review.md and collapsing spec 0035's
+# provenance gate on the next --diff.
+#
+# The snapshot promote lives HERE rather than at the start of the round (spec
+# 0052 AC24). `review-diff --promote` used to re-baseline review-snapshot.md
+# before any verdict existed, so an all-refused round silently moved the anchor
+# the NEXT round classifies against, and the following round misclassified.
+review_finalize_round() {
+  local spec_dir="${1:-}" quorum="${2:-}" file="${3:-}"
+  local complete=false quorum_met=false synthesis=skipped state=draft
+  local rc fp agent outcome rest kind
+  [ -n "$spec_dir" ] || { review_error "review_finalize_round: spec dir required"; return 2; }
+
+  rc=0; review_responses_complete "$file" || rc=$?
+  [ "$rc" -ne 2 ] || return 2
+  [ "$rc" -eq 0 ] && complete=true
+
+  rc=0; review_approval_quorum_met "$quorum" "$file" || rc=$?
+  [ "$rc" -ne 2 ] || return 2
+  [ "$rc" -eq 0 ] && quorum_met=true
+
+  if [ "$complete" = true ]; then
+    synthesis=done
+    fp="$(speccraft-state review-snapshot write "$spec_dir")" || {
+      review_error "review_finalize_round: review-snapshot write failed; review.md left unchanged"
+      return 1
+    }
+    speccraft-state review-commit "$spec_dir/review.md" "$fp" || {
+      review_error "review_finalize_round: review-commit failed; review.md left unchanged"
+      return 1
+    }
+    [ "$quorum_met" = true ] && state=reviewed
+  fi
+
+  printf 'responses_complete: %s\n' "$complete"
+  printf 'approval_quorum_met: %s\n' "$quorum_met"
+  printf 'synthesis: %s\n' "$synthesis"
+  printf 'status: %s\n' "$state"
+
+  # Every refusal AND every verdict obtained. A report naming only the failures
+  # hides a real verdict from the developer; one naming only the verdicts hides
+  # that the round consulted fewer models than it appears to have.
+  while IFS=' ' read -r agent outcome rest || [ -n "$agent" ]; do
+    [ -n "$agent" ] || continue
+    rc=0; kind="$(_review_outcome_kind "$outcome")" || rc=$?
+    [ "$rc" -eq 0 ] || return 2
+    if [ "$kind" = "verdict" ]; then
+      printf 'verdict: %s %s\n' "$agent" "$outcome"
+    elif [ "$outcome" = "attestation-failed" ]; then
+      # Its own category: a reviewer whose reference reads never attest must be
+      # diagnosable, not merely excluded round after round (AC25).
+      printf 'attestation-failure: %s%s\n' "$agent" "${rest:+ $rest}"
+    else
+      printf 'no-verdict: %s %s%s\n' "$agent" "$outcome" "${rest:+ $rest}"
+    fi
+  done < "$file"
+  return 0
+}
+
 # review_reviewed_sha256 <review.md> — echo the single usable reviewed_sha256
 # value, or return non-zero. "Usable" (spec 0035 AC8) = exactly one line matching
 # the anchored grammar ^reviewed_sha256: <64 lowercase hex>$. Zero, multiple, or
@@ -160,13 +319,18 @@ review_classify() {
   fi
 }
 
-# review_build_payload <template> <snapshot_file> <prior_review_file> <diff>
+# review_build_payload <template> <frozen_spec> <prior_review_file> <diff>
 #   <changed_sections>
 # — echo the scoped re-review payload (spec 0035 AC7b): the populated re-review
 # brief (template with the {{DIFF}} / {{CHANGED_SECTIONS}} markers substituted),
-# followed by the CURRENT spec content read from the FROZEN review-snapshot.md
+# followed by the CURRENT spec content read from the round's FROZEN spec image
 # (NOT spec.md — preserving the AC11 single-read transaction) and the prior
 # review.md body as regression-context evidence.
+#
+# The frozen image used to be review-snapshot.md, promoted at the start of the
+# round; spec 0052 AC24 defers that promote to the end, so the caller passes the
+# round's own frozen copy instead. This helper never names either file — it
+# reads only the path it is given.
 review_build_payload() {
   local template="$1" snapshot="$2" prior="$3" diff="$4" sections="$5"
   local line
@@ -177,7 +341,7 @@ review_build_payload() {
       *) printf '%s\n' "$line" ;;
     esac
   done < "$template"
-  printf '\n===== CURRENT SPEC (frozen review-snapshot.md) =====\n'
+  printf '\n===== CURRENT SPEC (frozen round image) =====\n'
   cat "$snapshot"
   printf '\n===== PRIOR REVIEW (settled vs. open) =====\n'
   cat "$prior"
