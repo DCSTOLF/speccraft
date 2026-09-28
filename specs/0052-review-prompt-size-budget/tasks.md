@@ -9,8 +9,8 @@ spec: "0052"
 - [x] T2 — GREEN: `review_context_tier`, `review_heading_index`, portability-guard clause (f)
 - [x] T3 — RED: round predicates, inert all-refused round, promote deferral at the speccraft-state seam
 - [x] T4 — GREEN: `review_responses_complete` / `review_approval_quorum_met` / `review_finalize_round`; `review.md` drops `--promote` and gates steps 5-7
-- [ ] T5 — RED: digest primitive on both polarities, FIFO single-scan proof, sweep exact-set update
-- [ ] T6 — GREEN: `_review_digest_cmd` / `review_digest` / `_review_scan_reference`; land the sweep update in the same commit
+- [x] T5 — RED: digest primitive on both polarities, FIFO single-scan proof, sweep exact-set update
+- [x] T6 — GREEN: `_review_digest_cmd` / `review_digest` / `_review_scan_reference`; land the sweep update in the same commit
 - [ ] T7 — RED: composer envelope (tier mismatch, order, no body, no digest, missing vs empty reference set, digest-out, scoped substitution, spec-src indirection, locale determinism)
 - [ ] T8 — GREEN: `review_compose_payload`
 - [ ] T9 — RED: budget mode matrix, boundary triples, reason enum, refusal-message arms, override validation

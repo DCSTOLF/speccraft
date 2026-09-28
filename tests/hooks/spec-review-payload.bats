@@ -23,6 +23,9 @@ setup() {
 }
 
 teardown() {
+  # A single-use-source writer blocked in open() outlives the test otherwise
+  # (see the AC8 proof below); the FIFO it waits on is about to be removed.
+  [ -z "${FIFO_WRITER_PID:-}" ] || kill "$FIFO_WRITER_PID" 2>/dev/null || true
   rm -rf "$TEST_DIR"
 }
 
@@ -419,4 +422,133 @@ runbook_promote_free() {
   printf '# Runbook with no review-diff call at all\n' > "$TEST_DIR/no-call.md"
   run runbook_promote_free "$TEST_DIR/no-call.md"
   [ "$status" -eq 2 ]
+}
+
+# ---- AC9: one digest primitive, resolved once, pinned on BOTH polarities --
+#
+# `sha256sum` is GNU coreutils only and absent from a default macOS userland;
+# `shasum -a 256` is present on both. This repo lost eight consecutive CI runs
+# to exactly this BSD/GNU class (spec 0050), so the primitive is pinned in both
+# directions rather than assumed — and the awk-interval trap guarded beside it
+# is the same class of silent cross-environment divergence.
+
+# make_digest_tool <dir> <name> <hex> — a stand-in checksum tool emitting the
+# standard "<hex>  <name>" two-column form, so the caller's field extraction is
+# exercised rather than bypassed. /bin/sh with builtins only: these run on a
+# PATH that contains nothing but the stub dir.
+make_digest_tool() {
+  local dir="$1" name="$2" hex="$3"
+  mkdir -p "$dir"
+  cat > "$dir/$name" <<EOS
+#!/bin/sh
+printf '%s  -\n' "$hex"
+EOS
+  chmod +x "$dir/$name"
+}
+
+BSD_HEX="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+GNU_HEX="9999999999999999999999999999999999999999999999999999999999999999"
+
+@test "review_digest resolves shasum -a 256 when the GNU tool is absent from PATH" {
+  source "$LIB"
+  make_digest_tool "$TEST_DIR/bsd" shasum "$BSD_HEX"
+  # PATH is the stub dir ALONE: the real /usr/bin tools cannot be reached, so a
+  # resolution that fell through to them would be visible here.
+  PATH="$TEST_DIR/bsd" run review_digest "$FIX/digest/d01-known-vector.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$BSD_HEX" ]
+}
+
+@test "review_digest resolves the GNU tool when shasum is absent from PATH" {
+  source "$LIB"
+  make_digest_tool "$TEST_DIR/gnu" sha256sum "$GNU_HEX"
+  PATH="$TEST_DIR/gnu" run review_digest "$FIX/digest/d01-known-vector.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$GNU_HEX" ]
+}
+
+@test "review_digest errors with a named message when neither primitive exists" {
+  source "$LIB"
+  mkdir -p "$TEST_DIR/empty"
+  PATH="$TEST_DIR/empty" run review_digest "$FIX/digest/d01-known-vector.txt"
+  assert_named_failure "shasum -a 256"
+}
+
+@test "review_digest matches a known vector and emits bare lowercase hex" {
+  source "$LIB"
+  # Against the REAL primitive on the ordinary PATH, so the stubs above cannot
+  # be the only thing the contract is pinned to.
+  run review_digest "$FIX/digest/d01-known-vector.txt"
+  [ "$status" -eq 0 ]
+  [ "$output" = "596bcab1b9feaa19b8c5c49b11d4a6c41509fb5f1586eed5bafc1b0dc61a15ef" ]
+}
+
+@test "review_digest reads stdin when given no file" {
+  source "$LIB"
+  run bash -c "source '$LIB'; review_digest < '$FIX/digest/d01-known-vector.txt'"
+  [ "$output" = "596bcab1b9feaa19b8c5c49b11d4a6c41509fb5f1586eed5bafc1b0dc61a15ef" ]
+}
+
+# ---- AC8: ONE read per reference file, proved behaviorally ----------------
+#
+# A source scan is not sufficient evidence — the naive two-pass shape
+# (`wc -c "$f"` then `grep '^## ' "$f"`) reads the path TWICE and looks
+# perfectly reasonable. Against a single-use source it produces a record whose
+# size and heading index disagree, which is what the two tests below contrast.
+
+REF_CONTENT='# Title
+
+## Alpha
+
+body text
+
+### Beta
+'
+
+# A single-use source: content on the first read, empty on the next few, so a
+# second pass is observable rather than merely suspected. The extra empty opens
+# exist so a two-pass consumer FAILS instead of blocking forever in open().
+start_single_use_source() {
+  local fifo="$1"
+  mkfifo "$fifo"
+  ( printf '%s' "$REF_CONTENT" > "$fifo"; for _ in 1 2 3; do : > "$fifo"; done ) &
+  FIFO_WRITER_PID=$!
+}
+
+@test "the single-use-source proof requires mkfifo — gated at the suite, never skipped at runtime" {
+  # A runtime `skip` would let the one-scan proof erode silently on any host
+  # where the technique is unavailable. Assert the premise instead.
+  run command -v mkfifo
+  [ "$status" -eq 0 ]
+}
+
+@test "the reference record for a single-use source carries a non-empty heading index AND a matching digest" {
+  source "$LIB"
+  mkdir -p "$TEST_DIR/.speccraft"
+  fifo="$TEST_DIR/.speccraft/conventions.md"
+  printf '%s' "$REF_CONTENT" > "$TEST_DIR/plain.md"   # a freely re-readable twin
+  expected_digest="$(review_digest "$TEST_DIR/plain.md")"
+  expected_size="$(wc -c < "$TEST_DIR/plain.md" | tr -d ' ')"
+
+  start_single_use_source "$fifo"
+  run _review_scan_reference "$fifo"
+  [ "$status" -eq 0 ]
+  # Line 1 is "<byte-size> <sha256>", the rest is the heading index in file order.
+  [ "$(printf '%s\n' "$output" | head -1)" = "$expected_size $expected_digest" ]
+  [ "$(printf '%s\n' "$output" | tail -n +2)" = "## Alpha
+### Beta" ]
+}
+
+@test "the naive two-pass shape disagrees with itself on the same single-use source" {
+  # The BITE proof. This is the implementation AC8 forbids, run against the same
+  # fixture: the size comes from the first read and the index from the second,
+  # which is empty. Without this arm, the test above would pass just as happily
+  # on a two-pass implementation given an ordinary file.
+  mkdir -p "$TEST_DIR/.speccraft"
+  fifo="$TEST_DIR/.speccraft/conventions.md"
+  start_single_use_source "$fifo"
+  two_pass_size="$(wc -c < "$fifo" | tr -d ' ')"
+  two_pass_index="$(grep -E '^## |^### ' "$fifo" || true)"
+  [ "$two_pass_size" -gt 0 ]
+  [ -z "$two_pass_index" ]
 }

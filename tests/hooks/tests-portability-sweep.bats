@@ -43,7 +43,7 @@ mention_only_filter() {
     | grep -vE "(unset -f|export -f|\(\)[[:space:]]*\{)" \
     | grep -vE "grep -rnE|grep -qE|grep -nE|grep -vE|gnu_form_pattern" \
     | grep -vE "^[^:]+:[0-9]+:@test " \
-    | grep -vE "make_gnu_tool|make_bsd_path|make_versioned_tool|for t in " \
+    | grep -vE "make_gnu_tool|make_bsd_path|make_versioned_tool|make_digest_tool|for t in " \
     | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum" \
     | grep -vE "^[^:]+/fixtures/[^:]+:[0-9]+:"
 }
@@ -108,9 +108,17 @@ executing_files() {
   #     reworded because the corpus's value is that it is verbatim — editing a
   #     captured response to appease a scanner would destroy the property that
   #     makes it a useful fixture.
+  #   spec-review-payload — added by spec 0052 AC9. It names the GNU checksum
+  #     tool ONCE, as the argument to `make_digest_tool`, which writes a /bin/sh
+  #     STUB of that name into a synthetic PATH. That stub is how the digest
+  #     primitive is pinned on its GNU polarity: the test sets PATH to the stub
+  #     dir ALONE, so the real tool is unreachable by construction. The builder
+  #     spelling is exempted alongside the other fixture builders above, for the
+  #     same reason — it takes a tool name as DATA and never executes one.
   expected="$(printf '%s\n' \
     fixtures/spec-review-payload/responses/historical/r4-claudep.out \
     frontmatter-writer-guard.bats \
+    spec-review-payload.bats \
     init-workspace.bats \
     no-gnu-userland.bats \
     portability-guard.bats \

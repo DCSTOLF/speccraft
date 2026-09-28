@@ -92,7 +92,18 @@ review_context_tier() {
 review_heading_index() {
   local file="${1:-}"
   [ -n "$file" ] || { review_error "review_heading_index: file required"; return 1; }
+  # `-e`, not `-f`: a reference source may be a FIFO or other non-regular file,
+  # and the one-scan proof in tests/hooks/spec-review-payload.bats depends on it.
   [ -e "$file" ] || { review_error "review_heading_index: $file not found"; return 1; }
+  _review_heading_stream < "$file"
+}
+
+# _review_heading_stream — the single heading/fence parser, reading stdin.
+# review_heading_index wraps it for a path; _review_scan_reference feeds it the
+# ONE buffer it read (AC8), so there is exactly one grammar in the lib rather
+# than a file version and a buffer version drifting apart
+# (.speccraft/conventions.md §"One shared parser entrypoint").
+_review_heading_stream() {
   LC_ALL=C awk '
     # Length of the leading run of character c in s (interval-free).
     function runlen(s, c,   n) {
@@ -117,7 +128,81 @@ review_heading_index() {
       if (n >= 3) { infence = 1; fence_char = fc; fence_len = n; next }
       if (line ~ /^## / || line ~ /^### /) print line
     }
-  ' "$file"
+  '
+}
+
+# ---------------------------------------------------------------------------
+# Spec 0052 — the digest primitive, and the one-scan reference record.
+# ---------------------------------------------------------------------------
+
+# _review_digest_cmd — echo the SHA-256 command word, resolved ONCE per shell.
+#
+# PORTABILITY, load-bearing and the same class as the awk-interval trap guarded
+# above: the GNU coreutils checksum tool is absent from a default macOS
+# userland, while `shasum -a 256` ships on both BSD and GNU systems. This repo
+# lost eight consecutive CI runs to that class (spec 0050), so `shasum` is
+# PREFERRED and the GNU tool is reached only through a `command -v` probe whose
+# resolved PATH is what gets executed — never a bare literal invocation, which
+# tests/hooks/portability-guard.bats clause (e) correctly forbids under a
+# shipped root.
+_REVIEW_DIGEST_CMD="${_REVIEW_DIGEST_CMD:-}"
+_review_digest_cmd() {
+  [ -z "$_REVIEW_DIGEST_CMD" ] || { printf '%s\n' "$_REVIEW_DIGEST_CMD"; return 0; }
+  if command -v shasum >/dev/null 2>&1; then
+    _REVIEW_DIGEST_CMD="shasum -a 256"
+  else
+    local gnu
+    gnu="$(command -v sha256sum 2>/dev/null || true)"
+    [ -n "$gnu" ] || {
+      review_error "review_digest: no SHA-256 primitive on PATH (looked for 'shasum -a 256', then the GNU coreutils checksum tool)"
+      return 1
+    }
+    _REVIEW_DIGEST_CMD="$gnu"
+  fi
+  printf '%s\n' "$_REVIEW_DIGEST_CMD"
+}
+
+# review_digest [<file>] — echo the bare lowercase hex SHA-256 of <file>, or of
+# stdin when no file is given. Both primitives emit "<hex>  <name>", so the
+# first field is taken.
+review_digest() {
+  local cmd out
+  cmd="$(_review_digest_cmd)" || return 1
+  if [ $# -gt 0 ]; then
+    out="$($cmd < "$1")" || return 1
+  else
+    out="$($cmd)" || return 1
+  fi
+  printf '%s\n' "${out%% *}"
+}
+
+# _review_scan_reference <path> — read <path> ONCE and emit its record:
+#   line 1   : "<byte-size> <sha256>"
+#   lines 2+ : the heading index, in file order
+#
+# ONE read is a contract, not an optimisation (AC8). The obvious two-pass shape
+# — `wc -c "$f"` then `grep '^## ' "$f"` — looks reasonable and is wrong: on a
+# single-use source the size comes from one read and the index from another, so
+# the record describes two different things. Everything below is derived from
+# the single buffer.
+#
+# The buffer cannot carry a NUL byte, and that FAILS SAFE rather than silently:
+# a NUL-bearing reference yields a digest the reviewer's own read will not
+# match, the attestation fails, and the verdict is not counted — the same
+# outcome as a reference that could not be read at all.
+_review_scan_reference() {
+  local file="${1:-}" buf size digest
+  [ -n "$file" ] || { review_error "_review_scan_reference: path required"; return 1; }
+  [ -e "$file" ] || { review_error "_review_scan_reference: $file not found"; return 1; }
+  # The trailing-X sentinel preserves trailing newlines, which command
+  # substitution would otherwise strip — the same byte-fidelity concern AC10
+  # settles for the payload artifact, arriving one layer down.
+  buf="$(LC_ALL=C cat -- "$file"; printf X)"
+  buf="${buf%X}"
+  size="$(printf '%s' "$buf" | LC_ALL=C wc -c | tr -d ' ')"
+  digest="$(printf '%s' "$buf" | review_digest)" || return 1
+  printf '%s %s\n' "$size" "$digest"
+  printf '%s' "$buf" | _review_heading_stream
 }
 
 # ---------------------------------------------------------------------------
