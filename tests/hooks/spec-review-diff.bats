@@ -100,13 +100,24 @@ VALID_SHA="0000000000000000000000000000000000000000000000000000000000000000"
   [ "$output" = "scoped" ]
 }
 
-# ---- AC7b/AC11: scoped payload builder sources the frozen snapshot ------------
+# ---- AC7b/AC11: the scoped payload sources the frozen image -------------------
+#
+# Re-pointed by spec 0052 T19 from `review_build_payload` to
+# `review_compose_payload`, which retired it: there is now exactly ONE composer
+# for both the full round and the scoped `--diff` round, so exactly one thing
+# decides what bytes are sent and the byte budget measures all of them. These two
+# criteria are unchanged — the frozen image is still the spec source and the
+# prior review still rides along as regression-context evidence; it is the
+# evidence's channel that moved (the composer's `--inline` set).
 
 @test "scoped payload embeds prior review.md body, frozen snapshot, diff and sections" {
   source "$LIB"
   printf 'SNAPSHOT-MARKER spec body\n' > "$TEST_DIR/review-snapshot.md"
   printf '# Prior Review\nPRIOR-MARKER\nreviewed_sha256: %s\n' "$VALID_SHA" > "$TEST_DIR/review.md"
-  run review_build_payload "$TEMPLATE" "$TEST_DIR/review-snapshot.md" "$TEST_DIR/review.md" "DIFF-MARKER" "SECTIONS-MARKER"
+  run review_compose_payload "$TEMPLATE" "$TEST_DIR/review-snapshot.md" \
+    --inline "$TEST_DIR/review.md" \
+    --digest-out "$TEST_DIR/digests.txt" \
+    --diff "DIFF-MARKER" --changed "SECTIONS-MARKER"
   [ "$status" -eq 0 ]
   [[ "$output" == *"SNAPSHOT-MARKER"* ]]
   [[ "$output" == *"PRIOR-MARKER"* ]]
@@ -123,10 +134,23 @@ VALID_SHA="0000000000000000000000000000000000000000000000000000000000000000"
   # promote freezes the snapshot from spec.md bytes
   run speccraft-state review-diff "$specDir" --promote
   [ "$status" -eq 0 ]
-  # remove spec.md: the command must source payloads from review-snapshot.md, never spec.md
+  # remove spec.md: the composer must read only the <spec-src> it is given
   rm "$specDir/spec.md"
   printf '# Prior\nreviewed_sha256: %s\n' "$VALID_SHA" > "$specDir/review.md"
-  run review_build_payload "$TEMPLATE" "$specDir/review-snapshot.md" "$specDir/review.md" "d" "s"
+  run review_compose_payload "$TEMPLATE" "$specDir/review-snapshot.md" \
+    --inline "$specDir/review.md" \
+    --digest-out "$TEST_DIR/digests.txt" \
+    --diff "d" --changed "s"
   [ "$status" -eq 0 ]
   [[ "$output" == *"FROZEN-CONTENT"* ]]
+}
+
+@test "review_build_payload is retired — there is exactly one composer" {
+  source "$LIB"
+  # Two composers means two answers to "what bytes are sent", and the budget can
+  # only measure one of them.
+  run type -t review_build_payload
+  [ "$status" -ne 0 ]
+  run grep -rnF 'review_build_payload' "$PLUGIN_DIR/commands" "$PLUGIN_DIR/agents"
+  [ "$status" -ne 0 ]
 }

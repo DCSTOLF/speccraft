@@ -1,12 +1,27 @@
 #!/usr/bin/env bash
-# commands/spec/review.lib.sh — testable shell helpers backing the diff-focused
-# re-review path of /speccraft:spec:review (spec 0035). Sourced both by
-# commands/spec/review.md at runtime and by tests/hooks/spec-review-diff.bats.
+# commands/spec/review.lib.sh — testable shell helpers backing
+# /speccraft:spec:review. Sourced by commands/spec/review.md at runtime and by
+# tests/hooks/spec-review-diff.bats (spec 0035) and
+# tests/hooks/spec-review-payload.bats (spec 0052).
 #
-# All functions are pure (no top-level side effects). The Go binaries own change
-# DETECTION (speccraft-state review-diff / review-snapshot); this lib owns the
-# command-layer UX: parsing the prior review fingerprint, classifying the run via
-# the provenance gate, and building the scoped reviewer payload.
+# The Go binaries own change DETECTION (speccraft-state review-diff /
+# review-snapshot). This lib owns the command-layer UX in two layers:
+#
+#   spec 0035 — the provenance gate: parsing the prior review fingerprint and
+#     classifying the round as full-review / scoped / short-circuit.
+#   spec 0052 — the BYTE BOUNDARY. This file is the SOLE byte-producing owner for
+#     review dispatch: it tiers the context, composes the one payload, measures
+#     it against the budget, dispatches those exact bytes, validates the
+#     reference-read attestation, and decides the round's two predicates. Nothing
+#     else may compose reviewer bytes — a second composer means a second answer
+#     to "what was sent", and the budget can only measure one of them.
+#
+# "Pure" here means NO SIDE EFFECTS AT SOURCE TIME: sourcing this file from bats
+# defines functions and nothing more. Individual functions do write — the payload
+# artifact, the digest sidecar, the round temp directory — which is sanctioned
+# precedent (revise.lib.sh ships archive_rename, snapshot_spec, bump_revision).
+# That distinction was raised as a convention violation in review round 5 and
+# checked against .speccraft/conventions.md before being set aside.
 #
 # Cross-shell self-location and zsh-reserved-name avoidance follow the spec-0029
 # conventions; no bare `status` locals.
@@ -1189,30 +1204,3 @@ review_classify() {
   fi
 }
 
-# review_build_payload <template> <frozen_spec> <prior_review_file> <diff>
-#   <changed_sections>
-# — echo the scoped re-review payload (spec 0035 AC7b): the populated re-review
-# brief (template with the {{DIFF}} / {{CHANGED_SECTIONS}} markers substituted),
-# followed by the CURRENT spec content read from the round's FROZEN spec image
-# (NOT spec.md — preserving the AC11 single-read transaction) and the prior
-# review.md body as regression-context evidence.
-#
-# The frozen image used to be review-snapshot.md, promoted at the start of the
-# round; spec 0052 AC24 defers that promote to the end, so the caller passes the
-# round's own frozen copy instead. This helper never names either file — it
-# reads only the path it is given.
-review_build_payload() {
-  local template="$1" snapshot="$2" prior="$3" diff="$4" sections="$5"
-  local line
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      '{{DIFF}}') printf '%s\n' "$diff" ;;
-      '{{CHANGED_SECTIONS}}') printf '%s\n' "$sections" ;;
-      *) printf '%s\n' "$line" ;;
-    esac
-  done < "$template"
-  printf '\n===== CURRENT SPEC (frozen round image) =====\n'
-  cat "$snapshot"
-  printf '\n===== PRIOR REVIEW (settled vs. open) =====\n'
-  cat "$prior"
-}

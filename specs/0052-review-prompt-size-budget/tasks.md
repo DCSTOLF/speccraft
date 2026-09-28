@@ -23,8 +23,8 @@ spec: "0052"
 - [x] T16 — GREEN: `review_full_paste_bytes` + the static corpus fixtures
 - [x] T17 — RED: runbook marker order, no-full-paste, and the remaining AC29 bite proof (fb04); fb01/fb02 landed in T7, fb03 in T11, fb05 in T3
 - [x] T18 — GREEN: rewrite `commands/spec/review.md` step 3 with the compose → budget-check → dispatch markers
-- [ ] T19 — REFACTOR: retire `review_build_payload`, re-point `spec-review-diff.bats`, factor shared bats helpers
-- [ ] T20 — Verify: `bats tests/hooks/` and `go test ./...` green, portability gates green
+- [x] T19 — REFACTOR: retire `review_build_payload`, re-point `spec-review-diff.bats`, factor shared bats helpers
+- [x] T20 — Verify: `bats tests/hooks/` and `go test ./...` green, portability gates green
 
 ## AC coverage
 
