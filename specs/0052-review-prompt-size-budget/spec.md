@@ -1,7 +1,7 @@
 ---
 id: "0052"
 title: "Bound the spec:review reviewer payload: tiered context, a pre-dispatch byte budget, and stdin by default"
-status: planned
+status: closed
 created: 2026-09-28
 revision: 0
 authors: [claude]

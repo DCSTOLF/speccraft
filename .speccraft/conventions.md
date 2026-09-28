@@ -286,6 +286,28 @@ production bug.
   order the guard rejects the very change that satisfies the other AC, wedging the work
   behind its own enforcement. Spec 0049's `tac` → POSIX `awk` reversal and the guard that
   permits that exact reversal form are one task, one commit, deliberately not split.
+- **Scope the clause to the TOOL where the hazard lives, not to the FORM — and pin the
+  permission with a fixture (spec 0052).** Spec 0052's AC5 as written forbade a regex
+  interval in "any `awk` or `grep` invocation". Intervals are **required by POSIX ERE**
+  and work in `grep -E` on BSD and GNU alike; two correct lines already ship them
+  (`review.lib.sh`'s `reviewed_sha256` grammar, `revise.lib.sh`'s identifier token), so
+  the clause as stated would have **red-ed the live tree against working code on day
+  one**. The hazard is **`awk` only**, because mawk (this devcontainer's awk, and
+  Debian's default) does not implement intervals and **matches nothing, silently, exit
+  0** — the identical spelling yields a full index under GNU `grep -E`. Clause (f) is
+  therefore awk-scoped, and the **permitted** `grep -E` spelling ships as a fixture
+  (`permitted/q15.sh`) so the scoping cannot later be "tightened" into a false positive
+  by someone who reads the clause and not the reason. A guard that fires on correct
+  code trains readers to weaken guards, which is the spec-0050 lesson restated.
+- **Key on the syntactic FORM, never on proximity to a command word (spec 0052).**
+  Clause (f)'s first spelling required `awk` on the **same line** as the offending
+  regex, which made it **inert for a multi-line `awk` program** — precisely the shape
+  `review_heading_index` uses, so the guard would have missed the defect in the only
+  form this codebase actually writes. Re-keyed on the slash-delimited regex literal,
+  which is the awk/sed idiom and not `grep -E`'s quoted form, with the brace required
+  to follow a slash-and-space-free run and to be followed by a digit so ordinary action
+  blocks (`{print}`, `{a[NR]=$0}`) and paths cannot match. Fixture `g18` is the
+  multi-line case; without it the guard passes on the spelling that matters.
 - **Canonical reference.** `tests/hooks/portability-guard.bats` (spec 0049: the shipped
   surfaces `hooks/ commands/ tools/ templates/ agents/ skills/`, eight GNU-only forms;
   `tests/**` and `tools/**/*_test.go` excluded as test-side, never installed) plus the
@@ -562,6 +584,96 @@ implementation — all the same shape: **an assertion that cannot fail.**
   that structurally cannot fail is worse than no mechanism, because it reports success
   and earns trust it has not got. That is the exact bug class spec 0049 exists to fix,
   reproduced in the tests *for* that fix.
+
+### A sourced helper must not clobber the caller's EXIT trap
+
+Introduced by spec 0052, found while implementing it.
+
+A `trap … EXIT` inside a function in a **sourced** `*.lib.sh` REPLACES whatever the
+caller had installed. There is one trap table per shell and `trap` has no "append"
+form, so the caller's handler is destroyed silently.
+
+- **Why this is the inert-assertion bug again.** Under bats, the harness's own EXIT
+  handler is what reports a test's result. A helper that clobbers it makes a
+  **FAILING test report nothing at all** — in spec 0052 one test vanished from the
+  run rather than failing — so every assertion in any test that touches the helper
+  becomes **inert**. Same class as `! grep -q` above, arriving through the shell's
+  trap table instead of through `set -e`. A driver with its own cleanup simply loses
+  it, and a round's temp dir then survives the process.
+- **The rule.** Save the prior handler with `trap -p EXIT` before installing yours,
+  and **re-fire it** from your handler. `trap -p` emits a re-evalable single-quoted
+  word, so the unwrap must be quoting-safe rather than hopeful, and the re-fire must
+  clear its own saved value first so it cannot recurse:
+
+  ```bash
+  _PRIOR_EXIT="$(trap -p EXIT)"
+  trap '_my_cleanup; _fire_prior_exit' EXIT
+  ```
+- **A helper that installs a trap is not safe to call in a command substitution.**
+  `d="$(make_tmpdir)"` installs the trap inside the substitution's subshell, which
+  exits immediately and deletes the directory before the caller can use it. Such a
+  helper therefore **sets a variable instead of echoing a path**, and says so in its
+  header comment — there is no spelling of it that is safe in a subshell, so it does
+  not offer one.
+- **State the boundary you cannot cover.** `EXIT HUP INT TERM` is the coverable set;
+  `SIGKILL` is not catchable, so `kill -9` leaves the artifact behind. Say that in
+  the comment rather than implying total coverage.
+- **Canonical reference.** `review_round_tmpdir` / `_review_fire_prior_exit` /
+  `_review_round_cleanup` in `commands/spec/review.lib.sh` (spec 0052), pinned on a
+  clean round and an interrupted one.
+
+### bats authoring: derived paths in `setup()`, and assert on a field, not on `$output`
+
+Introduced by spec 0052, which shipped both halves as defects before catching them.
+
+- **A derived path at bats FILE SCOPE expands before `setup()` runs.** A top-level
+  `RESP="$FIX/responses"` is evaluated when bats sources the file, when `$FIX` is
+  still empty — yielding the literal `/responses`. In spec 0052 that left **11 tests**
+  asserting against a path that could not exist. Every path derived from a variable
+  `setup()` assigns must itself be assigned **in `setup()`**. File scope is for
+  literals only.
+- **Never compare a value to the whole of `$output`.** bats merges **stderr into
+  `$output`**, so `[ "$output" = "refuse:argv-limit" ]` passes until the helper
+  legitimately writes a diagnostic to stderr, and then fails for a reason that has
+  nothing to do with the behavior under test. Extract the field you mean — a specific
+  line, a `grep -o`, `${lines[0]}` — or capture the streams separately. A helper's
+  contract is "this value on stdout", not "this and nothing else anywhere".
+- **Why both are here rather than in the spec's changelog.** Each produces a test that
+  passes or fails for a reason unrelated to the assertion, which is the property
+  §"Prove every negative assertion bites" exists to deny — the same family, one layer
+  down, in the harness rather than the predicate.
+
+### A byte-exactness contract measures a FILE, never a command substitution
+
+Introduced by spec 0052.
+
+When a contract is "the bytes measured are the bytes sent" (or written, or hashed),
+the bytes must live in a **file** for the whole transaction. `x="$(producer)"`
+**strips every trailing newline**, so a count taken from the variable describes bytes
+nobody ever sends, and the divergence is invisible — both numbers look plausible.
+
+- **Redirect, never capture.** The producer emits to **stdout**; the driver redirects
+  that stream **once** into a single artifact; the measurement and the dispatch both
+  read **that artifact**. Then measured-equals-dispatched holds by construction rather
+  than by convention.
+- **The strip recurs one step later.** Reading the artifact back into a variable for
+  an argv-style call re-introduces the identical defect at the file→argv boundary. Use
+  a byte-preserving read — `IFS= read -r -d '' VAR < "$f" || true` (it returns non-zero
+  at EOF while still assigning, which is why the failure is tolerated) — and pin it
+  with a round-trip digest over fixtures ending in one newline, several newlines, and
+  none.
+- **Refuse a second materialization where it can be checked.** The writer errors if
+  the artifact already exists, and creation is logged at **named seams** so "exactly
+  one copy per round" is assertable. An unbounded "no copy anywhere on the filesystem"
+  check would be the vacuous negative this repo keeps shipping.
+- **State the representability domain.** POSIX argv cannot carry a NUL, so a
+  byte-exact argv claim is unimplementable for NUL-bearing input: refuse it
+  pre-dispatch with a diagnostic that names **which** of NUL / invalid-UTF-8 failed,
+  and run counting and extraction under `LC_ALL=C` so two hosts with different locales
+  cannot derive different bytes from the same input.
+- **Canonical reference.** `review_materialize_payload`, `review_dispatch_bytes`,
+  `review_payload_representable`, `review_seam_single_creation` in
+  `commands/spec/review.lib.sh` (spec 0052).
 
 ### PreToolUse hook tool enumeration
 
@@ -1205,6 +1317,33 @@ Introduced by spec 0010. When adding a new language dispatcher to `speccraft-gua
 - Must remain stack-agnostic. No language- or framework-specific examples in default templates.
 - Mirror the schema of the live `.speccraft/` files at the repo root, but with placeholder content.
 
+### A capability key added to host-owned config is OPT-OUT; absence means permissive
+
+Introduced by spec 0052.
+
+`.speccraft/agents.toml`, like every file `/speccraft:init` copies into a host repo,
+is **owned by that repo** and is never rewritten by an upgrade. So a new key added to
+its schema must be **opt-out**: absence means the permissive value, and only an
+explicit negative changes behavior.
+
+- **Why.** Spec 0052's `reference_read` was drafted as required-and-absent-means-false.
+  **Every already-initialized repo lacks the key**, so on the first `git pull` every
+  configured reviewer would have become ineligible — an operationally breaking upgrade
+  delivered by a schema change nobody ran. Absent → `true`; only
+  `reference_read = false` refuses, with a named message.
+- **Ship the explicit value in the template anyway.** `templates/speccraft/agents.toml`
+  writes `reference_read = true` on every enabled entry, so a **fresh** init produces a
+  file that states its capability rather than depending on the default. The default is
+  for the installed base; the explicit value is for the next reader.
+- **Assert per entry, not per file.** Parse the template agent-by-agent, so an agent
+  added later that omits the flag (or reverts `input` to `argv`) **fails**, rather than
+  passing on a whole-file grep that some other entry satisfies.
+- **The migration nudge belongs in the runtime diagnostic, and the durable one in
+  `/speccraft:sync`.** Spec 0052's argv budget refusal prints the literal
+  `input = "stdin"` and the path `.speccraft/agents.toml`; surfacing a still-`argv`
+  registry in the drift report is filed as the durable follow-up. Rewriting the user's
+  file is not on the list.
+
 ## External-tool boundaries
 
 Introduced by spec 0011.
@@ -1262,3 +1401,37 @@ Two reusable mechanics fell out of this and generalize beyond `--diff`:
   brand-new exported `internal/speccraft` symbol (which does; that is the single
   AC13-budgeted T1 override). `review-snapshot`/`review-diff`/`review-commit` are the
   reference wirings.
+
+### An aux review round: distinct artifact paths, and hash-compare before counting
+
+Introduced by spec 0052, paid for by its own round 1.
+
+Every agent in an aux round MUST be given a **distinct** artifact path, and the
+synthesis MUST **hash-compare the raw outputs before counting verdicts**.
+**Identical hashes across two agents are a dispatch bug, not agreement.**
+
+- **The incident.** Round 1 dispatched both reviewers through `aux-delegator` to the
+  **same** paths. Both returned **byte-identical** YAML — every concern, every
+  suggestion, down to the same `spec 0014 farewell` citation. Two different models do
+  not produce identical output. Re-running both CLIs directly with isolated paths
+  produced three distinct hashes: the surviving round-1 artifact matched **neither**
+  genuine run, and codex's real verdict (5,176 B) differed completely from what had
+  been reported as codex's. The round-1 "codex" report was claude-p's output
+  relabelled. See `specs/.archive/0052-*/review.md` §"Round-1 incident".
+- **Why it is not a nit.** Without the hash check a round reports a quorum of N having
+  actually consulted **one** model — the same failure the whole cross-model review loop
+  exists to prevent, arriving through the dispatch layer instead of through the prompt.
+  It is indistinguishable from real agreement at the quorum layer, and it reads as the
+  *strongest* possible signal (two independent models converging) while being the
+  weakest.
+- **The rule, concretely.** One artifact per agent, named after the agent, inside the
+  round's temp dir (`$REVIEW_ROUND_TMPDIR/<agent>.payload`, `<agent>.digests`). Record
+  the digest of each raw output; if any two match, treat the round as a dispatch
+  failure and do **not** count either verdict. Record the distinct hashes in `review.md`
+  so the check is visible after the fact — this repo has done that since spec 0048
+  ("all six outputs distinct md5s — no false quorum") and spec 0052 made it mechanical
+  rather than a habit.
+- **Canonical reference.** `commands/spec/review.md` step 3 (distinct `$ART`/`$DIG` per
+  agent) and step 4 (hash-compare before counting); the two round predicates in
+  `commands/spec/review.lib.sh` are what a refused or unattested reviewer falls into,
+  so a dispatch bug cannot be laundered into a verdict.
