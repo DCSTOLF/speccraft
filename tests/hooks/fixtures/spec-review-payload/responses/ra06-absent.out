@@ -1,0 +1,9 @@
+```yaml
+verdict: approve-with-comments
+concerns: []
+suggestions: []
+guardrail_violations: []
+convention_violations: []
+```
+
+Free-form discussion after the block, exactly as the shipped CLIs actually wrap it.

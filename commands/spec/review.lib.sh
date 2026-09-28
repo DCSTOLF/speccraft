@@ -852,6 +852,251 @@ review_compose_payload() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Spec 0052 — reference-read attestation, and the registry capability flag.
+#
+# Handing a reviewer a path is only useful if the dispatched process can open
+# files at the dispatched cwd. If it cannot, the reviewer critiques a file it
+# never read and returns a plausible-looking verdict — a WORSE failure than the
+# timeout it replaces, because a timeout is at least legible.
+#
+# An earlier design used a read SENTINEL: a token in each reference record for
+# the reviewer to echo. That attested nothing — the sentinel is IN the prompt, so
+# echoing it proves only that the reviewer read the prompt. The replacement is a
+# digest the reviewer COMPUTES, with the expected value deliberately withheld
+# from the payload, because a digest cannot be produced without the bytes.
+#
+# What this proves, precisely: a process with filesystem access at the dispatched
+# cwd obtained those bytes. It does NOT prove the model reasoned over them — a
+# reviewer could checksum a path without ever bringing the content into context.
+# The weaker guarantee is the intended one: it converts "this agent cannot read
+# files at all, and nobody noticed" from an invisible failure into a mechanical
+# one, which is the failure actually reported from the field.
+# ---------------------------------------------------------------------------
+
+# _review_parse_reference_access <file> — emit a flat, ordered token stream:
+#   HAS-ACCESS                 once, if a reference_access key appears at all
+#   ACCESS-PATH <path>         one per list entry, in order
+#   ACCESS-SHA <digest>        the digest following a path, if any
+#   FAIL-PATH <path>           one per reference_access_failures entry
+#
+# Tolerant of how the shipped CLIs actually wrap YAML — fenced in ```yaml with
+# free-form prose after, values quoted or bare, empty lists written inline as
+# `[]`. A parser too strict for the real wrapping would fail EVERY verdict, and
+# the symptom would look identical to a fleet of unreadable references. The
+# captured round-1..6 corpus under tests/hooks/fixtures is what pins that.
+_review_parse_reference_access() {
+  local file="${1:-}"
+  [ -n "$file" ] && [ -f "$file" ] || {
+    review_error "_review_parse_reference_access: file not found: '${file:-}'"; return 1; }
+  LC_ALL=C awk '
+    function scalar(s,   v) {
+      sub(/^[^:]*:[ \t]*/, "", s)
+      if (substr(s, 1, 1) == "\"") {
+        if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2)
+        return ""
+      }
+      sub(/#.*$/, "", s)
+      gsub(/^[ \t]+|[ \t]+$/, "", s)
+      return s
+    }
+    /^[ \t]*reference_access:[ \t]*\[\]/            { print "HAS-ACCESS"; blk=""; next }
+    /^[ \t]*reference_access:[ \t]*$/               { print "HAS-ACCESS"; blk="access"; next }
+    /^[ \t]*reference_access_failures:[ \t]*\[\]/   { blk=""; next }
+    /^[ \t]*reference_access_failures:[ \t]*$/      { blk="fail"; next }
+    # Any other key at column 0 ends the current block. List items are indented,
+    # so this cannot cut a well-formed block short.
+    /^[A-Za-z_]/ { blk="" }
+    blk == "access" && /^[ \t]*-[ \t]*path:/ { print "ACCESS-PATH " scalar($0); next }
+    blk == "access" && /^[ \t]*sha256:/      { print "ACCESS-SHA " scalar($0); next }
+    blk == "fail"   && /^[ \t]*-[ \t]*path:/ { print "FAIL-PATH " scalar($0); next }
+  ' "$file"
+}
+
+# review_validate_reference_access <response-file> <expected-digests-file>
+# — echo "ok" and exit 0, or echo "invalid:<reason>" and exit non-zero.
+#
+# Validation is EXACT: every expected path present exactly once, no unknown path
+# accepted, every digest equal to the composition-time value, and an empty
+# reference_access_failures. A verdict failing any arm counts toward neither
+# round predicate — the same rule as a timeout.
+#
+# Non-zero exit here, unlike review_budget_check's exit-0 refusal: a budget
+# refusal is a routine policy outcome about OUR payload, while a response that
+# fails validation is a fault in someone else's output.
+review_validate_reference_access() {
+  local resp="${1:-}" expected="${2:-}" parsed line kind value
+  [ -n "$resp" ] && [ -f "$resp" ] || {
+    review_error "review_validate_reference_access: response file not found: '${resp:-}'"; return 2; }
+  [ -n "$expected" ] && [ -f "$expected" ] || {
+    review_error "review_validate_reference_access: expected-digests file not found: '${expected:-}'"; return 2; }
+
+  parsed="$(_review_parse_reference_access "$resp")" || return 2
+  printf '%s\n' "$parsed" | grep -q '^HAS-ACCESS$' || { printf 'invalid:absent\n'; return 1; }
+  if printf '%s\n' "$parsed" | grep -q '^FAIL-PATH '; then
+    review_error "review: the reviewer reported it could not read a reference file"
+    printf 'invalid:read-failure\n'; return 1
+  fi
+
+  # Pair the stream up. A path with no digest before the next path — or at end of
+  # stream — is malformed, not merely unmatched.
+  local pending="" got="" nl=$'\n'
+  while IFS= read -r line; do
+    kind="${line%% *}"; value="${line#* }"
+    case "$kind" in
+      ACCESS-PATH)
+        [ -z "$pending" ] || { printf 'invalid:malformed\n'; return 1; }
+        pending="$value"
+        ;;
+      ACCESS-SHA)
+        [ -n "$pending" ] || { printf 'invalid:malformed\n'; return 1; }
+        got="${got}${pending} ${value}${nl}"
+        pending=""
+        ;;
+    esac
+  done <<EOF
+$parsed
+EOF
+  [ -z "$pending" ] || { printf 'invalid:malformed\n'; return 1; }
+
+  local p d seen="" expect_paths="" ep ed
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    ed="${line%% *}"; ep="${line##*  }"
+    expect_paths="${expect_paths}${ep}${nl}"
+  done < "$expected"
+
+  # Duplicates first: one read presented twice could otherwise cover a path the
+  # reviewer never opened.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    p="${line%% *}"
+    case "$nl$seen" in *"$nl$p$nl"*) printf 'invalid:duplicate-path\n'; return 1 ;; esac
+    seen="${seen}${p}${nl}"
+  done <<EOF
+$got
+EOF
+
+  # Then: no unknown path, then no missing path, then every digest matching.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    p="${line%% *}"
+    case "$nl$expect_paths" in
+      *"$nl$p$nl"*) ;;
+      *) review_error "review: reviewer attested an unexpected path '$p'"; printf 'invalid:unknown-path\n'; return 1 ;;
+    esac
+  done <<EOF
+$got
+EOF
+  while IFS= read -r ep; do
+    [ -n "$ep" ] || continue
+    case "$nl$seen" in
+      *"$nl$ep$nl"*) ;;
+      *) review_error "review: reviewer returned no digest for '$ep'"; printf 'invalid:missing-path\n'; return 1 ;;
+    esac
+  done <<EOF
+$expect_paths
+EOF
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    p="${line%% *}"; d="${line#* }"
+    ed="$(grep -F "  $p" "$expected" | head -1)"; ed="${ed%% *}"
+    [ "$d" = "$ed" ] || {
+      review_error "review: digest mismatch for '$p' (the file changed between composition and review, or was never read)"
+      printf 'invalid:digest-mismatch\n'; return 1
+    }
+  done <<EOF
+$got
+EOF
+  printf 'ok\n'
+}
+
+# ---------------------------------------------------------------------------
+# Spec 0052 — per-agent registry reads.
+#
+# PER AGENT, never a whole-file grep: a whole-file answer would report the first
+# entry's `input` for every agent, which is exactly how an agent added later with
+# `argv` slips past the shipped-template check.
+# ---------------------------------------------------------------------------
+
+# review_agent_names <agents.toml> — echo each [[agents]] name, in file order.
+review_agent_names() {
+  local toml="${1:-}"
+  [ -n "$toml" ] && [ -f "$toml" ] || { review_error "review_agent_names: not found: '${toml:-}'"; return 1; }
+  LC_ALL=C awk '
+    function scalar(s) {
+      sub(/^[^=]*=[ \t]*/, "", s)
+      if (substr(s, 1, 1) == "\"") {
+        if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2)
+        return ""
+      }
+      sub(/#.*$/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s
+    }
+    /^[ \t]*\[\[agents\]\]/ { inblk = 1; next }
+    /^[ \t]*\[/             { inblk = 0 }
+    inblk && /^[ \t]*name[ \t]*=/ { print scalar($0) }
+  ' "$toml"
+}
+
+# review_agent_field <agents.toml> <agent> <key> — echo the value, or nothing.
+review_agent_field() {
+  local toml="${1:-}" agent="${2:-}" key="${3:-}"
+  [ -n "$toml" ] && [ -f "$toml" ] || { review_error "review_agent_field: not found: '${toml:-}'"; return 1; }
+  [ -n "$agent" ] && [ -n "$key" ] || { review_error "review_agent_field: agent and key required"; return 1; }
+  LC_ALL=C awk -v want="$agent" -v key="$key" '
+    function scalar(s) {
+      sub(/^[^=]*=[ \t]*/, "", s)
+      if (substr(s, 1, 1) == "\"") {
+        if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2)
+        return ""
+      }
+      sub(/#.*$/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s
+    }
+    function flush() {
+      if (name == want && val != "") print val
+      name = ""; val = ""
+    }
+    /^[ \t]*\[\[agents\]\]/ { flush(); inblk = 1; next }
+    /^[ \t]*\[/             { flush(); inblk = 0 }
+    inblk && /^[ \t]*name[ \t]*=/ { name = scalar($0); next }
+    inblk {
+      k = $0
+      sub(/=.*$/, "", k)
+      gsub(/[ \t]/, "", k)
+      if (k == key) val = scalar($0)
+    }
+    END { flush() }
+  ' "$toml"
+}
+
+# review_agent_reference_read <agents.toml> <agent> — echo "true" | "false".
+#
+# OPT-OUT: an ABSENT flag means true. Making absence mean "incapable" would have
+# been an operationally breaking upgrade — every already-initialized repo lacks
+# the key, so every configured reviewer would become ineligible on the first
+# `git pull`. Only an explicit `reference_read = false` refuses reference-tier
+# dispatch.
+review_agent_reference_read() {
+  local flag
+  flag="$(review_agent_field "$1" "$2" reference_read)" || return 1
+  case "$flag" in
+    false) printf 'false\n' ;;
+    *)     printf 'true\n' ;;
+  esac
+}
+
+# review_reference_read_message <agent> — the named refusal for an agent that has
+# opted out of reference-tier dispatch.
+review_reference_read_message() {
+  local agent="${1:-}"
+  printf "review: NOT dispatching a reference-tier payload to '%s' — it declares\n" "$agent"
+  printf '  reference_read = false in .speccraft/agents.toml, meaning it cannot open\n'
+  printf '  files at the dispatched cwd. A reviewer that cannot read a reference would\n'
+  printf '  return a plausible verdict on a file it never opened, which is worse than\n'
+  printf '  the timeout this budget replaces. Remove the flag once the agent can read\n'
+  printf '  files, or leave it excluded from reference-tier rounds.\n'
+}
+
 # review_reviewed_sha256 <review.md> — echo the single usable reviewed_sha256
 # value, or return non-zero. "Usable" (spec 0035 AC8) = exactly one line matching
 # the anchored grammar ^reviewed_sha256: <64 lowercase hex>$. Zero, multiple, or

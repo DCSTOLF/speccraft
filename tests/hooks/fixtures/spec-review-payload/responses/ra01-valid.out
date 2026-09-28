@@ -1,0 +1,15 @@
+```yaml
+verdict: approve-with-comments
+concerns: []
+suggestions: []
+guardrail_violations: []
+convention_violations: []
+reference_access:
+  - path: ".speccraft/architecture.md"
+    sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  - path: ".speccraft/conventions.md"
+    sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+reference_access_failures: []
+```
+
+Free-form discussion after the block, exactly as the shipped CLIs actually wrap it.

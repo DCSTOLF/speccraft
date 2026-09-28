@@ -6,31 +6,49 @@
 review_quorum = 1     # how many aux agents must agree for /spec:review
 review_timeout_s = 600
 
+# `input` is "stdin" for every shipped agent, deliberately. A review payload is
+# large, and `argv` passes the WHOLE prompt as a single command-line argument:
+# `claude -p` on argv has a working limit around 70 KB, and a 622 KB payload
+# reported from the field timed out at 600 s with no verdict and no diagnostic.
+# stdin has no such limit. Only set `argv` for a CLI that genuinely requires it.
+#
+# `reference_read = true` says the agent can open files at the dispatched cwd,
+# which is what lets it receive reference-tier context as a path plus a heading
+# index instead of a full paste. The flag is OPT-OUT — an absent key means true,
+# so repos initialized before it existed keep working — but it is written out
+# explicitly here so a fresh /speccraft:init does not depend on that default.
+
 [[agents]]
 name = "codex"
 mode = "cli"
 cmd = ["codex", "exec", "--full-auto"]
 input = "stdin"       # "stdin" | "argv" | "file"
+reference_read = true
 strengths = ["refactoring", "review"]
 
 [[agents]]
 name = "opencode"
 mode = "cli"
 cmd = ["opencode", "run"]
-input = "argv"
+input = "stdin"
+reference_read = true
 strengths = ["analysis", "planning"]
 
 [[agents]]
 name = "claude-p"
 mode = "cli"
 cmd = ["claude", "-p"]
-input = "argv"
+input = "stdin"
+reference_read = true
 strengths = ["general"]
 
-# Opt-in ACP. Requires `acpx` installed.
+# Opt-in ACP. Requires `acpx` installed. Note that ACP is invoked as
+# `acpx <agent> <prompt>` — argv transport, so it is subject to the argv byte
+# limit even though it carries no `input` key.
 [[agents]]
 name = "codex-acp"
 mode = "acp"
 acp_agent = "codex"
+reference_read = true
 strengths = ["refactoring"]
 enabled = false

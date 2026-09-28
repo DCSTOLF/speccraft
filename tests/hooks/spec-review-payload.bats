@@ -18,6 +18,10 @@ setup() {
   PLUGIN_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
   LIB="$PLUGIN_DIR/commands/spec/review.lib.sh"
   FIX="$PLUGIN_DIR/tests/hooks/fixtures/spec-review-payload"
+  # Derived paths belong HERE, not at file scope: a top-level `RESP="$FIX/…"`
+  # would expand before setup() runs and silently resolve to "/responses".
+  RESP="$FIX/responses"
+  EXPECTED_DIGESTS="$RESP/expected-digests.txt"
   export PATH="$PLUGIN_DIR/bin:$PATH"
   TEST_DIR="$(mktemp -d)"
 }
@@ -1163,4 +1167,232 @@ STUB
   run bash -c "grep -iE 'implement|analyze' '$PLUGIN_DIR/agents/aux-delegator.md'"
   [ "$status" -eq 0 ]
   [ "$output" = "$(cat "$FIX/golden/aux-delegator-nonreview.golden")" ]
+}
+
+# The validator's VERDICT is its stdout; the review_error detail rides on stderr,
+# which bats merges into $output — so the verdict is the LAST line. Asserting
+# equality against the whole of $output would fail on the diagnostic that makes
+# a rejection useful.
+assert_reason() {
+  [ "$(printf '%s\n' "$output" | tail -1)" = "$1" ] || {
+    echo "want verdict '$1', got: $output" >&2
+    return 1
+  }
+}
+
+# ---- AC25/AC26/AC28: attestation, capability, shipped template ------------
+#
+# A matching digest establishes that a process with filesystem access at the
+# dispatched cwd obtained the referenced bytes. It does NOT establish that the
+# model reasoned over them — a reviewer could checksum a path without ever
+# bringing the content into context. The guarantee is deliberately the weaker
+# one: it converts "this agent cannot read files at all, and nobody noticed"
+# from an invisible failure into a mechanical one, which is the failure actually
+# reported from the field.
+
+@test "review_validate_reference_access accepts a well-formed response" {
+  source "$LIB"
+  run review_validate_reference_access "$RESP/ra01-valid.out" "$EXPECTED_DIGESTS"
+  [ "$status" -eq 0 ]
+  assert_reason "ok"
+}
+
+@test "review_validate_reference_access tolerates unquoted YAML scalars" {
+  source "$LIB"
+  # The shipped CLIs are not consistent about quoting. A parser that only
+  # accepted one spelling would fail every verdict from whichever CLI chose the
+  # other, which looks exactly like a reviewer that cannot read files.
+  run review_validate_reference_access "$RESP/ra09-unquoted.out" "$EXPECTED_DIGESTS"
+  [ "$status" -eq 0 ]
+  assert_reason "ok"
+}
+
+@test "a missing expected path is rejected" {
+  source "$LIB"
+  run review_validate_reference_access "$RESP/ra02-missing-path.out" "$EXPECTED_DIGESTS"
+  [ "$status" -ne 0 ]
+  assert_reason "invalid:missing-path"
+}
+
+@test "an unknown path is rejected" {
+  source "$LIB"
+  run review_validate_reference_access "$RESP/ra03-unknown-path.out" "$EXPECTED_DIGESTS"
+  [ "$status" -ne 0 ]
+  assert_reason "invalid:unknown-path"
+}
+
+@test "a wrong digest is rejected" {
+  source "$LIB"
+  run review_validate_reference_access "$RESP/ra04-wrong-digest.out" "$EXPECTED_DIGESTS"
+  [ "$status" -ne 0 ]
+  assert_reason "invalid:digest-mismatch"
+}
+
+@test "duplicate entries for one path are rejected" {
+  source "$LIB"
+  # Otherwise one read could be presented twice to cover a path never opened.
+  run review_validate_reference_access "$RESP/ra05-duplicate-path.out" "$EXPECTED_DIGESTS"
+  [ "$status" -ne 0 ]
+  assert_reason "invalid:duplicate-path"
+}
+
+@test "an absent reference_access block is rejected" {
+  source "$LIB"
+  run review_validate_reference_access "$RESP/ra06-absent.out" "$EXPECTED_DIGESTS"
+  [ "$status" -ne 0 ]
+  assert_reason "invalid:absent"
+}
+
+@test "an entry with no sha256 is rejected as malformed" {
+  source "$LIB"
+  run review_validate_reference_access "$RESP/ra08-no-digest.out" "$EXPECTED_DIGESTS"
+  [ "$status" -ne 0 ]
+  assert_reason "invalid:malformed"
+}
+
+@test "a non-empty reference_access_failures is rejected even when every digest matches" {
+  source "$LIB"
+  # The digests are all correct in this fixture: the verdict is refused because
+  # the reviewer itself reported it could not read a reference.
+  run review_validate_reference_access "$RESP/ra07-failures-nonempty.out" "$EXPECTED_DIGESTS"
+  [ "$status" -ne 0 ]
+  assert_reason "invalid:read-failure"
+}
+
+@test "every CAPTURED historical reviewer response yields a named reason, never a parser crash" {
+  source "$LIB"
+  local f out
+  # The corpus is 12 real round-1..6 outputs from this spec's own review. They
+  # predate the schema, so they must be REJECTED — but with `invalid:absent`,
+  # the reason that says "this response has no attestation", not with a parse
+  # error. A validator too strict for how the CLIs actually wrap YAML would fail
+  # every verdict, and it would look like a fleet of unreadable references.
+  for f in "$RESP"/historical/*.out; do
+    run review_validate_reference_access "$f" "$EXPECTED_DIGESTS"
+    [ "$status" -ne 0 ] || { echo "$f unexpectedly validated"; return 1; }
+    case "$output" in
+      invalid:absent) ;;
+      *) echo "$f gave '$output', want invalid:absent (a parser failure would show up here)"; return 1 ;;
+    esac
+  done
+}
+
+@test "the validator's reason enum is exhaustively pinned" {
+  source "$LIB"
+  local f out
+  # A new reason value must be added here deliberately, not discovered by a
+  # caller switching on the known ones.
+  for f in "$RESP"/ra0*.out; do
+    out="$(review_validate_reference_access "$f" "$EXPECTED_DIGESTS" || true)"
+    case "$out" in
+      ok|invalid:absent|invalid:malformed|invalid:missing-path|invalid:unknown-path|invalid:duplicate-path|invalid:digest-mismatch|invalid:read-failure) ;;
+      *) echo "unknown validator verdict '$out' for $f"; return 1 ;;
+    esac
+  done
+}
+
+@test "a failed attestation counts toward neither predicate and is reported in its own category" {
+  source "$LIB"
+  make_spec_dir
+  # The linkage AC25 requires: the same rule as a timeout.
+  run review_responses_complete "$(outcomes 'codex attestation-failed digest-mismatch' 'claude-p approve')"
+  [ "$status" -eq 1 ]
+  run review_approval_quorum_met 2 "$(outcomes 'codex attestation-failed digest-mismatch' 'claude-p approve')"
+  [ "$status" -eq 1 ]
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'codex attestation-failed digest-mismatch' 'claude-p approve')"
+  printf '%s\n' "$output" | grep -qF 'attestation-failure: codex digest-mismatch'
+  printf '%s\n' "$output" | grep -qxF 'status: draft'
+}
+
+# ---- AC26: the registry capability flag, opt-out --------------------------
+
+@test "review_agent_reference_read is true when the flag is absent, true when true, false only for an explicit false" {
+  source "$LIB"
+  local t="$TEST_DIR/agents.toml"
+  cat > "$t" <<'TOML'
+[[agents]]
+name = "no-flag"
+input = "stdin"
+
+[[agents]]
+name = "yes-flag"
+input = "stdin"
+reference_read = true
+
+[[agents]]
+name = "no-read"
+input = "stdin"
+reference_read = false
+TOML
+  # OPT-OUT, deliberately. Making absence mean "incapable" would have been an
+  # operationally breaking upgrade: every already-initialized repo lacks the
+  # key, so every configured reviewer would go ineligible on the first git pull.
+  run review_agent_reference_read "$t" no-flag;  [ "$output" = "true" ]
+  run review_agent_reference_read "$t" yes-flag; [ "$output" = "true" ]
+  run review_agent_reference_read "$t" no-read;  [ "$output" = "false" ]
+}
+
+@test "review_agent_field reads a per-agent value and does not bleed across blocks" {
+  source "$LIB"
+  local t="$TEST_DIR/agents.toml"
+  cat > "$t" <<'TOML'
+[[agents]]
+name = "first"
+input = "stdin"
+
+[[agents]]
+name = "second"
+input = "argv"
+TOML
+  # A whole-file grep would answer "stdin" for both, which is how an agent added
+  # later with argv slips past AC28.
+  run review_agent_field "$t" first input;  [ "$output" = "stdin" ]
+  run review_agent_field "$t" second input; [ "$output" = "argv" ]
+  run review_agent_field "$t" first nosuch; [ -z "$output" ]
+}
+
+@test "a reference_read = false agent is refused with the named message" {
+  source "$LIB"
+  run review_reference_read_message codex-sandboxed
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qF 'codex-sandboxed'
+  printf '%s\n' "$output" | grep -qF 'reference_read = false'
+}
+
+@test "agents/aux-delegator.md frontmatter lists Read" {
+  # Confirm-only: handing a reviewer a path is useless if the dispatched agent
+  # cannot open files, and it fails WORSE than a timeout — a plausible verdict
+  # on a file never read.
+  run sed -n '1,/^---$/p;/^tools:/p' "$PLUGIN_DIR/agents/aux-delegator.md"
+  printf '%s\n' "$output" | grep -qE '^tools:.*\bRead\b'
+}
+
+# ---- AC27 (prompt half) / AC28: the shipped templates ---------------------
+
+@test "templates/prompts/review.md carries the reference_access schema and the read-it-yourself instruction" {
+  local t="$PLUGIN_DIR/templates/prompts/review.md"
+  grep -qF 'reference_access:' "$t"
+  grep -qF 'reference_access_failures:' "$t"
+  grep -qF 'sha256' "$t"
+  grep -qiF 'your own tools' "$t"
+  # An unreadable reference must invalidate the verdict, stated to the reviewer
+  # rather than merely enforced behind its back.
+  grep -qiF 'does not count' "$t"
+}
+
+@test "templates/speccraft/agents.toml sets stdin per agent, retains no argv, and flags every enabled entry" {
+  source "$LIB"
+  local t="$PLUGIN_DIR/templates/speccraft/agents.toml" name enabled
+  run review_agent_field "$t" claude-p input; [ "$output" = "stdin" ]
+  run review_agent_field "$t" opencode input; [ "$output" = "stdin" ]
+  # Parsed PER AGENT, so an agent added later with argv fails here rather than
+  # passing on a whole-file grep.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ "$(review_agent_field "$t" "$name" input)" != "argv" ] || {
+      echo "agent '$name' still ships input = argv"; return 1; }
+    enabled="$(review_agent_field "$t" "$name" enabled)"
+    [ "$enabled" = "false" ] || [ "$(review_agent_field "$t" "$name" reference_read)" = "true" ] || {
+      echo "enabled agent '$name' carries no explicit reference_read = true"; return 1; }
+  done < <(review_agent_names "$t")
 }
