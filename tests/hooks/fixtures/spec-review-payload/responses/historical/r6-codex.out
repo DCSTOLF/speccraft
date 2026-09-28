@@ -1,0 +1,27 @@
+```yaml
+verdict: changes-requested
+concerns:
+  - "The composition API has no defined channel for returning the composition-time reference digests. `review_compose_payload` returns only composed bytes on stdout, the digest must not appear in those bytes, and the caller must retain it for response validation. The contract is therefore incomplete and cannot be implemented without an undocumented global, sidecar, extra file, or second scan."
+  - "Reference-file presence semantics conflict. Section 1 says architecture.md and conventions.md are exactly the fixed reference tier; AC7 says a missing reference file is an error, but also treats a host repository with neither file as a legitimate empty reference set. The specification never defines how the driver distinguishes legitimate absence from erroneous omission."
+  - "The exact-byte guarantee for argv/acp transport is under-specified. Passing a file's contents as one argument normally requires shell capture, which strips trailing newlines; the spec identifies that problem during composition but does not define or test the file-to-argv conversion that must preserve those bytes."
+  - "The digest attestation proves that a process with filesystem access obtained the referenced bytes, not that the reviewer actually incorporated the files into its review. A reviewer can checksum a path without exposing its contents to the model. The specification repeatedly makes the stronger claim that the digest proves the reviewer read the material."
+  - "The payload is defined as UTF-8, but the only representability validation specified is rejection of NUL bytes. Invalid UTF-8 and locale-sensitive heading processing remain undefined, so two supported hosts can compose different records or accept input outside the stated payload domain."
+suggestions:
+  - "Define a concrete two-channel composer contract, such as separate payload and metadata file descriptors, or a driver-owned metadata artifact with an explicit schema and lifecycle. Pin that the metadata contains expected path/digest pairs, is never dispatched, and is derived during the same reference scan."
+  - "Define reference discovery explicitly: for example, the driver supplies every existing member of the fixed reference table, while absence is legitimate only when confirmed during discovery; a supplied path disappearing before composition is the named error. Add race and partial-presence cases."
+  - "Specify the exact file-to-argv/acp encoding algorithm, including preservation of all trailing newlines, and test multiple trailing newlines at the actual mocked CLI boundary rather than comparing only the artifact."
+  - "Reword digest claims as filesystem-access and byte-identity attestation, or add a mechanism that places selected reference content in the model-visible response context if semantic consultation must genuinely be demonstrated."
+  - "Either define inputs as arbitrary NUL-free bytes and force locale-stable processing, or validate UTF-8 explicitly before composition and pin invalid-UTF-8 behavior."
+guardrail_violations: []
+convention_violations: []
+```
+
+## Discussion
+
+The overall direction is strong: fixed tiers, pre-dispatch refusal, separate completeness and approval predicates, inert incomplete rounds, and deferring snapshot promotion all address real failure modes. The acceptance criteria are unusually careful about portability and false-positive tests.
+
+The blocking issue is the missing digest return path. The specification requires one scan to produce four outcomes: byte size, heading index, payload reference record, and a private expected digest. Yet the pinned function exposes only stdout, which is defined to contain the payload and forbidden from containing the digest. This is not merely an implementation detail; it determines whether the single-scan, no-second-copy, and no-digest-leak invariants can coexist.
+
+The argv guarantee also needs to cover the last transport step. Redirecting composer stdout into an artifact prevents composition-time newline loss, but it does not itself preserve bytes when that artifact is converted back into a single argv value. A sentinel-based capture or equivalent can solve this, but the contract and boundary test must say so.
+
+Finally, digest validation is useful, but its security claim should be narrower. It demonstrates access to the exact file version and prevents a reviewer that cannot reach the repository from silently qualifying. It cannot demonstrate that the model considered the contents; a wrapper can calculate the digest independently. That distinction matters because the specification currently presents attestation as resolving the silent-plausibility hazard completely.

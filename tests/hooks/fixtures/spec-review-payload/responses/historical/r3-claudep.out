@@ -1,0 +1,35 @@
+```yaml
+verdict: approve-with-comments
+concerns:
+  - "AC7 asserts a behavioral single-scan invariant via a FIFO fixture, but the spec doesn't fix whether review_compose_payload is shell or Go. If it stays in review.lib.sh (shell), a single scan that yields BOTH byte size and heading index requires a specific implementation shape (one awk pass emitting both) that AC7 pins by outcome but not by construction. Clarify: is the composer shell (as review.lib.sh implies) or does part of it move to a new speccraft-state subcommand? A Go implementation lands the invariant naturally; a shell one needs careful test authoring."
+  - "AC17 says 'every shipped reviewer agent's frontmatter tools: must include Read', but the reviewers that fail in the field are external CLIs (codex, claude-p, opencode) invoked via aux-delegator — those CLIs have no frontmatter under agents/*.md. The frontmatter check applies to aux-delegator itself (and any subagent-based reviewer). Rename or scope: 'every subagent whose role includes reviewer dispatch must have Read'. The external-CLI half of the contract is 'cwd is the spec's root plus the CLI has native file-read capability', which AC17 gestures at but should own explicitly. Otherwise a reader assumes some agents/foo.md file governs codex."
+  - "AC18 pins the composer-before-dispatch ordering by line position in review.md. That's a fragile predicate — a legitimate reorganization of the runbook (moving a summary block up) breaks it without changing behavior. Consider a stronger predicate: assert composer AND budget-check appear before the dispatch marker (whichever line each lands on), using named markers or a source-scan that finds all three and asserts their relative index."
+  - "REVIEW_MAX_PAYLOAD_BYTES = 262144 is derived from a single observation (this spec's own round 2 at 193 KB, next power of two). A follow-on spec 8 KB longer than this one would refuse under it. AC13 provides the env override as an escape hatch, which is fine, but the derivation comment should include the raise-me protocol so a later contributor doesn't rediscover the constraint by triggering a refusal in CI."
+  - "The refusal message for the both-limits case (AC11 says refuse:payload-limit wins, AC12 says both limits are named) has a subtle interaction: the enum tells the caller which remedy applies, but a payload-limit-with-argv-also-exceeded message that names the migration line will read as 'try stdin' — the very remedy AC12 forbids for payload-limit. Verify the message wording is authored so the two named limits don't imply contradictory remedies. Suggest: 'payload also exceeds argv-limit (agents in stdin mode would still be refused)'."
+suggestions:
+  - "Add a numbered AC for a fixture proving that a review round where every reviewer refuses on budget leaves a stable state.json.tmp / atomicRename counter at zero — the seam already exists (spec 0035), and asserting through it makes AC15's 'zero atomic-rename operations' predicate concrete rather than inferred from log absence."
+  - "AC10 skips when specs/.archive/ is absent, which is correct for a fresh clone. Consider a companion fixture-based AC that composes over a bundled fixture spec whose size is known and hand-crafted, so the ratio assertion has a deterministic counterpart independent of the live tree. Two ACs, one dynamic (proves 'today's real state fits'), one static (proves 'the mechanism works')."
+  - "The prompt-template contract (AC18's 'sentinels must be echoed, unreadable reference invalidates the verdict') is critical to AC16 biting. Consider adding a fixture recorded-response asserting: a reviewer that echoes the sentinel of one file but not the other counts neither way. AC16 says this, but a concrete fixture pins it against future prompt-template drift."
+  - "Consider stating explicitly that the composer NEVER logs the full inline payload to disk (a debug path caching bytes to /tmp defeats the argv-limit refusal). Not in scope of the current spec's bytes-on-the-wire framing, but a one-liner in Out of scope or a note in AC3 prevents an implementer from adding a 'save composed prompt for debug' feature that reintroduces the failure by a side channel."
+  - "AC4 pins avoidance of interval expressions in review.lib.sh via source scan. Consider widening the scan to any new .lib.sh added by this spec's implementation (in case helpers get factored into a sibling file), so the invariant doesn't quietly move out from under the guard."
+guardrail_violations: []
+convention_violations: []
+```
+
+## Discussion
+
+This is one of the strongest specs I've reviewed in this repo. It shows the discipline the memory files reward: measurement over intuition (622 KB observed, 121,256 bytes of conventions.md today, this spec's own round-2 composed to 193,123 bytes), boundary framing over feature framing ("this spec makes review survive large memory files; it does not make the files small"), and defensive posture at every seam (the reference-tier prerequisite audit, the mawk-interval hazard, the reason-enum exhaustive pin, the reads-attested contract).
+
+**What's especially good:**
+
+- **The mawk trap is caught pre-implementation** (AC4). This is exactly the conventions.md "prove every negative assertion bites" discipline applied forward. A source-scan-only guard would pass with a working GNU-grep extractor and a broken mawk one; the behavioral arm bites.
+- **The two-predicate split** (AC14) directly protects spec 0035 AC2, which conflating "did every reviewer answer" with "how many approved" would silently regress. The `changes-requested` case gets a named test.
+- **AC15's atomic-rename-counter predicate** is the right proof for an inert round. Byte-equality would pass if the writer wrote-and-restored; the seam count only decreases if the write path is never entered.
+- **AC17 pins the aux-delegator cwd contract as an existing behavior** rather than proposing a change — matching the memory that says this is already how `.speccraft/architecture.md:211` describes it. The spec avoids growing the surface it depends on.
+- **The Out of Scope section does real work.** Rejecting `getconf ARG_MAX`, auto-stdin-fallback, and section-scoped excerpting each with a stated reason means a reviewer can't push those back in without arguing against a written rationale.
+
+**What I'd want the plan to make concrete:**
+
+The composer's language (shell vs Go) determines a lot about how AC7's single-read constraint is met and how AC4 is even possible to violate — shell awk vs Go `regexp` have different silent-failure modes. The spec implicitly points at `review.lib.sh`, i.e. shell, which lines up with the review-lib pattern. But then AC7's FIFO test is doing real work — the naive implementation (`wc -c "$f"` then `grep -nE '^## |^### ' "$f"`) reads twice, and the fixture would fail correctly. Good, actually. Just make sure the plan lands the composer in a shape where "single scan" is provable, not asserted-and-hoped.
+
+Everything else is polish. This is close to ship-ready as a spec.

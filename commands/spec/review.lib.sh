@@ -13,6 +13,113 @@
 
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Spec 0052 — payload tiering and heading extraction.
+#
+# Tier membership is a FIXED TABLE, not a heuristic over the spec's content and
+# not a size threshold: a file is inline or reference by identity, so the
+# payload's shape cannot drift with the day's file sizes. Anything not in a
+# table is an ERROR, never a silent default — `.speccraft/history.md` included,
+# which this spec deliberately does not add to what a reviewer sees.
+# ---------------------------------------------------------------------------
+
+# Pasted verbatim: small, and guardrails in particular must be unmissable.
+REVIEW_INLINE_SET=".speccraft/guardrails.md .speccraft/index.md"
+# Sent as path + byte size + heading index; the reviewer reads what it needs.
+REVIEW_REFERENCE_SET=".speccraft/architecture.md .speccraft/conventions.md"
+
+review_error() { echo "$*" >&2; }
+
+# _review_repo_relative <path> — echo <path> relative to the repository root.
+# Absolute paths under the root are stripped to their repo-relative form; a
+# leading `./` is removed; anything else is returned unchanged (and will fail
+# the tier lookup, which is the point).
+_review_repo_relative() {
+  local p="$1" root
+  root="$(speccraft-state find-root 2>/dev/null || pwd)"
+  case "$p" in
+    "$root"/*) p="${p#"$root"/}" ;;
+    ./*)       p="${p#./}" ;;
+  esac
+  printf '%s\n' "$p"
+}
+
+# review_context_tier <path> — echo "inline" | "reference", or fail with a
+# named error.
+#
+# The comparison is against the FULL repo-relative path, never the trailing
+# basename. Matching on the basename would classify `vendor/other/.speccraft/
+# conventions.md`, or a spec document that happens to be called
+# `conventions.md`, as reference-tier — silently admitting a foreign file to
+# the payload, or worse, omitting a real one's body on the assumption the
+# reviewer can find it.
+review_context_tier() {
+  local path="${1:-}" rel entry
+  [ -n "$path" ] || { review_error "review_context_tier: path required"; return 1; }
+  rel="$(_review_repo_relative "$path")"
+  for entry in $REVIEW_INLINE_SET; do
+    [ "$rel" = "$entry" ] && { printf 'inline\n'; return 0; }
+  done
+  for entry in $REVIEW_REFERENCE_SET; do
+    [ "$rel" = "$entry" ] && { printf 'reference\n'; return 0; }
+  done
+  review_error "review_context_tier: '$path' is not a known context file (tier table: $REVIEW_INLINE_SET $REVIEW_REFERENCE_SET)"
+  return 1
+}
+
+# review_heading_index <file> — emit every `^## ` and `^### ` heading, in file
+# order, and nothing else.
+#
+# PORTABILITY, load-bearing: the heading match uses anchored literal forms
+# (`/^## /`, `/^### /`) and NEVER a regex INTERVAL EXPRESSION (a brace-delimited
+# repetition count) on the hash run. This devcontainer runs mawk, which does not
+# implement interval expressions and matches NOTHING for that form — silently,
+# with exit 0. The identical spelling works under GNU `grep -E`, so the
+# divergence is invisible without running it (cf.
+# commands/history/compact.lib.sh:26, which spells the four-digit year as a
+# bracket run rather than a repetition count for the same reason).
+#
+# The forbidden spelling is deliberately not written out here: this file sits
+# under a scanned root, and tests/hooks/portability-guard.bats clause (f) flags
+# the form in comments too, by design. The literal lives in that guard's
+# fixtures and in tests/hooks/spec-review-payload.bats, both outside the scan.
+#
+# Fence grammar: a fence opens on a line whose first non-space run is three or
+# more backticks or three or more tildes, and closes only on a line of the SAME
+# character at the SAME OR GREATER length. An unclosed fence suppresses headings
+# to end of file. Runs under LC_ALL=C so two hosts with different locales cannot
+# produce different records from the same bytes.
+review_heading_index() {
+  local file="${1:-}"
+  [ -n "$file" ] || { review_error "review_heading_index: file required"; return 1; }
+  [ -e "$file" ] || { review_error "review_heading_index: $file not found"; return 1; }
+  LC_ALL=C awk '
+    # Length of the leading run of character c in s (interval-free).
+    function runlen(s, c,   n) {
+      n = 0
+      while (substr(s, n + 1, 1) == c) n++
+      return n
+    }
+    {
+      line = $0
+      sub(/\r$/, "", line)          # CRLF checkouts must not alter the record
+      probe = line
+      sub(/^[ ]*/, "", probe)       # a fence may be indented
+      fc = substr(probe, 1, 1)
+      n  = 0
+      if (fc == "`" || fc == "~") n = runlen(probe, fc)
+
+      if (infence) {
+        # Close only on the same character at >= the opening length.
+        if (n >= 3 && fc == fence_char && n >= fence_len) infence = 0
+        next
+      }
+      if (n >= 3) { infence = 1; fence_char = fc; fence_len = n; next }
+      if (line ~ /^## / || line ~ /^### /) print line
+    }
+  ' "$file"
+}
+
 # review_reviewed_sha256 <review.md> — echo the single usable reviewed_sha256
 # value, or return non-zero. "Usable" (spec 0035 AC8) = exactly one line matching
 # the anchored grammar ^reviewed_sha256: <64 lowercase hex>$. Zero, multiple, or

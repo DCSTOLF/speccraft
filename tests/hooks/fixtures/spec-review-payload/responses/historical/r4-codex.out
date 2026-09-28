@@ -1,0 +1,27 @@
+```yaml
+verdict: changes-requested
+concerns:
+  - "The reference-path contract is contradictory: §1/AC5 say reviewers receive repo-relative architecture.md and conventions.md paths, while §5 says they are dispatched against temporary snapshot paths. Reading the repo-relative path does not guarantee reading the snapshotted bytes whose digest is validated."
+  - "The dispatch ownership is incomplete. The current agents/aux-delegator.md independently prefixes the review template, inlines context_files, materializes file-mode input, and parses responses best-effort. The specification moves composition, materialization, budgeting, and strict schema validation into review.lib.sh without defining a replacement precomposed-payload contract for aux-delegator."
+  - "AC17 makes an absent reference_read flag a refusal, but existing repositories are explicitly not migrated. Every existing agents.toml lacks the new flag, so upgrading the plugin can make all configured reviewers immediately ineligible, with no specified migration or even a required capability-specific remediation message."
+  - "ACP capability and transport semantics are unresolved. §3 normalizes ACP/no-input entries to stdin, while the current aux-delegator invokes ACP as acpx <agent> <prompt>, which is argv transport; AC17 defines reference_read only for external CLI entries and does not say whether ACP entries require it."
+  - "The temporary snapshot location is unspecified. A snapshot outside the repository may be unreadable to a sandboxed external CLI, while a snapshot inside the repository needs an explicit naming, collision, cleanup, and exposure contract. A declarative reference_read flag alone cannot guarantee access to that path."
+  - "The heading-index grammar is insufficiently defined for the requirement to ignore fenced content. AC3 mentions one fenced fixture but does not define supported fence characters, delimiter lengths, indentation, closing-fence rules, or unclosed fences, leaving conforming implementations able to disagree."
+suggestions:
+  - "Define a reference record with two distinct fields, such as display_path for the stable repo-relative identity and read_path for the round snapshot. Require the reviewer to hash read_path but return display_path, and validate that explicit mapping."
+  - "Add an explicit precomposed-payload dispatch API to aux-delegator: it should accept the payload artifact path, expected reference identities/digests, cwd, and input mode; it must not re-prefix, re-compose, or create another prompt copy. Pin this contract directly in agents/aux-delegator.md and tests."
+  - "Specify an upgrade path for reference_read, such as a /speccraft:sync drift item plus an exact refusal remediation line, or an intentional compatibility rule for known legacy entries. Add reference_read = true to every capable shipped template entry."
+  - "Define ACP separately: its actual prompt transport, payload limits, cwd behavior, and reference-read capability must be tested rather than normalized to stdin by assumption."
+  - "Place round snapshots in a named mode-0700 temporary directory under a location guaranteed readable by the dispatched CLI, and specify snapshot file permissions, stable mapping, cleanup behavior, and failure handling."
+  - "Adopt a precise fenced-block grammar for review_heading_index and add fixtures for backtick and tilde fences, longer delimiters, info strings, unclosed fences, and pseudo-closing lines."
+guardrail_violations: []
+convention_violations: []
+```
+
+The overall direction is strong: fixed context tiers, pre-dispatch refusal, separation of completeness from approval quorum, and digest-based access attestation directly address the reported failure without weakening review provenance.
+
+The blocking issue is that the proposal currently describes two different files as the reference. If the reviewer reads `.speccraft/conventions.md`, it may read bytes different from the snapshot and fail attestation despite doing exactly what the payload requested. If it reads a temporary snapshot path, the payload is no longer providing the specified repo-relative path. A two-path identity/read contract resolves this cleanly.
+
+The implementation boundary also needs to be made explicit. Today `aux-delegator` owns composition and transport. Adding `review_compose_payload` to the command layer does not by itself stop the delegator from adding another template, inlining context again, or producing a second file for `input = "file"`. This risks both incorrect budgets and violation of the “only materialize once” rule. The spec should designate one component as the sole byte-producing owner and change the delegator contract accordingly.
+
+Finally, the capability rollout is operationally breaking as written. Refusing absent flags is defensible, but only with a deliberate migration story. Otherwise every initialized repository upgrades into a state where its reviewers are rejected before dispatch, including repositories whose agents can already read files.

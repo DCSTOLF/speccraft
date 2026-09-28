@@ -1,0 +1,40 @@
+```yaml
+verdict: approve-with-comments
+concerns:
+  - "The Why section says the current command sends spec.md + index.md + guardrails.md + architecture.md + conventions.md — history.md is NOT listed. But AC1 requires `.speccraft/history.md` to classify as `reference`, silently expanding what the reviewer sees. Either say so explicitly in Why (and justify the expansion) or drop history.md from the REFERENCE tier. As written this is a scope creep hidden inside a boundary change."
+  - "REVIEW_MAX_ARGV_BYTES=65536 has an explicit, defensible derivation (the ~70 KB working limit rounded down to a power of two). REVIEW_MAX_PAYLOAD_BYTES=262144 does not — there is no field number that motivates 256 KB over 128 KB or 512 KB. The spec insists on a rationale comment beside the argv constant for exactly this reason; hold the payload constant to the same bar or a later contributor will 'obviously' raise it and reintroduce a mystery timeout."
+  - "AC11's 'unread reference is not a verdict' rule depends on the reviewer honestly self-reporting a Read failure. There is no proposed mechanism for the composer/dispatcher to independently verify a reference was opened. Combined with the Out-of-Scope acknowledgement that stdin/argv parity is not tested, this leaves a real gap: a reviewer that silently 502s on a reference file and returns a plausible verdict IS counted. Either name a check the caller can perform (e.g. the reviewer must echo a per-file sentinel), or record this as a known-gap the same way the stdin/argv parity is."
+  - "AC11 also asserts each agent 'is invoked with its working directory set to the repository root'. The architecture note says `aux-delegator` currently scopes cwd to the *member repo* — this is a real, specific choice that may not be the same for `spec:review` today. If the AC is CHANGING existing dispatch cwd, say so; if it is only PINNING existing behavior, say so. As written the reader can't tell."
+  - "The composer must classify by explicit path against the repo root (AC1), and the reviewer prompt tells the agent to open reference files with 'its own tools' (AC11). But subagent frontmatter carries an explicit `tools:` allow-list (per Markdown-frontmatter conventions). If a reviewer's `allowed-tools:` does not include Read, the reference-tier design silently fails: the agent cannot open the file, and per AC11 it should self-invalidate — but if it doesn't, it silently critiques air. The spec should require Read (or equivalent) in each reviewer agent's `allowed-tools:`, and pin it in AC13 or a new AC."
+  - "AC6 dynamically selects 'the largest archived `spec.md`'. `specs/.archive/` is a spec-0025 side-effect and may be empty in a fresh clone or in a fixture-only worktree. The test needs a documented fallback (skip? synthesize? require the fixture directory?) or it will flap in exactly the environments most likely to run it (CI on a shallow checkout, contributor's first bats run)."
+suggestions:
+  - "AC7 says `refuse:payload-limit` wins when both limits are exceeded. Consider surfacing BOTH reasons in the refusal message when both bite, even if only one is the returned enum value. A user hitting both should see 'switching to stdin would still not save you' explicitly, not infer it from message diffing."
+  - "Add an AC (or extend AC9) for what happens on a REFERENCE-tier file that doesn't exist on disk (e.g. no `history.md` in a fresh repo). Silent omission vs error is a real choice the composer must make once, and the current text is silent."
+  - "Consider pinning the CRLF/BOM behavior of `review_heading_index` in AC2 the same way you pin the fenced-code-block case — awk/grep line-orientation makes CRLF a real cross-environment gotcha and this spec's whole reason for AC3 is that silent cross-environment divergence."
+  - "AC10 pins byte-equality AND zero atomic-rename operations. Consider also pinning that `review-snapshot.md` is NOT re-written on an inert round — the spec-0035 `AtomicWriteFile` seam makes this cheap, and it removes another silent-clobber failure mode from the below-quorum path."
+  - "Consider naming the 1024 floor in AC9 as a constant (`REVIEW_MIN_LIMIT_BYTES`?) rather than a magic literal — it is small enough that a maintainer would 'obviously' relax it, and the spec doesn't record the reason (the compiled default is 64K, so anything under 1K is definitionally a config bug)."
+guardrail_violations: []
+convention_violations: []
+```
+
+## Discussion
+
+This is a strong, well-motivated spec. The problem statement is grounded in a real field measurement (622 KB / claude-p 70 KB limit), the exposure in this repo is quantified (121 KB conventions.md, 38 KB architecture.md), and the "size asymmetry the fix exploits" table gives the reader the intuition for why the tiered approach is 40× cheaper without hand-waving. The awareness of the `mawk` interval-expression trap (§"Two hazards found while reviewing this spec" + AC3 pinning it two ways) demonstrates real convention absorption, not just lip service — that would have shipped as a spec-0050-class silent divergence otherwise.
+
+The acceptance criteria show unusually good "prove every negative assertion bites" discipline: AC4 spells out the fixture-inline-observe-fail-revert loop for the sentinel-not-emitted check; AC7 pins the reason enum exhaustively so a future refuse-value can't leak past AC8's message assertions; AC10 pins byte-equality AND zero atomic-rename operations at the seam; AC13 pins positively (sources the lib, calls the composer, calls the budget check BEFORE dispatch — ordering asserted by line position) rather than only negatively. AC6's ratio-not-count assertion is the spec-0014 "structural over content" rule applied to a live-file test.
+
+My real concerns are two shape issues and two under-specified surfaces:
+
+1. **The unexplained history.md inclusion** is the most concrete one — Why lists five files that are pasted today, AC1 requires classifying six, and if the sixth was never in the payload before then this spec is quietly EXPANDING reviewer context under the banner of bounding it. This is a five-word clarification in Why.
+
+2. **The unread-reference honesty problem** is the deepest one. The whole spec pivots on reviewers reading paths with their own tools; AC11 says an unread reference invalidates the verdict; but nothing in the composer or dispatcher verifies that reading actually happened. Combined with the Out-of-Scope stdin/argv parity gap, we're stacking two "we trust the CLI to behave" assumptions in a spec whose motivation is precisely that a CLI was misbehaving silently. A per-file sentinel-echo requirement would close it cheaply.
+
+3. **REVIEW_MAX_PAYLOAD_BYTES=262144 has no derivation on the record**, which contradicts the spec's own principle (documented for ARGV_BYTES) that a later contributor should not be able to raise the limit without confronting the reason it exists.
+
+4. **AC11's dispatch-cwd contract may or may not be a behavioral change** — the reader genuinely cannot tell from the text. If it's the same as today, say "pinned, unchanged"; if it's different from `aux-delegator`'s member-repo cwd, say "changed from X because Y."
+
+The `allowed-tools:` concern (Read must actually be listed) is technically covered by AC11's "reference file it cannot read makes its verdict invalid" clause — but that's runtime failure detection, not prevention. Requiring Read in agent frontmatter is the cheaper and more mechanical fix.
+
+Nothing here violates a hard rule from guardrails.md, and I don't see a convention violation — the spec explicitly follows the `HISTORY_WINDOW_N` constant precedent, the fixture-first meta-guard regime, the two-pin (source-scan + behavioral) discipline, and the AtomicWriteFile seam. The `templates/speccraft/agents.toml` change to `input = "stdin"` stays stack-agnostic.
+
+I'd approve on a revision that (a) reconciles history.md, (b) records the 256 KB derivation, (c) either closes or records the honesty gap, and (d) clarifies whether the cwd contract is changing.

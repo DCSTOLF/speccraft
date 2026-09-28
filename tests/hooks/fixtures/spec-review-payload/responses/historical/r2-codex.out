@@ -1,0 +1,30 @@
+```yaml
+verdict: changes-requested
+concerns:
+  - "The scoped --diff composition contract is incomplete: review_compose_payload has no inputs for the prior review, diff, or changed_sections, so it cannot preserve the existing re-review payload semantics."
+  - "Quorum is defined inconsistently as both a count of returned verdicts and the configured count of approving verdicts; the inert-round rule is therefore ambiguous for valid reject or changes-requested responses."
+  - "The specification provides no machine-readable way to detect that a reviewer reported an unreadable reference, despite requiring such a verdict to be excluded from quorum."
+  - "Input-mode handling is incomplete: the existing registry permits file input and ACP agents may not have an input field, while the proposed checks and diagnostics define only argv and stdin."
+  - "The tier invariant is not pinned at the composer boundary, allowing a caller to place a reference-tier file in the inline argument list and defeat the payload bound."
+  - "The environment-override behavior is contradictory: invalid values are described as rejected with an error while also falling back to the compiled default."
+  - "AC5's source scan for one read per reference file does not provide a well-defined or reliable behavioral proof of single-read consistency."
+suggestions:
+  - "Define one composition API for both full and scoped reviews, including the frozen spec, prior review, diff, and changed-section data, and test the complete emitted payload for each branch."
+  - "Separate response completeness from approval quorum, and specify independently when synthesis, review.md persistence, fingerprint commit, and status transition occur."
+  - "Add a structured reviewer result field for reference-read failures and define how malformed or missing capability attestations are classified."
+  - "Require review_compose_payload to classify and validate every supplied path itself, rejecting tier mismatches and unrecognized paths."
+  - "Define budget behavior for argv, stdin, file, and ACP dispatch explicitly, including how an absent input mode is normalized."
+  - "Replace the AC5 source scan with an instrumented behavioral test using a single-use FIFO or equivalent read-counting fixture."
+guardrail_violations: []
+convention_violations: []
+```
+
+The overall direction is strong: fixed context tiers, pre-dispatch refusal, preservation of the prior review on incomplete rounds, and portable heading extraction directly address the reported failure. The blockers are contract gaps at the integration boundaries rather than a problem with the core design.
+
+Most importantly, the proposed composer cannot currently represent the existing scoped-review payload. `review_build_payload` substitutes `{{DIFF}}` and `{{CHANGED_SECTIONS}}`, then includes both the frozen snapshot and prior review. The new signature only accepts a template, spec file, inline files, and reference files. The spec must say whether the old helper first creates a temporary populated template, whether the composer gains explicit scoped-review arguments, or whether another composition layer remains. That choice also affects what bytes are measured.
+
+The quorum terminology also needs normalization. Existing configuration describes `review_quorum` as the number of approving agents, while the new text sometimes treats it as the number of agents returning any verdict. For example, two valid `changes-requested` verdicts may satisfy response completeness but cannot satisfy an approval quorum of one. The specification should name these as separate predicates, such as `required_responses_complete` and `approval_quorum_met`, and state the artifact behavior for every combination.
+
+AC11 requires reliable detection of unread references, but the mandated YAML result has no corresponding field. Searching arbitrary concern text for a phrase would be nondeterministic. A structured field such as `reference_access_failures: [...]`, or an explicit non-verdict result envelope, is needed.
+
+Finally, validation should live at the authority boundary. Because `review_compose_payload` accepts pre-separated lists, testing `review_context_tier` alone does not prevent accidental inline inclusion of `architecture.md` or `conventions.md`. The composer itself should classify every path and reject a misplaced argument; otherwise the central payload guarantee depends on every caller remembering the policy.

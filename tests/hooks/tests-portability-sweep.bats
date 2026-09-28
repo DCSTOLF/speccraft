@@ -44,8 +44,22 @@ mention_only_filter() {
     | grep -vE "grep -rnE|grep -qE|grep -nE|grep -vE|gnu_form_pattern" \
     | grep -vE "^[^:]+:[0-9]+:@test " \
     | grep -vE "make_gnu_tool|make_bsd_path|make_versioned_tool|for t in " \
-    | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum"
+    | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum" \
+    | grep -vE "^[^:]+/fixtures/[^:]+:[0-9]+:"
 }
+
+# Why the fixtures/ exclusion is a scope boundary and not a hole: everything
+# under tests/hooks/fixtures/ is inert DATA, read by a test and never sourced or
+# executed as shell. The distinction this sweep draws is "does a file in the
+# suite RUN a GNU-only form on the macOS runner", and a fixture cannot, by
+# construction — the suites open these paths with grep/cat, never with `.` or
+# `bash`. Spec 0052's captured reviewer corpus is the case that forced this:
+# those files are verbatim transcripts in which a reviewer ARGUES about
+# `sha256sum` portability, and rewording them to appease a scanner would destroy
+# the only property that makes them useful as fixtures.
+#
+# The boundary is auditable: a fixture that ever needs to be executed must be
+# moved out of fixtures/, at which point the sweep sees it again.
 
 # executing_files — the files in tests/hooks that actually RUN a GNU-only form.
 executing_files() {
@@ -85,7 +99,17 @@ executing_files() {
   #     fallback idiom, not an unguarded execution, and the `executing_files`
   #     filter exempts the probe spelling specifically. Before this spec the file
   #     piped straight into the GNU tool and failed on every BSD runner.
+  #   fixtures/spec-review-payload/responses/historical/r4-claudep.out — added by
+  #     spec 0052. It is a CAPTURED reviewer response from this spec's own round-4
+  #     review, in which the reviewer argued that `sha256sum` is GNU-only and that
+  #     the digest primitive needed the same guard as the awk-interval trap. The
+  #     file is inert test DATA: it is read by the attestation validator's
+  #     tolerance test and never executed as shell. It is pinned here rather than
+  #     reworded because the corpus's value is that it is verbatim — editing a
+  #     captured response to appease a scanner would destroy the property that
+  #     makes it a useful fixture.
   expected="$(printf '%s\n' \
+    fixtures/spec-review-payload/responses/historical/r4-claudep.out \
     frontmatter-writer-guard.bats \
     init-workspace.bats \
     no-gnu-userland.bats \

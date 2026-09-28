@@ -1,0 +1,26 @@
+```yaml
+verdict: changes-requested
+concerns:
+  - "ACP is explicitly defined as argv transport subject to both budgets, but AC11 does not specify or test an ACP input mode; it exhaustively covers only argv, stdin, file, and absent input. The implementation could therefore exempt ACP while satisfying the acceptance criteria."
+  - "The exact-byte dispatch contract is incomplete for argv transport. POSIX argv cannot represent an embedded NUL byte, while the specification neither forbids NULs in input files nor defines a pre-dispatch rejection. Consequently, the promised equivalence between the materialized artifact and bytes reaching the CLI is not guaranteed for all permitted inputs."
+  - "Temporary payload cleanup is required only when the round ends, without specifying signal, interruption, or abnormal-exit handling. A crash could leave a mode-0600 but potentially sensitive full review prompt behind indefinitely."
+  - "AC7b's claim that no second payload copy is written 'anywhere' is not bounded to an observable filesystem seam. Without defining the directories or write operations under observation, this requirement is difficult to prove reliably and risks another vacuous negative assertion."
+suggestions:
+  - "Add ACP to review_budget_check's normalized mode contract and AC11 boundary table, explicitly requiring the argv limit and payload limit for ACP."
+  - "Either reject payloads containing NUL before dispatch with a named diagnostic, or explicitly constrain all composed inputs to NUL-free UTF-8 text and test that boundary."
+  - "Require an EXIT/HUP/INT/TERM cleanup trap installed immediately after temp-directory creation, and test both normal cleanup and an interrupted round."
+  - "Define the no-second-copy invariant at concrete write seams and locations, such as instrumenting every review payload materialization and aux-delegator file creation, rather than asserting absence across an unspecified filesystem."
+  - "Keep review_compose_payload side-effect-free by having it emit the composed stream to a caller-owned descriptor; let the command driver create the sole 0600 artifact and pass its path to budgeting and dispatch."
+guardrail_violations: []
+convention_violations:
+  - rule: "Sourceable command helpers in commands/<group>/<name>.lib.sh must be pure functions with no filesystem mutations."
+    location: "§6 'The payload is materialized once and measured as dispatched' and AC7b, together with §2 assigning review.lib.sh sole byte-producing ownership."
+```
+
+The overall design is strong: fixed tiers avoid heuristic drift, refusal is correctly separated from a shell failure, response completeness is correctly separated from approval quorum, and digest attestation addresses the most dangerous “plausible review without file access” failure. The inert-round semantics and deferred snapshot promotion are particularly well reasoned.
+
+The blocking issue is that the acceptance criteria do not fully pin the transport matrix promised by the normative text. ACP is the field most likely to overflow, yet it is absent from AC11’s exhaustive mode behavior. That gap directly undercuts the motivating failure.
+
+There is also an architectural mismatch around `review.lib.sh`. Repository convention defines command libraries as pure, sourceable function collections, but this spec makes the library responsible for creating the payload artifact. The clean split is for the library to deterministically compose bytes to a supplied descriptor while the command driver owns the one permitted file creation, cleanup trap, budget check, and dispatch lifecycle. This preserves both the materialize-once invariant and the established command-library contract.
+
+Finally, “same bytes” needs a representability boundary. Trailing newlines can be preserved with careful Bash implementation, but embedded NUL cannot cross `execve` as argv. A named early rejection is preferable to leaving an absolute byte-identity claim that cannot always be implemented.

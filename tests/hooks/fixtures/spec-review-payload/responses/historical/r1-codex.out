@@ -1,0 +1,29 @@
+```yaml
+verdict: changes-requested
+concerns:
+  - "Acceptance criterion 2 pins exact heading counts against live .speccraft memory files (55 and 6), even though those files are explicitly expected to evolve; an unrelated spec close can therefore break this suite without changing the payload feature."
+  - "The quorum transaction is underspecified when some agents return verdicts but refusals leave the result below quorum: the spec defines the all-refused case, but not whether cross-reviewer runs, whether review.md is written or replaced, or whether an existing reviewed_sha256 remains unchanged in the partial-refusal case."
+  - "The design assumes every configured external reviewer can resolve repo-relative paths and read repository files with its own tools, but it neither defines the required working directory/tool capability nor specifies a preflight or fallback for an agent that accepts stdin yet cannot access those files."
+  - "Environment overrides have no validation contract. Empty, non-decimal, zero, negative, or mutually inconsistent REVIEW_MAX_ARGV_BYTES and REVIEW_MAX_PAYLOAD_BYTES values could cause shell arithmetic failures, unsafe interpretations, or ambiguous refusal reasons."
+  - "Acceptance criterion 10's example, REVIEW_MAX_ARGV_BYTES=1 review_budget_check 2 stdin, does not exercise a refusal: by criterion 5 the argv limit does not apply to stdin, and 2 bytes remains below the default payload limit."
+  - "The budget is defined as composed-payload bytes, but the argv failure boundary may include wrapper arguments, quoting/encoding transformations, environment size, and command-specific prefixes. The specification does not state whether the 65,536-byte limit is intentionally only a conservative payload policy or is meant to guarantee successful process creation."
+  - "Acceptance criterion 11's proposed meta-test checks only that full-paste instructions are absent. It does not durably prove that review.md sources review.lib.sh, calls the tiered composer, or performs the budget check before dispatch, so the command can regress while the helper unit tests remain green."
+  - "The refusal remedy is not fully defined for the global payload limit. Switching input to stdin fixes only argv-limit refusals; if spec.md, guardrails.md, index.md, the template, or generated indexes exceed REVIEW_MAX_PAYLOAD_BYTES, the required actionable message needs a distinct, concrete remedy."
+suggestions:
+  - "Replace exact assertions over mutable live memory with controlled fixtures for heading extraction, and keep only stable relational assertions over dogfood files, such as output matching the current heading lines, excluding body-only markers, and remaining materially smaller than the source."
+  - "Define one below-quorum rule for all causes: do not invoke cross-reviewer, do not write or replace review.md, do not commit reviewed_sha256, leave status draft, and report every refusal plus every obtained verdict."
+  - "Require dispatch to establish the repository root as the reviewer working directory and add an agent capability contract or explicit refusal for configurations that cannot read referenced files."
+  - "Validate both overrides as positive base-10 integers, define behavior when the argv limit exceeds the global limit, and specify deterministic precedence when both limits are exceeded."
+  - "Change the AC10 example to REVIEW_MAX_ARGV_BYTES=1 review_budget_check 2 argv, and separately test REVIEW_MAX_PAYLOAD_BYTES=1 review_budget_check 2 stdin."
+  - "Add integration-level bats assertions over the command runbook for the positive source/compose/check-before-dispatch sequence, not only a negative grep for obsolete prose."
+guardrail_violations: []
+convention_violations: []
+```
+
+The core direction is sound: keeping authoritative guardrails inline, replacing ever-growing architectural memory with paths plus indexes, and refusing oversized dispatches before consuming the timeout directly addresses the reported failure. The per-agent distinction between argv and stdin is also appropriate.
+
+The largest correctness gap is the partial-refusal transaction. “Refused agents do not count” establishes quorum arithmetic, but it does not say what happens to artifacts once one or more usable reviews exist. That path must be as explicit as the all-refused case; otherwise an implementation could overwrite a valid prior `review.md`, invoke `cross-reviewer` without quorum, or advance the review fingerprint despite an incomplete round.
+
+The live-file tests are another blocking issue. In particular, asserting exactly 55 convention headings conflicts with the specification’s own premise that project memory changes over time. A feature test should verify the extraction algorithm against a fixture; a dogfood test may verify useful size relationships, but should not freeze unrelated repository history.
+
+Finally, reference-tier delivery creates a new reviewer capability requirement. Supplying a path is useful only if the dispatched process starts in the correct repository and the reviewer has filesystem tools. That should be part of the dispatch contract rather than an implicit expectation in prompt prose.

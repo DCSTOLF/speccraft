@@ -1,0 +1,39 @@
+```yaml
+verdict: approve-with-comments
+concerns:
+  - "AC25 depends on 'captured historical reviewer responses from this spec's own review rounds' — the spec doesn't say whether these are committed as fixtures. If they aren't, the AC is untestable at plan time. Clarify: are these existing artifacts under specs/0052-review-prompt-size-budget/reviews/, or does the plan need to introduce them?"
+  - "The 'bytes exactly as handed to the CLI' guarantee explicitly excludes 'any quoting or wrapper the CLI adds' (§3). For argv-mode agents this means the measured byte count is a lower bound on what the kernel sees. REVIEW_MAX_ARGV_BYTES is documented as a conservative floor, but there's no criterion asserting the wrapper overhead is bounded (e.g. that the CLI doesn't shell-escape into a 2× expansion for a payload heavy in single quotes). This is probably fine in practice — 65536 vs ~70 KB working limit has ~7% headroom — but the risk should be named in Out of scope or Open questions."
+  - "AC17's dynamic largest-archive selection with lexicographic tiebreaker is deterministic today but the target file changes as archives grow. A future spec that adds a massive archived spec.md could push the payload over REVIEW_MAX_ARGV_BYTES and turn AC17 into a flaky failure that surfaces only on a specific archive state. AC18's static counterpart mitigates this ('proves the mechanism works') but AC17's failure mode (a real archived spec too large to compose) is a legitimate finding, not a bug in the test. Consider whether AC17 should assert 'largest current archive fits OR compaction is required' rather than pure fits-under-limit."
+  - "AC26's opt-out `reference_read = true` default is well-justified operationally, but has a latent surprise: a repo whose owner deliberately configures a reviewer they intend to be inline-only cannot express that intent by omission — they must remember to set `reference_read = false`. The alternative (opt-in) breaks all existing repos, which is worse. This tradeoff is stated but the diagnostic when a reviewer with `reference_read = false` is present in the round should probably NOT suggest 'set to true' as remedy without context — the user set it false deliberately."
+  - "The spec touches every layer (Go? no; shell libs, agent frontmatter, templates, prompts, tests) but is silent on speccraft-drift interaction. `templates/prompts/review.md` and the shell lib may contain `enforce:` regex patterns from the review prompt itself as strings; drift's regex scan (per architecture.md) excludes `.speccraft/` and `specs/**` but not `templates/`. Verify a review-prompt string doesn't accidentally trip drift, particularly the digest attestation prose that will mention YAML shapes."
+suggestions:
+  - "AC5 pins the interval-guard scope to 'every commands/spec/*.lib.sh this spec adds or touches.' Consider widening to 'every file this spec touches under commands/**' — the awk-interval trap is symmetric across command libs, and a future refactor moving heading-index logic outside commands/spec/ (say to commands/lib/) would silently escape the guard. The scope choice is defensible but the wider form matches the fixture-first-per-tool regime documented in conventions.md."
+  - "The Notes for the plan section is a good departure. Consider adding one more note about override-budget planning: the JSON-envelope-boundary RED technique (spec 0031/0048) applies here since `review.lib.sh` is shell — new shell functions don't hit the internal-package bootstrap trap, but any new speccraft-state subcommand (if the plan reaches for one for digest computation) does. Flag this explicitly so the plan author doesn't reach for a Go helper by reflex."
+  - "AC10's 'measured bytes = wc -c of dispatched artifact' assertion is elegant but only proves equality within a single process. Consider adding one line clarifying that the assertion holds across the trap-driven cleanup path too — if a signal fires between measurement and dispatch, the artifact must still be the dispatched bytes (AC12 covers cleanup existence but not measurement-vs-dispatch under interrupt)."
+  - "The empty-reference-set marker in AC7 says 'an explicit \"none\" marker rather than omitted' — pin the exact marker text so two implementations cannot produce different markers. Suggest: `_(none configured)_` or similar, whichever the plan settles on, but literal-string exact."
+  - "For AC21's REVIEW_MIN_LIMIT_BYTES = 1024 constant, consider stating a REVIEW_MAX_LIMIT_BYTES ceiling too. Nothing in the current spec prevents `REVIEW_MAX_ARGV_BYTES=999999999` from being accepted as a valid override, and while that produces its own natural failure downstream (the CLI just rejects the invocation), a documented ceiling would give the refusal shape a sensible tail rather than an OS-dependent one."
+guardrail_violations: []
+convention_violations: []
+```
+
+---
+
+## Discussion
+
+This spec is exceptionally well-constructed. The evidence is concrete (622 KB from tessera-cdc; 193 KB latent here today), the mechanism is minimal (a byte budget and a tier table, not a compaction system), and the design has clearly been through multiple review rounds — the retired read-sentinel proposal and the awk-mawk hazard read as scars from actual review, not theoretical worries.
+
+**What's particularly strong:**
+
+- **AC29 codifying "prove every negative assertion bites"** with checked-in forbidden fixtures directly applies the spec 0049 lesson. This is the right way to spend that lesson forward.
+- **AC5's dual pinning** (source scan + behavioral mawk test) is exactly the shape spec 0050's BSD-grep failure taught us to build. The mawk quirk is a real trap and the "widen to any commands/spec/*.lib.sh this spec touches" scope is the right generalization.
+- **The digest-attestation design** is genuinely clever: the composer computes it and *withholds* it, so a reviewer cannot echo what it did not read. Killing the read-sentinel in favor of this is the right call.
+- **AC24 sequencing the promote-deferral against inert rounds** — this catches a real spec 0035 anchor-mutation bug that would silently mis-baseline. Non-obvious and correct.
+- **The composer-emits-to-stdout, driver-redirects-once design** avoids the command-substitution trailing-newline strip. This is the kind of detail that a less careful spec would fumble and only discover in production.
+
+**Where I'd push:**
+
+The scale is real — 29 ACs, multiple new helpers, changes to `aux-delegator`, template flip, prompt template rewrite, new digest attestation, four new refusal reasons, new budget constants. The spec acknowledges this in "Notes for the plan" (group, do not atomize), but the plan author is going to have to be disciplined about the override budget. The JSON-envelope-boundary technique that spec 0048 refined applies well here — most of this work is shell, but if the plan reaches for a Go helper, that decision is where override budget can leak.
+
+The AC25 fixture question is the one thing I'd want clarified before planning starts, because if those historical reviewer responses aren't already recorded somewhere, the AC needs a mechanism for the plan to introduce them (which changes the plan's shape).
+
+Overall: this is a real fix for a real, imminent failure, and the design is right. Approve with the comments above addressed either in the spec or noted for the plan.

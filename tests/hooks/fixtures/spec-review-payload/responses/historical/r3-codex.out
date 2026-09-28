@@ -1,0 +1,27 @@
+```yaml
+verdict: changes-requested
+concerns:
+  - "The read-sentinel protocol does not attest that a reference file was opened: the payload gives the sentinel to the reviewer, so it can echo the token without reading the file. This does not support the claim that silent reference-access failures become checkable."
+  - "The result-schema change is incomplete. Only reference_access_failures is defined, while the location, shape, and validation rules for echoed sentinels are unspecified. It is therefore unclear how responses_complete deterministically validates a response, handles duplicate or unknown sentinels, or maps each sentinel to a reference."
+  - "The specification does not preserve identity between the bytes indexed during composition and the bytes later read by the reviewer. A reference file can change after its size and headings are recorded, so the review can cover different content from the context record without detection."
+  - "The claim that shipped reviewers can read referenced files is not fully established. AC17 checks agents/*.md frontmatter and cwd, but the affected auxiliary CLIs are configured through agents.toml; frontmatter Read permission does not prove that codex, claude-p, and opencode have filesystem access in their dispatched modes."
+  - "The byte-exact composition contract lacks a byte-preserving transport API. If the shell implementation captures composer output with command substitution, trailing newlines are stripped; shell variables also cannot represent NUL bytes. The spec must define whether composition is materialized in a file, emitted directly, or restricted to a validated text domain so the measured bytes necessarily equal the dispatched bytes."
+suggestions:
+  - "Replace disclosed sentinels with a content-derived proof that is not included in the prompt, such as requiring each reviewer to return a SHA-256 digest it computes after reading the file and comparing it with a digest computed from the composition-time snapshot."
+  - "Define a concrete response field such as reference_access: [{path, sha256}] and specify exact validation: every expected path appears exactly once, no unknown paths are accepted, every digest matches, and failures or malformed entries invalidate the verdict."
+  - "Snapshot each reference once during composition and either dispatch reviewers against immutable snapshot paths or require returned digests to match the composition-time snapshot; state cleanup and permissions for snapshots explicitly."
+  - "Add capability tests at the actual auxiliary-CLI dispatch boundary, or introduce an explicit registry capability such as reference_read = true and refuse reference-tier dispatch when it is absent."
+  - "Make review_compose_payload write to a named file or file descriptor and run review_budget_check with wc -c over that exact artifact before the same artifact is dispatched."
+guardrail_violations: []
+convention_violations: []
+```
+
+The overall direction is strong: fixed tier membership, pre-dispatch refusal, separate completeness and approval predicates, inert incomplete rounds, and durable behavioral tests address the reported failure coherently. The main blocker is that the proposed attestation does not establish what it claims.
+
+A reviewer need not open a file to repeat a token already visible in its prompt. This remains true even if the reviewer is instructed emphatically to use its tools. Consequently, a CLI with no filesystem access—or one that simply overlooks the reference—can still return a structurally valid result. Because the specification describes this mechanism as the direct mitigation for plausible-looking reviews over unread context, the gap is architectural rather than editorial.
+
+A returned content digest is a better fit. The composer can read each reference once, spool those exact bytes, calculate their digest, size, and headings, and retain the expected digest outside the reviewer prompt. The reviewer then reads the referenced artifact and returns its independently calculated digest. Matching the digest simultaneously attests access and detects changes between composition and review. For the strongest transaction, reviewers should read an immutable snapshot rather than a live file.
+
+The byte-budget boundary also needs a concrete representation. “Exactly as handed to the CLI” is a good invariant, but a Bash API returning text via stdout does not inherently preserve bytes when callers use command substitution. A temporary payload file makes the invariant straightforward: compose once, measure that file, then use the same file for stdin, file mode, or argv conversion. If arbitrary bytes are intentionally unsupported because these are Markdown inputs, state and validate that restriction.
+
+With those changes, the specification would be close to approvable.
