@@ -1496,3 +1496,140 @@ largest_archived_spec() {
   run largest_archived_spec "$TEST_DIR/does-not-exist"
   [ "$status" -ne 0 ]
 }
+
+# ---- AC27: the runbook, pinned POSITIVELY and negatively ------------------
+
+# runbook_marker_order <file> — the four named markers must appear in the order
+# source-lib → compose → budget-check → dispatch.
+#
+# Compares FOUND INDICES, never absolute line numbers, so a legitimate
+# reorganisation of the surrounding prose cannot break it without changing
+# behavior. A missing marker is its own failure (exit 2) rather than an ordering
+# one, so deleting a step cannot read as compliance.
+runbook_marker_order() {
+  local f="$1" m i src comp budg disp
+  for m in 'commands/spec/review.lib.sh' 'review_compose_payload' 'review_budget_check' 'review_dispatch_payload'; do
+    grep -qF -- "$m" "$f" || { echo "missing marker '$m' in $f"; return 2; }
+  done
+  src="$(grep -nF -- 'commands/spec/review.lib.sh' "$f" | head -1 | cut -d: -f1)"
+  comp="$(grep -nF -- 'review_compose_payload' "$f" | head -1 | cut -d: -f1)"
+  budg="$(grep -nF -- 'review_budget_check' "$f" | head -1 | cut -d: -f1)"
+  disp="$(grep -nF -- 'review_dispatch_payload' "$f" | head -1 | cut -d: -f1)"
+  [ "$src" -lt "$comp" ] || { echo "lib source ($src) must precede the composer ($comp)"; return 1; }
+  [ "$comp" -lt "$budg" ] || { echo "composer ($comp) must precede the budget check ($budg)"; return 1; }
+  [ "$budg" -lt "$disp" ] || { echo "budget check ($budg) must precede dispatch ($disp) — a check after dispatch prevents nothing"; return 1; }
+  return 0
+}
+
+# runbook_no_full_paste <file> — a reference-tier file may be named ONLY on a
+# line that also names `--reference`.
+#
+# Crisper than hunting for paste-shaped prose, and it bites in both directions:
+# the runbook must still MENTION the reference files (otherwise deleting the
+# mention would satisfy a bare negative), and every mention must be a
+# reference-tier hand-off rather than an instruction to include the body.
+runbook_no_full_paste() {
+  local f="$1" hits bad
+  hits="$(grep -nE '(architecture|conventions)\.md' "$f" || true)"
+  [ -n "$hits" ] || { echo "$f no longer mentions a reference-tier file at all"; return 2; }
+  bad="$(printf '%s\n' "$hits" | grep -vF -- '--reference' || true)"
+  [ -z "$bad" ] || { echo "reference-tier file named outside a --reference hand-off:"; printf '%s\n' "$bad"; return 1; }
+  return 0
+}
+
+@test "commands/spec/review.md sources the lib, composes, and budget-checks BEFORE dispatch" {
+  run runbook_marker_order "$PLUGIN_DIR/commands/spec/review.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "the marker-order checker REJECTS the committed out-of-order fixture" {
+  run runbook_marker_order "$FIX/forbidden/fb06-runbook-order.md"
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | grep -qF 'must precede dispatch'
+}
+
+@test "the marker-order checker distinguishes a MISSING marker from a misordered one" {
+  printf '# a runbook with no markers at all\n' > "$TEST_DIR/bare.md"
+  run runbook_marker_order "$TEST_DIR/bare.md"
+  [ "$status" -eq 2 ]
+}
+
+@test "the marker-order assertion compares found indices, not absolute line numbers" {
+  # Same file, same marker ORDER, every marker on a different absolute line.
+  # An assertion keyed to line numbers would break here; this one must not.
+  { printf 'prose\n%.0s' $(seq 1 40); cat "$PLUGIN_DIR/commands/spec/review.md"; } > "$TEST_DIR/shifted.md"
+  run runbook_marker_order "$TEST_DIR/shifted.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "commands/spec/review.md no longer instructs a full paste of a reference-tier file" {
+  run runbook_no_full_paste "$PLUGIN_DIR/commands/spec/review.md"
+  [ "$status" -eq 0 ]
+}
+
+@test "the no-full-paste checker REJECTS the committed forbidden runbook fixture" {
+  run runbook_no_full_paste "$FIX/forbidden/fb04-runbook-full-paste.md"
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | grep -qF 'conventions.md'
+}
+
+@test "the no-full-paste checker distinguishes a runbook that dropped the mention entirely" {
+  printf '# a runbook that never mentions the reference tier\n' > "$TEST_DIR/silent.md"
+  run runbook_no_full_paste "$TEST_DIR/silent.md"
+  [ "$status" -eq 2 ]
+}
+
+@test "commands/spec/review.md documents the per-agent refusal and the two-predicate gating" {
+  local f="$PLUGIN_DIR/commands/spec/review.md"
+  # Refusal is PER AGENT: one over-budget reviewer must not sink a round that
+  # other reviewers can still complete.
+  grep -qF 'review_refusal_message' "$f"
+  grep -qF 'review_responses_complete' "$f"
+  grep -qF 'review_approval_quorum_met' "$f"
+  grep -qF 'review_agent_reference_read' "$f"
+  grep -qF 'review_validate_reference_access' "$f"
+}
+
+@test "review_agent_cmd turns the TOML cmd array into a dispatchable word list" {
+  source "$LIB"
+  local t="$TEST_DIR/agents.toml"
+  cat > "$t" <<'TOML'
+[[agents]]
+name = "codex"
+cmd = ["codex", "exec", "--full-auto"]
+input = "stdin"
+
+[[agents]]
+name = "claude-p"
+cmd = ["claude", "-p"]
+input = "stdin"
+TOML
+  # review_agent_field returns the RAW value, which for cmd is TOML array text —
+  # passing that to review_dispatch_payload would try to exec `["codex",`.
+  run review_agent_cmd "$t" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "codex exec --full-auto" ]
+  run review_agent_cmd "$t" claude-p
+  [ "$output" = "claude -p" ]
+}
+
+@test "review_agent_cmd resolves the shipped template's agents to runnable commands" {
+  source "$LIB"
+  local t="$PLUGIN_DIR/templates/speccraft/agents.toml" name cmd
+  # Every shipped entry must yield something dispatchable, or the runbook's
+  # dispatch line is broken for it on a fresh /speccraft:init.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ "$(review_agent_field "$t" "$name" mode)" = "acp" ] && continue
+    cmd="$(review_agent_cmd "$t" "$name")"
+    [ -n "$cmd" ] || { echo "agent '$name' yields no command"; return 1; }
+    case "$cmd" in *'['*|*'"'*) echo "agent '$name' cmd is unparsed TOML: $cmd"; return 1 ;; esac
+  done < <(review_agent_names "$t")
+}
+
+@test "commands/spec/review.md initializes the outcomes file it appends to" {
+  local f="$PLUGIN_DIR/commands/spec/review.md"
+  # Every `>> "$OUTCOMES"` in the runbook is dead unless OUTCOMES is assigned.
+  grep -qE '^\s*OUTCOMES=' "$f"
+  grep -qF 'review_agent_cmd' "$f"
+}

@@ -1069,6 +1069,30 @@ review_agent_field() {
   ' "$toml"
 }
 
+# review_agent_cmd <agents.toml> <agent> — echo the agent's command as a
+# space-separated word list.
+#
+# `review_agent_field` returns the RAW value, and for `cmd` that is TOML array
+# text: passing `["codex", "exec", "--full-auto"]` to review_dispatch_payload
+# would try to exec `["codex",`. This flattens it to `codex exec --full-auto`.
+# Arguments containing whitespace are out of scope — no shipped entry has one,
+# and a word list cannot represent it.
+review_agent_cmd() {
+  local raw
+  raw="$(review_agent_field "$1" "$2" cmd)" || return 1
+  [ -n "$raw" ] || return 0
+  LC_ALL=C awk -v s="$raw" '
+    BEGIN {
+      n = 0
+      while (match(s, /"[^"]*"/)) {
+        printf "%s%s", (n++ ? " " : ""), substr(s, RSTART + 1, RLENGTH - 2)
+        s = substr(s, RSTART + RLENGTH)
+      }
+      if (n == 0) printf "%s", s
+      printf "\n"
+    }'
+}
+
 # review_agent_reference_read <agents.toml> <agent> — echo "true" | "false".
 #
 # OPT-OUT: an ABSENT flag means true. Making absence mean "incapable" would have
