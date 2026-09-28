@@ -1159,6 +1159,14 @@ STUB
   grep -qF 'review_dispatch_payload' "$f"
   grep -qF 'precomposed' "$f"
   grep -qiF 'must not' "$f"
+  # AC26's cwd half. bats can pin the INSTRUCTION and the cwd argument, not that
+  # Claude Code launches the subagent there — that needs a credentialed e2e run,
+  # and the spec frames this as pinning existing behavior rather than changing
+  # it. Pinning it here is what stops the instruction being dropped silently: the
+  # payload names reference files by repo-relative path, so a dispatch from the
+  # wrong directory yields a reviewer critiquing files it never opened.
+  grep -qF 'find-root' "$f"
+  grep -qF 'cd "$cwd"' "$f"
 }
 
 @test "aux-delegator's non-review mode instructions are byte-identical to the committed golden" {
