@@ -36,7 +36,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-none
+specs/0052-review-prompt-size-budget/
 
 ## Recent decisions (last 3)
 
