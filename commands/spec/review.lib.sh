@@ -365,6 +365,176 @@ review_finalize_round() {
 }
 
 # ---------------------------------------------------------------------------
+# Spec 0052 — the pre-dispatch byte budget.
+#
+# The failure this replaces is a 600 s timeout, which is the least informative
+# outcome available: ten minutes per agent, no verdict, and no indication
+# whether the model was slow or the prompt never fit. Oversize is discovered
+# HERE, before dispatch, with a remedy specific to the limit that bit.
+# ---------------------------------------------------------------------------
+
+# argv-mode agents only. Derived from the ~70 KB working limit reported from the
+# field (tessera-cdc, 2026-09-25: a 622 KB prompt passed as ONE command-line
+# argument to `claude -p`, timing out inside 600 s), rounded DOWN to a power of
+# two. This is a conservative POLICY FLOOR, not a guarantee of process creation:
+# real ARG_MAX varies (Linux 128 KB–2 MB, macOS 256 KB) and the environment
+# block counts against it. Probing `getconf ARG_MAX` was considered and
+# rejected — the usable limit is not ARG_MAX, and a probe would make the refusal
+# boundary vary by machine, so a review that refuses in CI would pass locally.
+REVIEW_MAX_ARGV_BYTES_DEFAULT=65536
+
+# Every agent, every input mode. Derived from MEASUREMENT, not taste: the
+# largest payload observed to complete successfully against both shipped CLIs is
+# this spec's own round-3 review at 197,238 bytes, and 262144 is the next power
+# of two above it. A payload beyond the largest one ever seen to work is refused
+# rather than attempted.
+#
+# RAISE-ME PROTOCOL, because a spec only modestly longer than this one would
+# refuse under it: do not raise this constant to make a round go through. Raise
+# it only alongside a RECORDED observation of a larger payload completing
+# against both shipped CLIs — and note that the `REVIEW_MAX_PAYLOAD_BYTES`
+# environment override is the documented escape hatch for a one-off, which is
+# why it is validated loudly rather than silently. Discovering the bound by
+# tripping a refusal in CI is the outcome this comment exists to prevent.
+REVIEW_MAX_PAYLOAD_BYTES_DEFAULT=262144
+
+# The floor an override may not go below. Below this the value is definitionally
+# a config bug rather than a policy choice — the compiled default is 64 KB.
+REVIEW_MIN_LIMIT_BYTES=1024
+
+# review_effective_limit <argv|payload> — echo the limit actually in force.
+#
+# The env override is the sanctioned one-shot escape hatch for an oversized
+# round, so a malformed one must be LEGIBLE rather than silent: it warns on
+# stderr naming the offending variable and proceeds with the compiled default.
+# It never aborts the review — refusing to review because a limit was mistyped
+# would trade one unhelpful failure for another.
+review_effective_limit() {
+  local which="${1:-}" var def raw present=0
+  case "$which" in
+    argv)
+      var=REVIEW_MAX_ARGV_BYTES; def="$REVIEW_MAX_ARGV_BYTES_DEFAULT"
+      [ -z "${REVIEW_MAX_ARGV_BYTES+x}" ] || { present=1; raw="$REVIEW_MAX_ARGV_BYTES"; }
+      ;;
+    payload)
+      var=REVIEW_MAX_PAYLOAD_BYTES; def="$REVIEW_MAX_PAYLOAD_BYTES_DEFAULT"
+      [ -z "${REVIEW_MAX_PAYLOAD_BYTES+x}" ] || { present=1; raw="$REVIEW_MAX_PAYLOAD_BYTES"; }
+      ;;
+    *) review_error "review_effective_limit: unknown limit '${which:-}' (want argv|payload)"; return 1 ;;
+  esac
+  [ "$present" -eq 1 ] || { printf '%s\n' "$def"; return 0; }
+  local ok=1
+  case "$raw" in
+    ''|*[!0-9]*) ok=0 ;;
+    *) [ "$raw" -ge "$REVIEW_MIN_LIMIT_BYTES" ] || ok=0 ;;
+  esac
+  [ "$ok" -eq 1 ] || {
+    review_error "review: $var='$raw' is not a usable limit (want a base-10 integer >= $REVIEW_MIN_LIMIT_BYTES); using the compiled default $def"
+    printf '%s\n' "$def"
+    return 0
+  }
+  printf '%s\n' "$raw"
+}
+
+# review_budget_check <bytes> <input-mode> — echo "ok" or "refuse:<reason>" and
+# exit 0 in BOTH cases: a refusal is data, not a shell failure.
+#
+# The mode matrix is taken from what aux-delegator actually does, not from
+# assumption. `acp` is argv transport because aux-delegator invokes it as
+# `acpx <agent> <prompt>` — normalizing it to stdin would have exempted the one
+# mode most likely to overflow. Only an EMPTY/absent mode normalizes to stdin
+# (a registry entry with no `input` key); an unrecognised mode is an error, so
+# the next argv transport somebody adds cannot slip in exempt.
+#
+# `refuse:payload-limit` wins when both are exceeded, deterministically.
+review_budget_check() {
+  local bytes="${1:-}" mode="${2:-}" transport payload_limit argv_limit
+  case "$bytes" in
+    ''|*[!0-9]*) review_error "review_budget_check: bytes must be a base-10 integer (got '${bytes:-}')"; return 1 ;;
+  esac
+  case "$mode" in
+    ''|stdin|file) transport=stream ;;
+    argv|acp)      transport=argv ;;
+    *) review_error "review_budget_check: unknown input mode '$mode' (known: argv, acp, stdin, file; empty normalizes to stdin)"; return 1 ;;
+  esac
+  payload_limit="$(review_effective_limit payload)"
+  [ "$bytes" -le "$payload_limit" ] || { printf 'refuse:payload-limit\n'; return 0; }
+  if [ "$transport" = argv ]; then
+    argv_limit="$(review_effective_limit argv)"
+    [ "$bytes" -le "$argv_limit" ] || { printf 'refuse:argv-limit\n'; return 0; }
+  fi
+  printf 'ok\n'
+}
+
+# review_rank_files <f…> — echo "<bytes>  <repo-relative path>" per file,
+# largest first. The refusal names what is actually big, so the developer is not
+# left to guess which file to compact.
+review_rank_files() {
+  local f
+  for f in "$@"; do
+    [ -e "$f" ] || continue
+    printf '%s  %s\n' "$(LC_ALL=C wc -c < "$f" | tr -d ' ')" "$(_review_repo_relative "$f")"
+  done | sort -rn
+}
+
+# review_refusal_message <agent> <mode> <bytes> <reason> <ranked-files>
+# — the actionable refusal. Names the agent, its input mode, the measured bytes,
+# the limit exceeded (from the RUNTIME effective value, so the diagnostic cannot
+# disagree with the behavior when an override is in play), the oversized files,
+# and a remedy SPECIFIC to the limit: stdin fixes an argv-limit refusal and does
+# nothing at all for a payload-limit one.
+review_refusal_message() {
+  local agent="${1:-}" mode="${2:-}" bytes="${3:-}" reason="${4:-}" ranked="${5:-}"
+  local mode_label="${mode:-stdin (no input key)}" argv_limit payload_limit line
+  printf "review: REFUSING to dispatch '%s' — checked BEFORE the round runs, so this\n" "$agent"
+  printf '  is a named refusal rather than a 600 s timeout with no explanation.\n'
+  printf '  composed payload: %s bytes\n' "$bytes"
+  printf '  input mode: %s\n' "$mode_label"
+  case "$reason" in
+    refuse:argv-limit)
+      argv_limit="$(review_effective_limit argv)"
+      printf '  over the ARGV limit of %s bytes (the whole prompt goes as ONE argument)\n' "$argv_limit"
+      ;;
+    refuse:payload-limit)
+      payload_limit="$(review_effective_limit payload)"
+      printf '  over the PAYLOAD limit of %s bytes (applies to every agent and every mode)\n' "$payload_limit"
+      case "$mode" in
+        argv|acp)
+          argv_limit="$(review_effective_limit argv)"
+          if [ "$bytes" -gt "$argv_limit" ]; then
+            printf '  also over the ARGV limit of %s bytes — but that is not the binding\n' "$argv_limit"
+            printf '  constraint here, and switching transport would not lift this refusal.\n'
+          fi
+          ;;
+      esac
+      ;;
+    *) review_error "review_refusal_message: unknown reason '${reason:-}'"; return 1 ;;
+  esac
+  if [ -n "$ranked" ]; then
+    printf '  largest inline files:\n'
+    printf '%s\n' "$ranked" | while IFS= read -r line; do
+      [ -n "$line" ] && printf '    %s\n' "$line"
+    done
+  fi
+  case "$reason" in
+    refuse:argv-limit)
+      printf '  REMEDY: switch this agent to stdin in .speccraft/agents.toml:\n\n'
+      printf '      input = "stdin"\n\n'
+      printf '    stdin is not subject to the argv limit. Repos already initialized own\n'
+      printf '    their .speccraft/agents.toml and are never rewritten, so the shipped\n'
+      printf "    template's stdin default does not reach this repo on its own.\n"
+      ;;
+    refuse:payload-limit)
+      printf '  REMEDY: compact the oversized memory files named above, or review a\n'
+      printf '    shorter spec. Changing the input mode does NOT help — a stdin-mode agent is still refused above the payload limit.\n'
+      printf '    For a legitimate one-off, REVIEW_MAX_PAYLOAD_BYTES is the sanctioned\n'
+      printf '    escape hatch; raising the compiled default instead requires a recorded\n'
+      printf '    observation of a larger payload completing against both shipped CLIs.\n'
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
 # Spec 0052 — the single composer.
 # ---------------------------------------------------------------------------
 

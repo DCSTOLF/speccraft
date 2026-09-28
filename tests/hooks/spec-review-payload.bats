@@ -755,3 +755,201 @@ a_utf8_locale() {
   [ "$c_out" = "$u_out" ]
   printf '%s\n' "$c_out" | grep -qF '## Ünïcödé — héading'
 }
+
+# ---- AC19/AC20/AC21: the budget, the refusal, the overrides ---------------
+#
+# The failure this replaces is a 600 s timeout — the least informative outcome
+# available: it names neither the cause (payload size) nor the remedy, and at
+# the quorum layer it is indistinguishable from an agent that had nothing to
+# say. Everything below exists so oversize is discovered BEFORE dispatch and
+# reported with the specific remedy for the specific limit.
+
+ARGV_LIMIT=65536
+PAYLOAD_LIMIT=262144
+
+@test "review_budget_check exits 0 for ok and for every refusal" {
+  source "$LIB"
+  # A refusal is DATA, not a shell failure: `if ! review_budget_check` would
+  # otherwise conflate "over budget" with "the helper broke".
+  run review_budget_check 100 stdin
+  [ "$status" -eq 0 ] && [ "$output" = "ok" ]
+  run review_budget_check $((ARGV_LIMIT + 1)) argv
+  [ "$status" -eq 0 ] && [ "$output" = "refuse:argv-limit" ]
+  run review_budget_check $((PAYLOAD_LIMIT + 1)) stdin
+  [ "$status" -eq 0 ] && [ "$output" = "refuse:payload-limit" ]
+}
+
+@test "the input-mode matrix is exhaustive: argv, acp, stdin, file, empty, absent" {
+  source "$LIB"
+  local over_argv=$((ARGV_LIMIT + 1))
+  # argv and acp are BOTH argv transport: aux-delegator invokes ACP as
+  # `acpx <agent> <prompt>`, so exempting it would exempt the mode most likely
+  # to overflow.
+  run review_budget_check "$over_argv" argv; [ "$output" = "refuse:argv-limit" ]
+  run review_budget_check "$over_argv" acp;  [ "$output" = "refuse:argv-limit" ]
+  # stdin and file pass no prompt as an argument, so only the payload limit binds.
+  run review_budget_check "$over_argv" stdin; [ "$output" = "ok" ]
+  run review_budget_check "$over_argv" file;  [ "$output" = "ok" ]
+  # A registry entry with no `input` key normalizes to stdin.
+  run review_budget_check "$over_argv" "";    [ "$output" = "ok" ]
+  run review_budget_check "$over_argv";       [ "$output" = "ok" ]
+}
+
+@test "an unknown input mode is a named error, not a silent normalization to stdin" {
+  source "$LIB"
+  # Only EMPTY normalizes. Treating an unrecognised mode as stdin would exempt
+  # the next argv transport somebody adds to the registry.
+  run review_budget_check 100 telepathy
+  assert_named_failure "telepathy"
+}
+
+@test "each limit is pinned at limit-1, limit and limit+1 with the value AT the limit accepted" {
+  source "$LIB"
+  run review_budget_check $((ARGV_LIMIT - 1)) argv; [ "$output" = "ok" ]
+  run review_budget_check "$ARGV_LIMIT" argv;       [ "$output" = "ok" ]
+  run review_budget_check $((ARGV_LIMIT + 1)) argv; [ "$output" = "refuse:argv-limit" ]
+  run review_budget_check $((PAYLOAD_LIMIT - 1)) stdin; [ "$output" = "ok" ]
+  run review_budget_check "$PAYLOAD_LIMIT" stdin;       [ "$output" = "ok" ]
+  run review_budget_check $((PAYLOAD_LIMIT + 1)) stdin; [ "$output" = "refuse:payload-limit" ]
+}
+
+@test "refuse:payload-limit wins deterministically when both limits are exceeded" {
+  source "$LIB"
+  run review_budget_check $((PAYLOAD_LIMIT + 1)) argv
+  [ "$output" = "refuse:payload-limit" ]
+}
+
+@test "the refusal reason enum is exactly refuse:argv-limit and refuse:payload-limit" {
+  source "$LIB"
+  local mode bytes out
+  # Enumerated, so a third reason value added later fails here rather than
+  # silently reaching a caller that switches on the two known ones.
+  for mode in argv acp stdin file ""; do
+    for bytes in 1 "$ARGV_LIMIT" $((ARGV_LIMIT + 1)) "$PAYLOAD_LIMIT" $((PAYLOAD_LIMIT + 1)); do
+      out="$(review_budget_check "$bytes" "$mode")"
+      case "$out" in
+        ok|refuse:argv-limit|refuse:payload-limit) ;;
+        *) echo "unknown budget verdict '$out' for mode='$mode' bytes=$bytes"; return 1 ;;
+      esac
+    done
+  done
+}
+
+RANKED="41000  .speccraft/guardrails.md
+12000  spec.md"
+
+@test "an argv-limit message carries agent, mode, bytes, effective limit, a named file, the migration line and agents.toml" {
+  source "$LIB"
+  run review_refusal_message codex argv 70000 refuse:argv-limit "$RANKED"
+  [ "$status" -eq 0 ]
+  # Each element asserted by EXACT MATCH rather than by message length.
+  printf '%s\n' "$output" | grep -qF 'codex'
+  printf '%s\n' "$output" | grep -qF 'argv'
+  printf '%s\n' "$output" | grep -qF '70000'
+  printf '%s\n' "$output" | grep -qF "$ARGV_LIMIT"
+  printf '%s\n' "$output" | grep -qF '.speccraft/guardrails.md'
+  # stdin is the remedy for THIS limit, and the migration is concrete because
+  # existing repos own their agents.toml and are never rewritten.
+  printf '%s\n' "$output" | grep -qF 'input = "stdin"'
+  printf '%s\n' "$output" | grep -qF '.speccraft/agents.toml'
+}
+
+@test "a payload-limit message names the actual remedy and does NOT carry the migration line" {
+  source "$LIB"
+  run review_refusal_message codex stdin 300000 refuse:payload-limit "$RANKED"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qF "$PAYLOAD_LIMIT"
+  printf '%s\n' "$output" | grep -qiE 'compact|shorter spec'
+  # stdin fixes an argv-limit refusal and does NOTHING for a payload-limit one;
+  # offering it here would send the developer after the wrong fix.
+  run bash -c "printf '%s\n' \"\$1\" | grep -nF 'input = \"stdin\"'" _ "$output"
+  [ "$status" -ne 0 ]
+}
+
+@test "a both-limits message names both and states that a stdin-mode agent would still be refused" {
+  source "$LIB"
+  # One enum value is returned, but both limits are named — worded so the argv
+  # limit cannot be read as an available remedy.
+  run review_refusal_message codex argv 300000 refuse:payload-limit "$RANKED"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qF "$PAYLOAD_LIMIT"
+  printf '%s\n' "$output" | grep -qF "$ARGV_LIMIT"
+  printf '%s\n' "$output" | grep -qF 'a stdin-mode agent is still refused above the payload limit'
+}
+
+@test "the message quotes the RUNTIME effective limit, not the compiled default" {
+  source "$LIB"
+  # A diagnostic that disagrees with the behavior when an override is in play is
+  # worse than no diagnostic: it sends the reader to the wrong number.
+  REVIEW_MAX_ARGV_BYTES=4096 run review_refusal_message codex argv 5000 refuse:argv-limit "$RANKED"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qF '4096'
+  run bash -c "printf '%s\n' \"\$1\" | grep -nF '$ARGV_LIMIT'" _ "$output"
+  [ "$status" -ne 0 ]
+}
+
+@test "a valid override is honoured by the budget check itself" {
+  source "$LIB"
+  REVIEW_MAX_ARGV_BYTES=4096 run review_budget_check 5000 argv
+  [ "$output" = "refuse:argv-limit" ]
+  REVIEW_MAX_PAYLOAD_BYTES=524288 run review_budget_check 300000 stdin
+  [ "$output" = "ok" ]
+}
+
+@test "each rejected override shape warns on stderr naming the variable and proceeds with the compiled default" {
+  source "$LIB"
+  local bad
+  # Empty, zero, negative, non-numeric, and below the named floor. Each must be
+  # LEGIBLE rather than silent: the valid override is the sanctioned one-shot
+  # escape hatch for an oversized round, so a typo in it must not look like a
+  # policy decision.
+  for bad in "" 0 -1 abc 12x 1023; do
+    REVIEW_MAX_ARGV_BYTES="$bad" run review_effective_limit argv
+    [ "$status" -eq 0 ]
+    printf '%s\n' "$output" | grep -qF "REVIEW_MAX_ARGV_BYTES" || {
+      echo "override '$bad' did not name the offending variable: $output"; return 1; }
+    printf '%s\n' "$output" | grep -qF "$ARGV_LIMIT" || {
+      echo "override '$bad' did not fall back to the compiled default: $output"; return 1; }
+  done
+  # …and it does not abort the review. The warning rides on stderr, which bats
+  # merges into $output, so the verdict is the LAST line rather than the whole
+  # of it — a real caller captures stdout and sees only `ok`.
+  REVIEW_MAX_ARGV_BYTES=abc run review_budget_check 100 argv
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | tail -1)" = "ok" ]
+  printf '%s\n' "$output" | grep -qF "REVIEW_MAX_ARGV_BYTES"
+}
+
+@test "REVIEW_MIN_LIMIT_BYTES is a named constant, not an inline magic number" {
+  source "$LIB"
+  [ "$REVIEW_MIN_LIMIT_BYTES" = "1024" ]
+}
+
+@test "review_rank_files ranks the named files by size, largest first" {
+  source "$LIB"; make_corpus
+  printf 'x%.0s' $(seq 1 500) > "$TEST_DIR/.speccraft/guardrails.md"
+  run review_rank_files .speccraft/guardrails.md .speccraft/index.md
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | head -1 | sed 's/.*  //')" = ".speccraft/guardrails.md" ]
+}
+
+@test "the budget check runs on the composed payload of BOTH --diff branches" {
+  source "$LIB"; make_corpus
+  # A small delta with a large heading index must still refuse under argv mode,
+  # so the scoped branch cannot be the one that escapes the bound. The inline
+  # guardrails are padded past REVIEW_MIN_LIMIT_BYTES because the override floor
+  # is 1024 and the fixture corpus is otherwise smaller than any legal limit.
+  printf 'x%.0s' $(seq 1 3000) >> "$TEST_DIR/.speccraft/guardrails.md"
+  local full scoped
+  full="$(compose_default | wc -c | tr -d ' ')"
+  scoped="$(review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+    --inline .speccraft/guardrails.md \
+    --reference .speccraft/architecture.md \
+    --digest-out "$TEST_DIR/digests.txt" \
+    --diff "tiny delta" --changed "[]" | wc -c | tr -d ' ')"
+  [ "$full" -gt 0 ] && [ "$scoped" -gt 0 ]
+  REVIEW_MAX_ARGV_BYTES=1024 run review_budget_check "$full" argv
+  [ "$output" = "refuse:argv-limit" ]
+  REVIEW_MAX_ARGV_BYTES=1024 run review_budget_check "$scoped" argv
+  [ "$output" = "refuse:argv-limit" ]
+}

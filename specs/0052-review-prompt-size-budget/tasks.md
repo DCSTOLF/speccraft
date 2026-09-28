@@ -13,8 +13,8 @@ spec: "0052"
 - [x] T6 — GREEN: `_review_digest_cmd` / `review_digest` / `_review_scan_reference`; land the sweep update in the same commit
 - [x] T7 — RED: composer envelope (tier mismatch, order, no body, no digest, missing vs empty reference set, digest-out, scoped substitution, spec-src indirection, locale determinism)
 - [x] T8 — GREEN: `review_compose_payload`
-- [ ] T9 — RED: budget mode matrix, boundary triples, reason enum, refusal-message arms, override validation
-- [ ] T10 — GREEN: the three constants with derivation + raise-me comments, `review_effective_limit`, `review_budget_check`, `review_refusal_message`
+- [x] T9 — RED: budget mode matrix, boundary triples, reason enum, refusal-message arms, override validation
+- [x] T10 — GREEN: the three constants with derivation + raise-me comments, `review_effective_limit`, `review_budget_check`, `review_refusal_message`
 - [ ] T11 — RED: materialize-once, measured==dispatched, trap on clean and interrupted exit, NUL/UTF-8 refusal, byte-preserving argv, aux-delegator pure dispatch
 - [ ] T12 — GREEN: `review_round_tmpdir` / `review_materialize_payload` / `review_payload_representable` / `review_dispatch_bytes`; aux-delegator precomposed-payload path
 - [ ] T13 — RED: `reference_access` validator arms, historical-corpus parse, `reference_read` capability, prompt template and agents.toml pins
