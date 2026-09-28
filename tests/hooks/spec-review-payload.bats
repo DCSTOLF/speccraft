@@ -1396,3 +1396,103 @@ TOML
       echo "enabled agent '$name' carries no explicit reference_read = true"; return 1; }
   done < <(review_agent_names "$t")
 }
+
+# ---- AC17/AC18: the ratio, on two corpora ---------------------------------
+#
+# ONE assertion over two corpora, per the spec's planning notes. AC18 proves the
+# MECHANISM works, everywhere and without skipping; AC17 proves TODAY'S REAL TREE
+# fits. Both are pinned BIDIRECTIONALLY: under the argv limit AND at least 2x
+# smaller than a full paste of the same inputs — so a regression that erodes the
+# compression ratio while still landing just under the limit fails, rather than
+# passing on the absolute bound alone.
+
+# Materialize the static corpus as a repo find-root will resolve, since tier
+# classification is root-relative by design.
+make_static_corpus() {
+  mkdir -p "$TEST_DIR/.speccraft" "$TEST_DIR/round"
+  cp "$FIX/corpus/guardrails.md"   "$TEST_DIR/.speccraft/guardrails.md"
+  cp "$FIX/corpus/index.md"        "$TEST_DIR/.speccraft/index.md"
+  cp "$FIX/corpus/architecture.md" "$TEST_DIR/.speccraft/architecture.md"
+  cp "$FIX/corpus/conventions.md"  "$TEST_DIR/.speccraft/conventions.md"
+  cp "$FIX/corpus/spec.md"         "$TEST_DIR/round/spec-frozen.md"
+  cd "$TEST_DIR"
+}
+
+# largest_archived_spec <archive-dir> — the biggest spec.md, with a
+# LEXICOGRAPHIC-ID tiebreaker so two same-sized specs cannot make the selection
+# non-deterministic. Test-side on purpose: it selects a corpus, it ships nothing.
+largest_archived_spec() {
+  local dir="${1:-}"
+  [ -d "$dir" ] || return 1
+  find "$dir" -name spec.md -type f 2>/dev/null \
+    | while IFS= read -r f; do printf '%s %s\n' "$(LC_ALL=C wc -c < "$f" | tr -d ' ')" "$f"; done \
+    | sort -k1,1rn -k2,2 \
+    | head -1 | sed 's/^[0-9]*  *//'
+}
+
+@test "the static corpus composes under the argv limit AND at least 2x smaller than a full paste" {
+  source "$LIB"; make_static_corpus
+  local tiered full
+  tiered="$(review_compose_payload "$FIX/corpus/template.md" round/spec-frozen.md \
+    --inline .speccraft/guardrails.md .speccraft/index.md \
+    --reference .speccraft/architecture.md .speccraft/conventions.md \
+    --digest-out "$TEST_DIR/digests.txt" | LC_ALL=C wc -c | tr -d ' ')"
+  full="$(review_full_paste_bytes "$FIX/corpus/template.md" round/spec-frozen.md \
+    .speccraft/guardrails.md .speccraft/index.md \
+    .speccraft/architecture.md .speccraft/conventions.md)"
+  [ "$tiered" -le "$REVIEW_MAX_ARGV_BYTES_DEFAULT" ] || {
+    echo "tiered composition is $tiered bytes, over the argv limit"; return 1; }
+  [ "$full" -ge $((tiered * 2)) ] || {
+    echo "compression ratio eroded: tiered=$tiered full=$full (want full >= 2x tiered)"; return 1; }
+}
+
+@test "the live .speccraft plus the largest archived spec composes under the argv limit while a full paste exceeds it by more than 2x" {
+  source "$LIB"
+  local archive="$PLUGIN_DIR/specs/.archive" spec tiered full
+  # A fresh clone or a shallow CI checkout has no archive. SKIP with a stated
+  # reason rather than failing or — worse — passing vacuously.
+  [ -d "$archive" ] || skip "specs/.archive is absent (fresh clone or shallow checkout)"
+  spec="$(largest_archived_spec "$archive")"
+  [ -n "$spec" ] || skip "specs/.archive contains no spec.md"
+  cd "$PLUGIN_DIR"
+  # Selected DYNAMICALLY: no hard-coded path and no hard-coded byte count, so an
+  # unrelated spec:close cannot red this and neither can a new archive entry.
+  tiered="$(review_compose_payload "$PLUGIN_DIR/templates/prompts/review.md" "$spec" \
+    --inline .speccraft/guardrails.md .speccraft/index.md \
+    --reference .speccraft/architecture.md .speccraft/conventions.md \
+    --digest-out "$TEST_DIR/digests.txt" | LC_ALL=C wc -c | tr -d ' ')"
+  full="$(review_full_paste_bytes "$PLUGIN_DIR/templates/prompts/review.md" "$spec" \
+    .speccraft/guardrails.md .speccraft/index.md \
+    .speccraft/architecture.md .speccraft/conventions.md)"
+  [ "$tiered" -le "$REVIEW_MAX_ARGV_BYTES_DEFAULT" ] || {
+    echo "live tiered composition is $tiered bytes, over the argv limit (spec: $spec)"; return 1; }
+  # The reported bug, reproduced as an assertion: a full paste from THIS repo is
+  # already several times the claude-p argv limit.
+  [ "$full" -gt $((REVIEW_MAX_ARGV_BYTES_DEFAULT * 2)) ] || {
+    echo "full paste is only $full bytes — this corpus no longer demonstrates the bug"; return 1; }
+  [ "$full" -ge $((tiered * 2)) ] || {
+    echo "compression ratio eroded on the live corpus: tiered=$tiered full=$full"; return 1; }
+}
+
+@test "the largest archived spec is selected by size with a lexicographic-id tiebreaker" {
+  local d="$TEST_DIR/arch"
+  mkdir -p "$d/0009-small" "$d/0031-tie" "$d/0007-tie"
+  printf 'x%.0s' $(seq 1 10)  > "$d/0009-small/spec.md"
+  printf 'y%.0s' $(seq 1 100) > "$d/0031-tie/spec.md"
+  printf 'z%.0s' $(seq 1 100) > "$d/0007-tie/spec.md"
+  # Two same-sized specs must not make the choice depend on directory order.
+  run largest_archived_spec "$d"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$d/0007-tie/spec.md" ]
+}
+
+@test "the live-corpus arm skips with a stated reason when the archive is absent or empty" {
+  local empty="$TEST_DIR/no-archive"
+  mkdir -p "$empty"
+  # The skip PREDICATE is asserted directly, because a test that skips cannot
+  # itself prove it skipped for the right reason.
+  run largest_archived_spec "$empty"
+  [ -z "$output" ]
+  run largest_archived_spec "$TEST_DIR/does-not-exist"
+  [ "$status" -ne 0 ]
+}

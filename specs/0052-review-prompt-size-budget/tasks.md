@@ -19,8 +19,8 @@ spec: "0052"
 - [x] T12 — GREEN: `review_round_tmpdir` / `review_materialize_payload` / `review_payload_representable` / `review_dispatch_bytes`; aux-delegator precomposed-payload path
 - [x] T13 — RED: `reference_access` validator arms, historical-corpus parse, `reference_read` capability, prompt template and agents.toml pins
 - [x] T14 — GREEN: `review_validate_reference_access`, `review_agent_reference_read`, `templates/prompts/review.md`, `templates/speccraft/agents.toml`
-- [ ] T15 — RED: static-corpus and live-corpus ratio assertions, largest-archived-spec selection, stated skip
-- [ ] T16 — GREEN: `review_full_paste_bytes` + the static corpus fixtures
+- [x] T15 — RED: static-corpus and live-corpus ratio assertions, largest-archived-spec selection, stated skip
+- [x] T16 — GREEN: `review_full_paste_bytes` + the static corpus fixtures
 - [ ] T17 — RED: runbook marker order, no-full-paste, and the remaining AC29 bite proof (fb04); fb01/fb02 landed in T7, fb03 in T11, fb05 in T3
 - [ ] T18 — GREEN: rewrite `commands/spec/review.md` step 3 with the compose → budget-check → dispatch markers
 - [ ] T19 — REFACTOR: retire `review_build_payload`, re-point `spec-review-diff.bats`, factor shared bats helpers

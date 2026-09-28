@@ -1097,6 +1097,34 @@ review_reference_read_message() {
   printf '  files, or leave it excluded from reference-tier rounds.\n'
 }
 
+# review_full_paste_bytes <template> <spec-src> <files…> — echo the byte count of
+# the PRE-0052 payload shape: every context file pasted in full.
+#
+# Retained for exactly one purpose — it is the ratio's DENOMINATOR. The tiering
+# claim is "a reviewer handed a path plus a heading index costs a fraction of a
+# full paste", and a claim like that is only meaningful against the
+# counterfactual it replaces. Without this function the ratio tests would
+# compare the new shape to nothing and pass vacuously. It is NOT a dispatch path
+# and must never be wired to one.
+review_full_paste_bytes() {
+  local template="${1:-}" spec_src="${2:-}" f
+  [ -n "$template" ] && [ -f "$template" ] || {
+    review_error "review_full_paste_bytes: template not found: '${template:-}'"; return 1; }
+  [ -n "$spec_src" ] && [ -f "$spec_src" ] || {
+    review_error "review_full_paste_bytes: spec source not found: '${spec_src:-}'"; return 1; }
+  shift 2
+  {
+    cat -- "$template"
+    printf '\n## Spec under review (frozen for this round)\n\n'
+    cat -- "$spec_src"
+    for f in "$@"; do
+      [ -e "$f" ] || { review_error "review_full_paste_bytes: not found: '$f'"; return 1; }
+      printf '\n## File: %s\n\n' "$(_review_repo_relative "$f")"
+      cat -- "$f"
+    done
+  } | LC_ALL=C wc -c | tr -d ' '
+}
+
 # review_reviewed_sha256 <review.md> — echo the single usable reviewed_sha256
 # value, or return non-zero. "Usable" (spec 0035 AC8) = exactly one line matching
 # the anchored grammar ^reviewed_sha256: <64 lowercase hex>$. Zero, multiple, or
