@@ -75,6 +75,18 @@ setup() {
   # rather than degrading. In hooks/pre-tool-use.sh that aborted the hook before
   # it delegated to speccraft-guard, making the TDD invariant inert on macOS.
   printf '%s\n' 'ABS="$(realpath -m -- "$FILE_PATH")"'             > "$FIX/forbidden/g15.sh"
+  # Spec 0052 AC5: a regex INTERVAL EXPRESSION inside an awk program. mawk (this
+  # devcontainer's awk, and Debian's default) does not implement intervals and
+  # matches NOTHING for this form — silently, exit 0. The same spelling works
+  # under GNU grep -E, so an extractor written this way emits a full index on one
+  # machine and an EMPTY one on another with no error either way.
+  printf '%s\n' "awk '/^#{2,3} /{print}' \"\$f\""                  > "$FIX/forbidden/g16.sh"
+  printf '%s\n' "awk '/^x{4}\$/{print}' \"\$f\""                   > "$FIX/forbidden/g17.sh"
+  # g18: the SAME defect inside a MULTI-LINE awk program — the shape
+  # review_heading_index actually uses. An `awk`-proximity clause misses this
+  # entirely, so without this fixture the guard would pass on the only spelling
+  # that matters here.
+  printf '%s\n' "LC_ALL=C awk '" "  {" "    if (line ~ /^#{2,3} /) print line" "  }" "' \"\$f\"" > "$FIX/forbidden/g18.sh"
 
   # --- permitted: the portable counterpart of each ---
   printf '%s\n' "sed -i.bak 's/a/b/' f.txt && rm -f f.txt.bak" > "$FIX/permitted/q1.sh"
@@ -103,6 +115,21 @@ setup() {
   # sha256 through crypto/sha256 and cannot run a shell form. Pinned so the
   # `--exclude=*.go` scoping on clause (e) is a tested decision, not a silent one.
   printf '%s\n' '// equals `speccraft-state reconcile <design> | sha256sum`, via realpath -m' > "$FIX/permitted/q14.go"
+  # The portable counterparts of g16/g17, which MUST pass in the same change
+  # that forbids the awk spelling.
+  #
+  # q15 is load-bearing and is the reason clause (f) is awk-scoped rather than
+  # "any interval": interval expressions are REQUIRED by POSIX ERE and work in
+  # `grep -E` on BSD and GNU alike. Two correct lines already ship them —
+  # commands/spec/review.lib.sh (the reviewed_sha256 grammar) and
+  # commands/spec/revise.lib.sh (the identifier token) — so a clause that
+  # forbade intervals everywhere would red the live tree against working code.
+  # The hazard is awk, and only awk.
+  printf '%s\n' "grep -E '^reviewed_sha256: [0-9a-f]{64}\$' \"\$f\""  > "$FIX/permitted/q15.sh"
+  # The portable awk spellings: anchored literals, and a bracket run instead of
+  # a repetition count (the commands/history/compact.lib.sh:26 form).
+  printf '%s\n' "awk '/^## |^### /{print}' \"\$f\""                   > "$FIX/permitted/q16.sh"
+  printf '%s\n' "awk '/^## [0-9][0-9][0-9][0-9]-/{print}' \"\$f\""    > "$FIX/permitted/q17.sh"
 
   export PLUGIN_DIR FIX
 }
@@ -168,11 +195,40 @@ scan_gnu_forms() {
   #     to weaken guards.
   grep -rnE --exclude="*.go" "realpath[[:space:]]+-[A-Za-z]*m([[:space:]]|$)|sha256sum" "$root" 2>/dev/null \
     | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum" || true
+  # (f) spec 0052 AC5: a regex INTERVAL EXPRESSION inside an awk program. mawk —
+  #     this devcontainer's awk, and Debian's default — does not implement
+  #     intervals and matches NOTHING for the form, silently, with exit 0. The
+  #     identical spelling works under GNU `grep -E`, so a heading extractor
+  #     written this way emits a full index on one machine and an EMPTY one on
+  #     another with no error either way. That is spec 0050's BSD-grep class.
+  #
+  #     DELIBERATELY awk-SCOPED, not "any interval". Interval expressions are
+  #     REQUIRED by POSIX ERE and work in `grep -E` on BSD and GNU alike; two
+  #     correct lines already ship them (review.lib.sh's reviewed_sha256 grammar,
+  #     revise.lib.sh's identifier token), so a clause forbidding intervals
+  #     everywhere would red the live tree against working code. Fixture q15
+  #     pins that permission so the scoping cannot be "tightened" back into a
+  #     false positive.
+  #
+  #     Keyed on the SLASH-DELIMITED REGEX LITERAL, not on proximity to the word
+  #     `awk`. An earlier spelling (`awk[^|;]*\{[0-9]…`) required `awk` on the
+  #     same line and was therefore INERT for a multi-line awk program — which is
+  #     precisely the shape review_heading_index uses, so the guard would have
+  #     missed the defect in the only form this codebase actually writes.
+  #     Fixture g18 pins that case.
+  #
+  #     `/…{n,m}…/` is the awk/sed regex idiom; `grep -E` takes its pattern in
+  #     QUOTES, not slashes, so the permitted POSIX interval fixtures (q15) do
+  #     not match. The brace must follow a DIGIT-free run with no intervening
+  #     slash or space, so a path like `/tmp/x` cannot reach the brace, and the
+  #     brace must be followed by a DIGIT, so ordinary awk action blocks
+  #     (`{print}`, `{a[NR]=$0}`) cannot match.
+  grep -rnE --exclude="*_test.go" "/\^?[^/ ]*\{[0-9]+(,[0-9]*)?\}" "$root" 2>/dev/null || true
 }
 
 @test "portability guard FLAGS every forbidden GNU-only fixture" {
   out="$(scan_gnu_forms "$FIX/forbidden")"
-  for f in g1 g2 g3 g4 g5 g6 g7 g8 g9 g10 g11 g12 g13 g14 g15; do
+  for f in g1 g2 g3 g4 g5 g6 g7 g8 g9 g10 g11 g12 g13 g14 g15 g16 g17 g18; do
     echo "$out" | grep -q "$f\." || { echo "missed $f:"; echo "$out"; return 1; }
   done
 }

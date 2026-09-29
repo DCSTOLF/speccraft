@@ -66,6 +66,7 @@ See `history.md` for full ADR-style entries. Headlines:
 - `.speccraft/history.md` is **bounded, not unbounded append-only** (spec 0024): the explicit, confirm-gated `/speccraft:history:compact` keeps the newest N entries verbatim, folds older ones into a merged `## Compacted` section, and moves originals verbatim into the append-only `.speccraft/history-archive/` folder (double provenance: archive file + git). New entries are still appended newest-first by `memory-keeper` at close; compaction is a separate opt-in op nudged (non-blocking) at `spec:close`. The `speccraft-context` skill deliberately loads only `history.md` (never the archive) so compaction shrinks context rather than re-bloating it.
 - `/speccraft:spec:review` gains a **diff-focused `--diff` re-review** (spec 0035, v1.10.0): a review-time `review-snapshot.md` anchors change detection so a re-review scopes reviewers to the deltas (+ a regression sweep) instead of re-litigating settled sections. Detection is three new `speccraft-state` subcommands (`review-snapshot`/`review-diff`/`review-commit`) built on a shared `AtomicWriteFile` durable-write seam; the provenance gate (prior `reviewed_sha256` must equal the envelope `base_fingerprint`) lives in `commands/spec/review.lib.sh`. Drift now excludes `specs/**`.
 - Closed specs **consolidate into current `specs/domains/<area>.md` domain specs** at close (spec 0025), instead of accumulating as N permanent per-feature directories. Inline + confirm-gated at `/speccraft:spec:close` (never blocks close), retroactively at `/speccraft:sync`. Two clock-free archives keep originals recoverable: the closed spec dir is moved to `specs/.archive/NNNN-slug/` (status stays `closed`; location signals "consolidated") and superseded requirement text goes to `specs/domains/.archive/<area>.md` under full-entry byte-dedup. The deterministic `commands/spec/consolidate.lib.sh` reuses spec 0024's history.md parser for backfill chronology; `memory-keeper` gains a `# Mode: consolidate`.
+- `/speccraft:spec:review`'s reviewer payload is **bounded before dispatch** (spec 0052, v1.18.0) rather than left to grow with `.speccraft/`. Memory files split into an inline tier (pasted) and a **reference tier** sent as path + byte size + heading index, with reads attested by a digest the reviewer computes and the expected value withheld from the payload; `commands/spec/review.lib.sh` becomes the sole byte-producing owner and `aux-delegator` a pure dispatcher; an over-budget agent is refused **before** dispatch with a remedy specific to the limit, replacing a 600 s timeout that was indistinguishable from an agent with nothing to say. Nothing was added to what a reviewer sees — `history.md` is an explicit error. Measured 4.03x compression on this repo's live memory. `templates/speccraft/agents.toml` ships `input = "stdin"` for every agent; already-initialized repos own their copy and are nudged by the refusal, never rewritten.
 
 ## Boundaries
 
@@ -91,11 +92,60 @@ See `history.md` for full ADR-style entries. Headlines:
   `diffSections`), all built on the new shared `AtomicWriteFile` same-dir-temp+rename
   durable-write seam (injectable `atomicRename` for fault-injection). The anchor is a
   review-TIME snapshot, not git history (review precedes the first commit). Command
-  helpers are the pure `commands/spec/review.lib.sh` (`review_reviewed_sha256`,
-  `review_classify` provenance gate, `review_build_payload` — sources the frozen
-  snapshot, never spec.md); the scoped brief is `templates/prompts/re-review.md`.
+  helpers are `commands/spec/review.lib.sh` (`review_reviewed_sha256`,
+  `review_classify` provenance gate); the scoped brief is
+  `templates/prompts/re-review.md`. **Superseded in part by spec 0052:**
+  `review_build_payload` was retired in favour of the single
+  `review_compose_payload`, `--promote` moved out of the round's start into
+  `review_finalize_round`, and the single-read transaction now sources the round's
+  frozen spec image in the temp dir rather than `review-snapshot.md` (see the
+  review-payload boundary below).
   `review-snapshot.md` persists as an inert artifact in the closed spec dir (like
   review.md).
+- **Review-payload / byte boundary (spec 0052, v1.18.0):**
+  `commands/spec/review.lib.sh` is the **sole byte-producing owner for review
+  dispatch** — nothing else may compose reviewer bytes, since a second composer means a
+  second answer to "what was sent" and the budget can only measure one. It owns, in
+  dispatch order: the **tier table** (`REVIEW_INLINE_SET` = spec content +
+  `guardrails.md` + `index.md`, pasted; `REVIEW_REFERENCE_SET` = `architecture.md` +
+  `conventions.md`, sent as repo-relative path + byte size + `^##`/`^###` heading index;
+  membership fixed by identity, resolved against `speccraft-state find-root` on the full
+  repo-relative path, anything else — `history.md` included — an ERROR); **one composer**
+  (`review_compose_payload`, serving the full round and the spec-0035 scoped `--diff`
+  round, emitting to stdout, with composition-time digests going to the separate
+  `--digest-out` channel so they never enter the payload); the **byte budget**
+  (`review_budget_check` / `review_effective_limit` / `review_refusal_message`; `argv`
+  and `acp` under both limits — `acp` is argv transport — `stdin`/`file`/absent under the
+  payload limit only; a refusal is data, exits 0, and is per agent);
+  **materialize-once** (`review_round_tmpdir` 0700 + trap, `review_materialize_payload`
+  0600 refusing a second creation, `review_payload_representable`,
+  `review_seam_single_creation`); **dispatch** (`review_dispatch_bytes` byte-preserving,
+  `review_dispatch_payload` passing the round's own artifact for `file` mode); the
+  **attestation validator** (`review_validate_reference_access` over the reviewer's
+  `reference_access` / `reference_access_failures`, plus `review_agent_reference_read`
+  for the opt-out registry flag); and the **two round predicates**. The digest primitive
+  resolves once, preferring `shasum -a 256` (`sha256sum` is GNU-only — spec 0050's
+  class). No Go binary is added, so this surface sits outside the TDD-gate boundary; the
+  oracle is `tests/hooks/spec-review-payload.bats`.
+- **`aux-delegator` is a pure dispatcher for review rounds (spec 0052).** In `review`
+  mode it receives `payload_file` + `input_mode` + `cwd` and sends those bytes
+  unmodified; it must not re-prefix the review template, re-inline context files, or
+  write another copy for `input = "file"`. `implement` and `analyze` are unchanged,
+  asserted byte-identical rather than merely described as such. `cwd` is the root
+  `speccraft-state find-root` reports for the active spec — in a workspace, the member
+  repo — the same contract recorded under §"Workspace mode"; reference-tier paths are
+  only resolvable there.
+- **The review round has two predicates, gating different things (spec 0052).**
+  `review_responses_complete` (every required reviewer returned a verdict; refusals,
+  timeouts, failures and attestation failures are not verdicts) gates synthesis, the
+  `review.md` write and the `reviewed_sha256` commit — for ANY verdict including
+  `changes-requested`, preserving spec 0035 AC2. `review_approval_quorum_met` (agreeing
+  verdicts >= `review_quorum`) **alone** gates `status: reviewed`. When completeness is
+  false the round is **inert**: no `cross-reviewer`, no `review.md` write or replace, no
+  fingerprint, no snapshot rewrite, status stays `draft`. `review_finalize_round` is the
+  single place that promotes `review-snapshot.md` and stamps the fingerprint, and it
+  re-checks the gate itself so a durable write cannot happen behind the runbook's back —
+  which is why the promote moved from the START of the round to finalize.
 - **Drift scan scope (extended by spec 0035):** `speccraft-drift`'s `CheckFile`
   (`tools/internal/speccraft/drift/rules.go`) now excludes the whole `specs/**` tree
   in addition to `.speccraft/` — a `review-snapshot.md` byte-copies spec prose that

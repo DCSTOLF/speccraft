@@ -1,0 +1,4 @@
+- `mode`: "review" | "implement" | "analyze"
+   - For "implement" mode: prefix with the implement template from
+     `$CLAUDE_PLUGIN_ROOT/templates/prompts/implement.md`.
+   - Implement mode: extract diff blocks (```diff fenced) if any.

@@ -1,0 +1,40 @@
+```yaml
+verdict: approve-with-comments
+concerns:
+  - "AC17 default is 'reference_read absent → refuse reference-tier dispatch', but AC19 does not require the shipped template to set `reference_read = true` on claude-p/opencode. A fresh `speccraft:init` would therefore ship a template whose reviewers cannot receive reference-tier files — every review refused out of the box. Either default the flag to true, opt-out only, or explicitly require the template to carry it."
+  - "SHA-256 computation portability is not addressed. `sha256sum` is not present on macOS by default; the portable form is `shasum -a 256` or `openssl dgst -sha256 -r`. The spec painstakingly pins `awk` interval avoidance (AC4) but leaves the identical BSD/GNU trap open on the primary attestation primitive."
+  - "AC15's inert-round guarantee (`review-snapshot.md` is not rewritten) conflicts with spec 0035's shape, where `speccraft-state review-diff --promote` writes the snapshot at the START of a `--diff` round. If promote is called before responses_complete is known, an inert round has already mutated the snapshot. The ordering — defer promote until after synthesis, or revert on inert — is not specified."
+  - "AC13 accepts an invalid override value as 'warn and use compiled default'. Reasonable, but combined with AC11's strict boundary pinning it means `REVIEW_MAX_ARGV_BYTES=0` in a rc file downgrades every review's argv budget to 65536 silently apart from one stderr line the developer will not see under `claude -p`. Consider a fail-loud path for the strictest CI mode, or a startup echo of the effective limits."
+  - "AC7's 'reads each reference file once' is pinned by a FIFO, which is Unix-only. Fine given the shell-portability scope (spec 0049), but the AC should say so — otherwise a future Windows contributor is left guessing whether the FIFO is a hard requirement or a proxy for the invariant."
+suggestions:
+  - "Add an explicit AC (or extend AC19) stating that the shipped `templates/speccraft/agents.toml` sets `reference_read = true` for every entry that ships enabled, so a fresh init produces a working review flow."
+  - "Add an AC pinning that the digest primitive works on both BSD and GNU userland — either name the exact command (e.g. `openssl dgst -sha256 -r`) or add it to the portability-guard fixtures on both polarities."
+  - "Extend AC15 to say either 'the snapshot write is deferred until responses_complete' OR 'an inert-round snapshot rewrite is reverted before the round returns'. Pick one and pin it, or the `--diff` short-circuit and provenance gate can silently regress."
+  - "AC16's digest-verification 'A verdict failing any arm counts toward neither predicate' is symmetric with the timeout rule but doubles the classes of silent-non-response. Consider surfacing digest failures separately in the round report so a chronically misbehaving reviewer is diagnosable, not just excluded."
+  - "The refusal message for `refuse:payload-limit` (AC12) 'must not contain the migration line'. Consider also asserting it names 'compaction' or 'shorten the spec' as the ACTUAL remedy — a distinct-from-argv message that says nothing actionable is worse than one that repeats the wrong remedy."
+  - "AC10b's fixture ratio should be pinned bidirectionally: a fixture composition ≥ 2× under REFERENCE tier as well as under a hypothetical full-paste. Otherwise a bug that reduces the compression ratio but keeps the payload just under argv would pass silently."
+guardrail_violations: []
+convention_violations:
+  - rule: "Prove every negative assertion bites (conventions.md §Bash > Prove every negative assertion bites)"
+    location: "AC5 says 'proved to bite: the test author inlines the fixture body, observes the check fail, and reverts.' This is a procedural instruction, not a mechanical one — no artifact of the bite-proof survives. AC18's negative assertion (the runbook 'no longer instructs a full paste') has no bite-proof at all. The convention was written specifically because three inert negative assertions shipped in one spec; every negative in this spec should either name a concrete forbidden fixture (checked in) OR route through the fixture-first regime, not rely on the author's discipline."
+  - rule: "A predicate must never depend on ambient PATH (conventions.md §tasks.md decomposition contract)"
+    location: "Not directly in the spec, but a downstream risk: the review lib will resolve `speccraft-state` (for plugin-root) — this is fine because the spec's own predicates aren't yet written, but the pattern must be documented in the eventual `tasks.md` so a bats-based `done:` predicate doesn't fail at close for the reason spec 0051 T6 did."
+```
+
+## Discussion
+
+This is a rigorous, measurement-first spec that addresses a real bug the repo has already patched locally and that the reviewed spec text itself demonstrably provokes (192 KB round-2 review). The design decisions are load-bearing and each has a "why" rooted in the field data — the tier table, the two-limit budget, the response-completeness / approval-quorum split, and the digest attestation are all correct and improve on the naive framings I would have expected (sentinel token, section-scoping, ARG_MAX probing — each considered and rejected with reasons).
+
+**Strongest parts.** The digest attestation replacing the "read sentinel" (a hazard called out and killed by round 3) is a textbook case of raising an attestation from "plausible" to "computable-only-from-the-content". Similarly, keeping responses-complete separate from approval-quorum closes the exact regression path where a refusal-only round would wipe the prior review.md and collapse spec 0035's provenance gate. The materialize-once-and-measure-that (§6, AC7b) is the right shape — command-substitution trailing-newline strip is a specific bug this repo has hit before, and having the file-under-test be the file-that-dispatches is the only way to close it structurally.
+
+**The two gaps that most matter.**
+
+1. `reference_read` in the shipped template. AC17 makes absent = refuse, and AC19 doesn't backfill the flag on the shipped agents. The end result is a template that ships broken for its own primary use case. This is a one-line fix but is unaddressed. Given how carefully the rest of the spec handles installed-repo migration ("existing repos own their agents.toml"), the parallel case of the fresh template is a real oversight.
+
+2. The `--diff` snapshot ordering vs. inert rounds. Spec 0035 wrote `review-snapshot.md` as part of `review-diff --promote` at the start of the round. AC15 requires the snapshot NOT be rewritten on an inert round. Without an explicit spec of the sequencing (defer promote? revert on inert?), the compose-then-refuse-all path silently mutates the snapshot the next `--diff` round anchors on, defeating provenance. This deserves an AC.
+
+**Portability.** The awk-interval trap is called out; the sha256-primitive trap is symmetric and unaddressed. Given spec 0050 blew CI for eight straight runs on exactly this class of GNU-vs-BSD tooling divergence, spelling out the digest command in the spec (or in the portability-guard fixtures) is cheaper than finding it in `hooks-macos` after landing.
+
+**The bite-proof discipline.** Spec 0049's lesson (`! grep -q` in bats is inert) generalizes: any negative assertion needs an artifact — a checked-in forbidden fixture, a paired positive/negative pair — not a "the author briefly reintroduced the offender and reverted" note. AC5 gets partway there by naming the deterministic marker but describes the bite-proof as procedure; AC18's "no longer instructs a full paste" has no artifact at all. Given this spec's whole thesis is that structural-can't-fail is worse than no-check, its own negatives should follow.
+
+Overall this is a strong spec that will meaningfully improve the review surface once the template-default gap and the snapshot-ordering ambiguity are resolved. Recommend approve-with-comments; the concerns above are all bounded and should land as revisions rather than a full re-review.
