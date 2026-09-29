@@ -110,9 +110,11 @@ compose() {
   review_round_tmpdir
   local art="$REVIEW_ROUND_TMPDIR/p.payload"
   review_materialize_payload "$art" compose > /dev/null
-  chmod 000 "$TEST_DIR/.speccraft/conventions.md"
+  # REMOVED rather than chmod 000: the CI job may run as root, for whom mode 000
+  # is not a barrier, and the arm would then invert instead of failing honestly.
+  # A missing file is unreadable for every uid.
+  rm "$TEST_DIR/.speccraft/conventions.md"
   PATH="$TEST_DIR/bin:$PATH" review_dispatch_payload codex stdin "$art" > "$TEST_DIR/codex.out"
-  chmod 644 "$TEST_DIR/.speccraft/conventions.md"
   grep -qF 'reference_access_failures:' "$TEST_DIR/codex.out"
   grep -qF 'not readable from the dispatched cwd' "$TEST_DIR/codex.out"
   run review_validate_reference_access "$TEST_DIR/codex.out" "$TEST_DIR/digests.txt"
@@ -136,17 +138,19 @@ compose() {
   [ "$status" -eq 0 ]
 }
 
-@test "the mock does not read stdin when it is an inherited pipe that never EOFs" {
+@test "the mock does not read stdin when it is a pipe rather than a regular file" {
   make_repo
   # The hazard the original `exec </dev/null` was guarding: a mock invoked with
-  # stdin inherited from a `claude -p` session blocks forever on `cat`. Reading
-  # only when stdin is a REGULAR FILE keeps both properties — payload where it
-  # exists, no read where it would hang.
-  run bash -c "
-    mkfifo '$TEST_DIR/never-eof'
-    exec 9<>'$TEST_DIR/never-eof'      # held open: no writer ever closes it
-    '$TEST_DIR/bin/codex' <&9
-  "
+  # stdin inherited from a `claude -p` session blocks forever on `cat`. The guard
+  # is `[ -f /dev/stdin ]`, and a pipe takes the same branch whether or not it
+  # ever EOFs — so an EOF-ing pipe exercises the no-read path with ZERO risk of
+  # hanging the suite.
+  #
+  # An earlier version of this test held a FIFO open with no writer to model the
+  # never-EOF case literally. It ran in 2s locally and then hung the Linux CI job
+  # past five minutes, which is a worse failure than the one it was testing for:
+  # a test that can hang is a test that can stop the suite from reporting at all.
+  run bash -c "printf '' | '$TEST_DIR/bin/codex'"
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | grep -qF 'verdict: approve-with-comments'
   printf '%s\n' "$output" | grep -qF 'reference_access: []'
