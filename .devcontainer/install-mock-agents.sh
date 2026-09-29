@@ -1,68 +1,32 @@
 #!/usr/bin/env bash
 # Install mock aux-agent CLIs for hermetic e2e tests.
-# Each mock reads its prompt from stdin (or argv) and writes a canned response
-# determined by env vars or simple heuristics. No network, no API keys.
+#
+# The behavior lives in mock-agents/aux-review-mock.sh, installed under both
+# agent names; this script only places it. It used to inline each mock as a
+# heredoc, which meant the only way to exercise them was a ten-minute
+# devcontainer job — and that is how the spec-0052 attestation regression
+# reached `main`. A standalone file is covered by
+# tests/hooks/e2e-mock-reviewer.bats in 45 seconds.
+#
+# No network, no API keys. Override a response with
+# SPECCRAFT_MOCK_<AGENT>_RESPONSE_FILE; that file is emitted verbatim, which is
+# how a test supplies a deliberately NON-attesting reviewer to exercise the
+# inert-round path.
 set -euo pipefail
 
-install_mock() {
-  local name="$1"
-  local body="$2"
-  cat > "/usr/local/bin/$name" <<EOF
-#!/usr/bin/env bash
-# Mock $name for speccraft e2e tests.
-# Override behavior by setting SPECCRAFT_MOCK_${name^^}_RESPONSE_FILE.
-set -euo pipefail
-$body
-EOF
-  chmod +x "/usr/local/bin/$name"
-}
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mock-agents"
+MOCK="$SRC_DIR/aux-review-mock.sh"
 
-# codex: review-shaped output.
-# Detach stdin to /dev/null so the mock never blocks on a non-EOF
-# parent stdin (claude -p sessions do not close their child stdin).
-# The canned response does not need the input.
-install_mock "codex" '
-exec </dev/null
-if [ -n "${SPECCRAFT_MOCK_CODEX_RESPONSE_FILE:-}" ] && [ -f "${SPECCRAFT_MOCK_CODEX_RESPONSE_FILE}" ]; then
-  cat "${SPECCRAFT_MOCK_CODEX_RESPONSE_FILE}"
-  exit 0
-fi
-cat <<RESP
-verdict: approve-with-comments
-concerns:
-  - "Acceptance criterion phrasing could be more observable."
-suggestions:
-  - "Add explicit error-path test."
-guardrail_violations: []
-convention_violations: []
+[ -f "$MOCK" ] || { echo "install-mock-agents: missing $MOCK" >&2; exit 1; }
 
-(mock codex response)
-RESP
-'
-
-# opencode: planner-shaped output.
-# agents.toml sets input="argv" for opencode, so the prompt arrives via
-# $@, not stdin — but the mock still inherits stdin from claude -p,
-# which never EOFs. Detach explicitly to avoid the previous hang at
-# the review step.
-install_mock "opencode" '
-exec </dev/null
-if [ -n "${SPECCRAFT_MOCK_OPENCODE_RESPONSE_FILE:-}" ] && [ -f "${SPECCRAFT_MOCK_OPENCODE_RESPONSE_FILE}" ]; then
-  cat "${SPECCRAFT_MOCK_OPENCODE_RESPONSE_FILE}"
-  exit 0
-fi
-cat <<RESP
-verdict: approve
-concerns: []
-suggestions:
-  - "Consider table-driven tests."
-guardrail_violations: []
-convention_violations: []
-
-(mock opencode response)
-RESP
-'
+for name in codex opencode; do
+  install -m 0755 "$MOCK" "/usr/local/bin/$name"
+done
 
 echo "==> Installed mock aux agents: codex, opencode"
+echo "   They read the dispatched payload, open each reference-tier path at the"
+echo "   dispatched cwd, and return a real sha256 per path — so a review round"
+echo "   against them exercises the spec-0052 reference-read attestation rather"
+echo "   than being refused by it."
 echo "   To use real CLIs, install them in the Dockerfile or via npm and they"
 echo "   will take precedence over these mocks (PATH order)."
