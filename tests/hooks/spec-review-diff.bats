@@ -36,6 +36,61 @@ teardown() {
   ! grep -qiF 'review the entire spec' "$TEMPLATE"
 }
 
+# ---- the scoped template must teach the attestation shape --------------------
+# Spec 0054 review round 3 went INERT on FORMAT, not access: both reviewers read
+# the reference files and computed correct digests, then invented their own
+# shapes (codex a YAML map `  <path>: <digest>`; claude-p one entry per line,
+# `- path: X, sha256: Y`). Neither pairs up in _review_parse_reference_access.
+# Cause: re-review.md — unlike review.md — never showed the accepted schema and
+# never named reference_access among the fields it asks for. A scoped round
+# therefore could not attest no matter how honest the reviewer was.
+
+@test "re-review template names reference_access among the required output fields" {
+  grep -qF 'reference_access' "$TEMPLATE"
+  grep -qF 'reference_access_failures' "$TEMPLATE"
+}
+
+@test "re-review template's documented attestation shape round-trips through the real parser" {
+  # Not a string match: extract the block the template DOCUMENTS, fill the
+  # placeholders, and feed it to the parser the validator actually uses. If the
+  # template teaches a shape the parser cannot pair up, this fails.
+  local block resp
+  block="$TEST_DIR/block.txt"; resp="$TEST_DIR/resp.out"
+  awk '/^reference_access:/{f=1} f{print} f&&/sha256:/{exit}' "$TEMPLATE" > "$block"
+  [ -s "$block" ]
+  sed -e 's|"<repo-relative path, exactly as given to you>"|.speccraft/architecture.md|' \
+      -e "s|\"<the digest you computed AFTER reading that file>\"|$(printf 'a%.0s' $(seq 64))|" \
+      "$block" > "$resp"
+
+  source "$LIB"
+  run _review_parse_reference_access "$resp"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qx 'HAS-ACCESS'
+  printf '%s\n' "$output" | grep -qx 'ACCESS-PATH .speccraft/architecture.md'
+  printf '%s\n' "$output" | grep -q '^ACCESS-SHA aaaa'
+}
+
+@test "the two shapes real reviewers invented are rejected (round-3 regression)" {
+  # Proves the negative assertion bites: these are the literal shapes codex and
+  # claude-p emitted in round 3, and both must fail to pair up.
+  local dig="$TEST_DIR/dig"; : > "$dig"
+  local d="$(printf 'a%.0s' $(seq 64))"
+  printf '%s  .speccraft/architecture.md\n' "$d" > "$dig"
+  source "$LIB"
+
+  # codex's shape: a YAML map, no `- path:` key at all.
+  printf 'reference_access:\n  .speccraft/architecture.md: %s\n' "$d" > "$TEST_DIR/map.out"
+  run review_validate_reference_access "$TEST_DIR/map.out" "$dig"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"invalid:missing-path"* ]]
+
+  # claude-p's shape: path and sha256 collapsed onto one line.
+  printf 'reference_access:\n- path: .speccraft/architecture.md, sha256: %s\n' "$d" > "$TEST_DIR/oneline.out"
+  run review_validate_reference_access "$TEST_DIR/oneline.out" "$dig"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"invalid:"* ]]
+}
+
 # ---- AC8/AC9: usable reviewed_sha256 parser + provenance-gate classifier ------
 
 VALID_SHA="0000000000000000000000000000000000000000000000000000000000000000"
