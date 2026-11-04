@@ -7,18 +7,18 @@ contract: done-means-v1
 
 - [ ] T1 — Re-verify the installed 1.0.6 companion interface and capture the pinned fixtures
   done: $ test -s tests/hooks/fixtures/review-dispatch/codex/printusage-1.0.6.txt && test -s tests/hooks/fixtures/review-dispatch/codex/task-success-1.0.6.json && test -x tests/hooks/fixtures/review-dispatch/codex/stub-node.sh
-- [ ] T2 — RED: Go mode enum, omitted-normalizes-to-cli, empty and case-variant rejection
-  done: $ go test ./tools/internal/delegate/ -run 'Test_LoadConfig_Mode_' -count=1 2>&1 | grep -q FAIL
-- [ ] T3 — GREEN: mode validation plus the new Agent fields in toml.go
-  done: $ go test ./tools/internal/delegate/ -run 'Test_LoadConfig_Mode_' -count=1 && grep -q 'SubagentType' tools/internal/delegate/toml.go && grep -q 'PluginRoot' tools/internal/delegate/toml.go
+- [x] T2 — RED: Go mode enum, omitted-normalizes-to-cli, empty and case-variant rejection
+  done: $ test "$(grep -cE '^func Test_LoadConfig_Mode_' tools/internal/delegate/mode_test.go)" -eq 4
+- [x] T3 — GREEN: mode validation plus the new Agent fields in toml.go
+  done: $ go test -C tools ./internal/delegate/ -run 'Test_LoadConfig_Mode_' -count=1 && grep -q 'SubagentType' tools/internal/delegate/toml.go && grep -q 'PluginRoot' tools/internal/delegate/toml.go
 - [ ] T4 — RED: strict keys, per-mode enums, new-field decoding and defaults
-  done: $ go test ./tools/internal/delegate/ -run 'Test_LoadConfig_(StrictKeys|Effort|SubagentModel|NewModeFields)' -count=1 2>&1 | grep -q FAIL
+  done: $ test "$(grep -cE '^func Test_LoadConfig_(StrictKeys|Effort|SubagentModel|NewModeFields)' tools/internal/delegate/mode_test.go)" -eq 4
 - [ ] T5 — GREEN: validateAgent strict-field and enum arms
-  done: $ go test ./tools/internal/delegate/ -run 'Test_LoadConfig_(StrictKeys|Effort|SubagentModel|NewModeFields)' -count=1
+  done: $ go test -C tools ./internal/delegate/ -run 'Test_LoadConfig_(StrictKeys|Effort|SubagentModel|NewModeFields)' -count=1
 - [ ] T6 — RED: unknown keys rejected on new modes, permissive on cli, every real registry still loads
-  done: $ go test ./tools/internal/delegate/ -run 'Test_LoadConfig_(UnknownKey|RealRegistries)' -count=1 2>&1 | grep -q FAIL
+  done: $ test "$(grep -cE '^func Test_LoadConfig_(UnknownKey|RealRegistries)' tools/internal/delegate/mode_test.go)" -eq 3
 - [ ] T7 — GREEN: per-entry unknown-key scoping via toml MetaData.Undecoded
-  done: $ go test ./tools/internal/delegate/ -count=1 && grep -q 'Undecoded' tools/internal/delegate/toml.go
+  done: $ go test -C tools ./internal/delegate/ -count=1 && grep -q 'Undecoded' tools/internal/delegate/toml.go
 - [ ] T8 — RED: review_agent_mode rows in spec-review-dispatch.bats
   done: $ test -f tests/hooks/spec-review-dispatch.bats && ! grep -q 'review_agent_mode' commands/spec/review.lib.sh
 - [ ] T9 — GREEN: review_agent_mode in review.lib.sh
@@ -26,7 +26,7 @@ contract: done-means-v1
 - [ ] T10 — RED: the shared parity corpus, driven by the Go loader and the shell reader
   done: $ test -f tests/hooks/fixtures/review-dispatch/registries/expected.txt && test -f tools/internal/delegate/parity_test.go && ls tests/hooks/fixtures/review-dispatch/registries/reject/*.toml >/dev/null
 - [ ] T11 — GREEN: the shell reader's strict-key and enum arms reach parity
-  done: $ go test ./tools/internal/delegate/ -run Parity -count=1 && PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-dispatch.bats
+  done: $ go test -C tools ./internal/delegate/ -run Parity -count=1 && PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-dispatch.bats
 - [ ] T12 — RED: review_agent_transport and the 80 KB budget rows
   done: $ grep -q 'review_agent_transport' tests/hooks/spec-review-dispatch.bats && ! grep -q 'review_agent_transport()' commands/spec/review.lib.sh
 - [ ] T13 — GREEN: review_agent_transport
@@ -130,7 +130,7 @@ contract: done-means-v1
 - [ ] T62 — RED: template, conventions and SKILL.md assertions (markdown/TOML)
   done: $ test -f tests/hooks/review-dispatch-docs.bats && test -f tools/internal/delegate/template_test.go
 - [ ] T63 — GREEN: the shipped template, the convention clarification and the skill
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-dispatch-docs.bats && go test ./tools/internal/delegate/ -count=1 && grep -q 'codex-plugin' templates/speccraft/agents.toml && grep -q 'subagent' templates/speccraft/agents.toml
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-dispatch-docs.bats && go test -C tools ./internal/delegate/ -count=1 && grep -q 'codex-plugin' templates/speccraft/agents.toml && grep -q 'subagent' templates/speccraft/agents.toml
 - [ ] T64 — RED: cleanup on every exit path, never while a reviewer is pending
   done: $ test -f tests/hooks/spec-review-round-lifecycle.bats && grep -q 'pending' tests/hooks/spec-review-round-lifecycle.bats
 - [ ] T65 — GREEN: review_round_all_terminal plus the runbook cleanup gate
@@ -146,4 +146,4 @@ contract: done-means-v1
 - [ ] T70 — GREEN: the two gated bodies plus the self-naming skip (NON-CI)
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/live-codex-smoke.bats 2>&1 | grep -q 'skipped'
 - [ ] T71 — Close gate: both suites green on Linux and macOS, the 0052 floor unedited, bin/ uncommitted, the gated skips named in the log
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/ && go test ./... && GOOS=windows go build ./... && test -z "$(git status --porcelain bin/ tools/bin/)" && git diff --quiet HEAD -- tests/hooks/spec-review-payload.bats
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/ && go test -C tools ./... && GOOS=windows go build -C tools ./... && test -z "$(git status --porcelain bin/ tools/bin/)" && git diff --quiet HEAD -- tests/hooks/spec-review-payload.bats

@@ -1,7 +1,7 @@
 ---
 id: "0054"
 title: "Review dispatch modes: codex-plugin and Claude subagent reviewers for every review command"
-status: planned
+status: in-progress
 created: 2026-10-02
 revision: 0
 authors: [claude]
