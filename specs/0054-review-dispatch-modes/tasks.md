@@ -11,14 +11,14 @@ contract: done-means-v1
   done: $ test "$(grep -cE '^func Test_LoadConfig_Mode_' tools/internal/delegate/mode_test.go)" -eq 4
 - [x] T3 — GREEN: mode validation plus the new Agent fields in toml.go
   done: $ go test -C tools ./internal/delegate/ -run 'Test_LoadConfig_Mode_' -count=1 && grep -q 'SubagentType' tools/internal/delegate/toml.go && grep -q 'PluginRoot' tools/internal/delegate/toml.go
-- [ ] T4 — RED: strict keys, per-mode enums, new-field decoding and defaults
+- [x] T4 — RED: strict keys, per-mode enums, new-field decoding and defaults
   done: $ test "$(grep -cE '^func Test_LoadConfig_(StrictKeys|Effort|SubagentModel|NewModeFields)' tools/internal/delegate/mode_test.go)" -eq 4
-- [ ] T5 — GREEN: validateAgent strict-field and enum arms
+- [x] T5 — GREEN: validateAgent strict-field and enum arms
   done: $ go test -C tools ./internal/delegate/ -run 'Test_LoadConfig_(StrictKeys|Effort|SubagentModel|NewModeFields)' -count=1
-- [ ] T6 — RED: unknown keys rejected on new modes, permissive on cli, every real registry still loads
+- [x] T6 — RED: unknown keys rejected on new modes, permissive on cli, every real registry still loads
   done: $ test "$(grep -cE '^func Test_LoadConfig_(UnknownKey|RealRegistries)' tools/internal/delegate/mode_test.go)" -eq 3
-- [ ] T7 — GREEN: per-entry unknown-key scoping via toml MetaData.Undecoded
-  done: $ go test -C tools ./internal/delegate/ -count=1 && grep -q 'Undecoded' tools/internal/delegate/toml.go
+- [x] T7 — GREEN: per-entry unknown-key scoping via agentKeySets (NOT MetaData.Undecoded — it reports "agents.install_hint" with no element index, so it cannot say which entry carried the key)
+  done: $ go test -C tools ./internal/delegate/ -count=1 && grep -q 'knownAgentKeys' tools/internal/delegate/toml.go
 - [ ] T8 — RED: review_agent_mode rows in spec-review-dispatch.bats
   done: $ test -f tests/hooks/spec-review-dispatch.bats && ! grep -q 'review_agent_mode' commands/spec/review.lib.sh
 - [ ] T9 — GREEN: review_agent_mode in review.lib.sh

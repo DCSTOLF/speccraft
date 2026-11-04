@@ -54,14 +54,15 @@ func (a Agent) IsReferenceRead() bool {
 // error messages list them.
 var ValidModes = []string{"cli", "acp", "codex-plugin", "subagent"}
 
-func isValidMode(m string) bool {
-	for _, v := range ValidModes {
-		if m == v {
-			return true
-		}
-	}
-	return false
+// knownAgentKeys are every key an [[agents]] entry may carry. Kept adjacent to
+// the Agent struct tags it mirrors; a field added there must be added here or
+// strict-key checking will reject it on the new modes.
+var knownAgentKeys = []string{
+	"name", "mode", "cmd", "input", "acp_agent", "strengths", "enabled",
+	"reference_read", "model", "effort", "plugin_root", "subagent_type",
 }
+
+func isValidMode(m string) bool { return contains(ValidModes, m) }
 
 // joinWith concatenates parts with sep. A local construct rather than a
 // `strings` import: conventions §"Avoid a NEW import to dodge the
@@ -105,9 +106,37 @@ func agentKeySets(md toml.MetaData) []map[string]bool {
 	return out
 }
 
-// validateAgents normalizes an omitted mode to cli and rejects an explicitly
-// empty or unrecognised one. Modes are case-sensitive: a permissive decode
-// would accept "Subagent" and then route on a mode no dispatcher knows.
+// ValidEfforts are the codex-plugin reasoning-effort values.
+var ValidEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
+
+// ValidSubagentModels are the subagent model values. "inherit" means omit the
+// model at dispatch, which resolves to the agent definition's own frontmatter.
+var ValidSubagentModels = []string{"opus", "sonnet", "haiku", "fable", "inherit"}
+
+// forbiddenFields lists, per NEW mode, the keys that belong to another mode.
+// Strict-key checking is scoped to the new modes on purpose: cli/acp keep
+// today's permissive decode so no existing host registry stops loading (the
+// opt-out convention for host-owned config).
+var forbiddenFields = map[string][]string{
+	"codex-plugin": {"cmd", "input", "acp_agent", "subagent_type"},
+	"subagent":     {"cmd", "input", "acp_agent", "effort", "plugin_root"},
+}
+
+func contains(set []string, v string) bool {
+	for _, s := range set {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// validateAgents normalizes an omitted mode to cli, rejects an explicitly
+// empty or unrecognised one, enforces per-mode strict keys and enums on the
+// new modes, and applies the subagent defaults.
+//
+// Modes are case-sensitive: a permissive decode would accept "Subagent" and
+// then route on a mode no dispatcher knows.
 func validateAgents(cfg *Config, defined []map[string]bool) error {
 	for i := range cfg.Agents {
 		a := &cfg.Agents[i]
@@ -115,6 +144,7 @@ func validateAgents(cfg *Config, defined []map[string]bool) error {
 		if i < len(defined) {
 			keys = defined[i]
 		}
+
 		if !keys["mode"] {
 			a.Mode = "cli"
 			continue
@@ -123,6 +153,50 @@ func validateAgents(cfg *Config, defined []map[string]bool) error {
 			return fmt.Errorf(
 				"agents.toml: agent %q has mode %q; valid modes are %s",
 				a.Name, a.Mode, joinWith(ValidModes, ", "))
+		}
+
+		for _, f := range forbiddenFields[a.Mode] {
+			if keys[f] {
+				return fmt.Errorf(
+					"agents.toml: agent %q has mode %q, which does not take %q",
+					a.Name, a.Mode, f)
+			}
+		}
+
+		// Unknown keys are strict on the NEW modes only. toml.MetaData's own
+		// Undecoded() cannot do this: it reports "agents.install_hint" with no
+		// element index, so it cannot say WHICH entry carried the key (same
+		// limitation as IsDefined — both verified against BurntSushi/toml).
+		// Per-entry resolution comes from agentKeySets instead.
+		if _, isNewMode := forbiddenFields[a.Mode]; isNewMode {
+			for k := range keys {
+				if !contains(knownAgentKeys, k) {
+					return fmt.Errorf(
+						"agents.toml: agent %q (mode %q) has unknown key %q",
+						a.Name, a.Mode, k)
+				}
+			}
+		}
+
+		if keys["effort"] && !contains(ValidEfforts, a.Effort) {
+			return fmt.Errorf(
+				"agents.toml: agent %q has effort %q; valid values are %s",
+				a.Name, a.Effort, joinWith(ValidEfforts, ", "))
+		}
+		if a.Mode == "subagent" {
+			if keys["model"] && !contains(ValidSubagentModels, a.Model) {
+				return fmt.Errorf(
+					"agents.toml: agent %q has model %q; valid values are %s",
+					a.Name, a.Model, joinWith(ValidSubagentModels, ", "))
+			}
+			// Defaults applied AFTER validation, so a default can never be
+			// the thing that fails a check.
+			if a.SubagentType == "" {
+				a.SubagentType = "speccraft:reviewer"
+			}
+			if a.Model == "" {
+				a.Model = "inherit"
+			}
 		}
 	}
 	return nil
