@@ -36,7 +36,7 @@ speccraft is packaged as a Claude Code plugin (`.claude-plugin/plugin.json`, mar
 
 ## Active spec
 
-none
+specs/0054-review-dispatch-modes/
 
 ## Recent decisions (last 3)
 
