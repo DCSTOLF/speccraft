@@ -1124,6 +1124,230 @@ review_agent_reference_read() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# Spec 0054 — dispatch modes. The shell half of the registry reader.
+#
+# The Go loader (tools/internal/delegate/toml.go) and these helpers must agree
+# entry-for-entry; the shared parity corpus is what holds them together.
+# ---------------------------------------------------------------------------
+
+# review_agent_keys <agents.toml> <agent> — echo the keys the named entry
+# DEFINES, one per line, in document order.
+#
+# Presence, not value — and that distinction is the whole reason this exists.
+# review_agent_field returns a value only `if (val != "")`, so `mode = ""` and
+# an absent `mode` are both the empty string, and AC1 requires telling them
+# apart: absent normalizes to cli, an explicit empty is a named error. The
+# strict-key arms need presence too, since a forbidden or unknown KEY is
+# forbidden whatever its value.
+#
+# This is the shell analogue of the loader's agentKeySets, which exists for the
+# identical reason on the Go side (toml.MetaData.IsDefined cannot address
+# array-of-table elements).
+#
+# Continuation lines of a multi-line array are not keys: the match requires
+# `<bare key> =` at the start of the line, so `  "exec",` is skipped. Same
+# limitation as every other reader here — no shipped registry spans lines.
+review_agent_keys() {
+  local toml="${1:-}" agent="${2:-}"
+  [ -n "$toml" ] && [ -f "$toml" ] || {
+    review_error "review_agent_keys: not found: '${toml:-}'"; return 1; }
+  [ -n "$agent" ] || { review_error "review_agent_keys: agent required"; return 1; }
+  LC_ALL=C awk -v want="$agent" '
+    function scalar(s) {
+      sub(/^[^=]*=[ \t]*/, "", s)
+      if (substr(s, 1, 1) == "\"") {
+        if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2)
+        return ""
+      }
+      sub(/#.*$/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); return s
+    }
+    # Buffered and flushed at the end of the block, because `name` may be
+    # written after the keys that precede it in the entry.
+    function flush() {
+      if (name == want && buf != "") printf "%s", buf
+      name = ""; buf = ""
+    }
+    /^[ \t]*\[\[agents\]\]/ { flush(); inblk = 1; next }
+    /^[ \t]*\[/             { flush(); inblk = 0 }
+    inblk && /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=/ {
+      k = $0
+      sub(/=.*$/, "", k)
+      gsub(/[ \t]/, "", k)
+      if (k == "name") name = scalar($0)
+      buf = buf k "\n"
+    }
+    END { flush() }
+  ' "$toml"
+}
+
+# These four mirror delegate.ValidModes / knownAgentKeys / ValidEfforts /
+# ValidSubagentModels. They are duplicated across the Go and shell readers on
+# purpose — two independent implementations is what the AC4 parity corpus
+# exists to hold together, and deriving one from the other would make the
+# parity check circular.
+REVIEW_VALID_MODES="cli acp codex-plugin subagent"
+REVIEW_KNOWN_AGENT_KEYS="name mode cmd input acp_agent strengths enabled reference_read model effort plugin_root subagent_type"
+REVIEW_VALID_EFFORTS="none minimal low medium high xhigh"
+REVIEW_VALID_SUBAGENT_MODELS="opus sonnet haiku fable inherit"
+
+# _review_mode_forbidden_keys <mode> — echo the keys that belong to another mode.
+# Mirrors delegate.forbiddenFields; an empty echo means "not a new mode", which
+# is also what scopes strict-key checking (cli/acp keep today's permissive
+# read so no already-written host registry stops loading).
+_review_mode_forbidden_keys() {
+  case "${1:-}" in
+    codex-plugin) printf 'cmd input acp_agent subagent_type\n' ;;
+    subagent)     printf 'cmd input acp_agent effort plugin_root\n' ;;
+    *)            printf '\n' ;;
+  esac
+}
+
+# _review_agent_mode_strict <agents.toml> <agent> <mode> — the strict-key and
+# enum arms, applied to the NEW modes only.
+#
+# Byte-identical rules to the Go loader, in the same order (forbidden keys,
+# then unknown keys, then the enums), so a registry rejected by one reader is
+# rejected by the other for the same reason.
+_review_agent_mode_strict() {
+  local toml="${1:-}" agent="${2:-}" mode="${3:-}" forbidden keys k f val list
+  forbidden="$(_review_mode_forbidden_keys "$mode")"
+  # Not a new mode: today's permissive read, unchanged.
+  [ -n "$forbidden" ] || return 0
+
+  keys="$(review_agent_keys "$toml" "$agent")" || return 1
+
+  for f in $forbidden; do
+    printf '%s\n' "$keys" | grep -qx "$f" || continue
+    review_error "review_agent_mode: agent '$agent' has mode '$mode', which does not take '$f'"
+    return 1
+  done
+
+  # Unknown keys are strict here and nowhere else.
+  while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    case " $REVIEW_KNOWN_AGENT_KEYS " in
+      *" $k "*) continue ;;
+    esac
+    review_error "review_agent_mode: agent '$agent' (mode '$mode') has unknown key '$k'"
+    return 1
+  done <<EOF
+$keys
+EOF
+
+  # Enum checks belong to the mode that OWNS the field, which is why each is
+  # guarded by its mode rather than by the key's mere presence.
+  if [ "$mode" = codex-plugin ] && printf '%s\n' "$keys" | grep -qx effort; then
+    val="$(review_agent_field "$toml" "$agent" effort)" || return 1
+    case " $REVIEW_VALID_EFFORTS " in
+      *" $val "*) ;;
+      *)
+        list=""
+        for k in $REVIEW_VALID_EFFORTS; do
+          [ -z "$list" ] || list="$list, "
+          list="$list$k"
+        done
+        review_error "review_agent_mode: agent '$agent' has effort '$val'; valid values are $list"
+        return 1
+        ;;
+    esac
+  fi
+
+  if [ "$mode" = subagent ] && printf '%s\n' "$keys" | grep -qx model; then
+    val="$(review_agent_field "$toml" "$agent" model)" || return 1
+    case " $REVIEW_VALID_SUBAGENT_MODELS " in
+      *" $val "*) ;;
+      *)
+        list=""
+        for k in $REVIEW_VALID_SUBAGENT_MODELS; do
+          [ -z "$list" ] || list="$list, "
+          list="$list$k"
+        done
+        review_error "review_agent_mode: agent '$agent' has model '$val'; valid values are $list"
+        return 1
+        ;;
+    esac
+  fi
+  return 0
+}
+
+# review_agent_mode <agents.toml> <agent> — echo the entry's dispatch mode.
+#
+# An omitted `mode` echoes `cli` (today's behaviour, which is what keeps every
+# already-written registry working). An explicitly empty or unrecognised value
+# is a named error naming the agent and all four valid modes, so an operator can
+# fix the registry without reading this source.
+#
+# Case-sensitive, like the loader: a permissive reader would accept "Subagent"
+# and then route on a mode no dispatcher knows.
+review_agent_mode() {
+  local toml="${1:-}" agent="${2:-}" keys mode m
+  [ -n "$toml" ] && [ -f "$toml" ] || {
+    review_error "review_agent_mode: not found: '${toml:-}'"; return 1; }
+  [ -n "$agent" ] || { review_error "review_agent_mode: agent required"; return 1; }
+
+  keys="$(review_agent_keys "$toml" "$agent")" || return 1
+  # No keys at all means no such entry — distinct from an entry with no mode,
+  # which is legal and normalizes to cli.
+  [ -n "$keys" ] || {
+    review_error "review_agent_mode: no agent named '$agent' in $toml"
+    return 1
+  }
+
+  # Line-EXACT: a substring test would read a future `mode_hint` as `mode`.
+  printf '%s\n' "$keys" | grep -qx 'mode' || { printf 'cli\n'; return 0; }
+
+  mode="$(review_agent_field "$toml" "$agent" mode)" || return 1
+  for m in $REVIEW_VALID_MODES; do
+    [ "$mode" = "$m" ] || continue
+    _review_agent_mode_strict "$toml" "$agent" "$mode" || return 1
+    printf '%s\n' "$mode"
+    return 0
+  done
+
+  # Built by loop, not `tr`/`sed`: spec 0049 removed both from this lib and the
+  # portability sweep enforces it.
+  local list=""
+  for m in $REVIEW_VALID_MODES; do
+    [ -z "$list" ] || list="$list, "
+    list="$list$m"
+  done
+  review_error "review_agent_mode: agent '$agent' has mode '$mode'; valid modes are $list"
+  return 1
+}
+
+# review_agent_transport <agents.toml> <agent> — echo the input-mode token that
+# review_budget_check takes for this entry.
+#
+# One question, one answer, and deliberately NOT a change to
+# review_budget_check: widening that function would have touched every spec-0052
+# call site and its suite. The mapping is:
+#
+#   codex-plugin, subagent  ⇒ file   — both write the payload to the round dir
+#                                      and hand over a PATH, so neither is
+#                                      bounded by argv.
+#   acp                     ⇒ acp    — argv transport, because aux-delegator
+#                                      invokes it as `acpx <agent> <prompt>`.
+#   cli                     ⇒ the registry's `input`, defaulting to stdin.
+#
+# `acp` is returned as itself rather than resolved to the entry's `input`: an
+# acp entry carries no `input` key, so reading one would yield the empty string,
+# which review_budget_check normalizes to stdin — exempting from the argv limit
+# the one mode most likely to overflow it.
+review_agent_transport() {
+  local toml="${1:-}" agent="${2:-}" mode input
+  mode="$(review_agent_mode "$toml" "$agent")" || return 1
+  case "$mode" in
+    codex-plugin|subagent) printf 'file\n'; return 0 ;;
+    acp)                   printf 'acp\n';  return 0 ;;
+  esac
+  input="$(review_agent_field "$toml" "$agent" input)" || return 1
+  # Absent `input` normalizes to stdin, matching review_budget_check's own
+  # treatment of an empty mode and today's behaviour for every cli entry.
+  [ -n "$input" ] || input=stdin
+  printf '%s\n' "$input"
+}
+
 # review_reference_read_message <agent> — the named refusal for an agent that has
 # opted out of reference-tier dispatch.
 review_reference_read_message() {

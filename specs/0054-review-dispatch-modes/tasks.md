@@ -19,17 +19,17 @@ contract: done-means-v1
   done: $ for t in UnknownKey_OnNewMode_IsNamedError UnknownKey_OnCLIEntry_StillLoads KnownKey_OnLegacyEntry_IsNotEnumChecked RealRegistries_LoadUnchanged; do grep -qE "^func Test_LoadConfig_$t\(" tools/internal/delegate/mode_test.go || exit 1; done
 - [x] T7 — GREEN: per-entry unknown-key scoping via agentKeySets (NOT MetaData.Undecoded — it reports "agents.install_hint" with no element index, so it cannot say which entry carried the key)
   done: $ go test -C tools ./internal/delegate/ -count=1 && grep -q 'knownAgentKeys' tools/internal/delegate/toml.go
-- [ ] T8 — RED: review_agent_mode rows in spec-review-dispatch.bats
-  done: $ test -f tests/hooks/spec-review-dispatch.bats && ! grep -q 'review_agent_mode' commands/spec/review.lib.sh
-- [ ] T9 — GREEN: review_agent_mode in review.lib.sh
+- [x] T8 — RED: review_agent_mode rows in spec-review-dispatch.bats
+  done: $ for t in 'review_agent_mode returns each of the four valid modes' 'review_agent_mode normalizes an omitted mode to cli' 'review_agent_mode names an error for an explicitly empty mode' 'review_agent_mode names an error for the case variants Subagent and CLI' 'the error names the agent and all four valid modes'; do grep -qxF -- "@test \"$t\" {" tests/hooks/spec-review-dispatch.bats || exit 1; done
+- [x] T9 — GREEN: review_agent_mode in review.lib.sh — needs review_agent_keys (NOT review_agent_field, whose awk prints a value only `if (val != "")`, so `mode = ""` and an absent mode are indistinguishable; AC1 requires telling them apart)
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-dispatch.bats && grep -q 'review_agent_mode()' commands/spec/review.lib.sh
-- [ ] T10 — RED: the shared parity corpus, driven by the Go loader and the shell reader
-  done: $ test -f tests/hooks/fixtures/review-dispatch/registries/expected.txt && test -f tools/internal/delegate/parity_test.go && ls tests/hooks/fixtures/review-dispatch/registries/reject/*.toml >/dev/null
-- [ ] T11 — GREEN: the shell reader's strict-key and enum arms reach parity
+- [x] T10 — RED: the shared parity corpus, driven by the Go loader and the shell reader
+  done: $ test -f tests/hooks/fixtures/review-dispatch/registries/expected.txt && test -f tools/internal/delegate/parity_test.go && test "$(ls tests/hooks/fixtures/review-dispatch/registries/reject/*.toml | wc -l)" -eq 11 && test "$(awk '$2 == "reject" {n++} END {print n+0}' tests/hooks/fixtures/review-dispatch/registries/expected.txt)" -eq 11
+- [x] T11 — GREEN: the shell reader's strict-key and enum arms reach parity
   done: $ go test -C tools ./internal/delegate/ -run Parity -count=1 && PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-dispatch.bats
-- [ ] T12 — RED: review_agent_transport and the 80 KB budget rows
-  done: $ grep -q 'review_agent_transport' tests/hooks/spec-review-dispatch.bats && ! grep -q 'review_agent_transport()' commands/spec/review.lib.sh
-- [ ] T13 — GREEN: review_agent_transport
+- [x] T12 — RED: review_agent_transport and the 80 KB budget rows
+  done: $ for t in 'review_agent_transport returns file for codex-plugin' 'review_agent_transport returns file for subagent' 'review_agent_transport returns the registry input for cli and acp' 'an 80 KB payload is ok for codex-plugin and for subagent' 'the same 80 KB payload is refuse:argv-limit for cli plus argv' 'review_budget_check and review_dispatch_payload keep their 0052 signatures'; do grep -qxF -- "@test \"$t\" {" tests/hooks/spec-review-dispatch.bats || exit 1; done
+- [x] T13 — GREEN: review_agent_transport — acp returns `acp`, NOT its absent `input` (which review_budget_check would normalize to stdin, exempting the one mode most likely to overflow argv)
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-dispatch.bats tests/hooks/spec-review-payload.bats
 - [ ] T14 — RED: review_with_deadline returns 124, leaves no child, uses no timeout(1)
   done: $ test -f tests/hooks/spec-review-codex.bats && ! grep -q 'review_with_deadline()' commands/spec/review.lib.sh

@@ -1,0 +1,23 @@
+# Spec 0054 AC4 — the single source of truth for BOTH readers' validation rows.
+#
+# Format: <path relative to this directory> <accept|reject> [<reason-token>]
+#
+# The Go loader (delegate.LoadConfig) and the shell reader (review_agent_mode)
+# are each driven from this file and must agree row for row. The reason token is
+# the corpus's own label, not a string either reader emits — the readers'
+# diagnostics are prose aimed at an operator. Its job is coverage: a third
+# assertion pins that every token in the hardcoded reason list appears here, so
+# neither reader can pass against a half-empty corpus.
+accept-all.toml accept
+
+reject/empty-mode.toml reject empty-mode
+reject/case-variant.toml reject case-variant
+reject/cmd-on-subagent.toml reject cmd-on-subagent
+reject/input-on-codex-plugin.toml reject input-on-codex-plugin
+reject/acp-agent-on-subagent.toml reject acp-agent-on-subagent
+reject/subagent-type-on-codex-plugin.toml reject subagent-type-on-codex-plugin
+reject/effort-on-subagent.toml reject effort-on-subagent
+reject/plugin-root-on-subagent.toml reject plugin-root-on-subagent
+reject/bad-effort.toml reject bad-effort
+reject/bad-subagent-model.toml reject bad-subagent-model
+reject/unknown-key-on-new-mode.toml reject unknown-key-on-new-mode

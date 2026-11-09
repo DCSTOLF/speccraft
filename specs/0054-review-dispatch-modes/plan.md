@@ -40,6 +40,31 @@ floor (each is the only design that keeps 0052's suites byte-unedited).
    and fingerprint arms, and `review-code` needs neither. Defaulting preserves
    0052's 3-arg call sites.
 
+**Corrections made while implementing (the plan's mechanism was wrong):**
+
+- **Step 3 — `toml.MetaData.IsDefined` cannot address array-of-table elements.**
+  `md.IsDefined("agents", "mode")` reports false even when an element defines
+  `mode`. `md.Keys()` does carry it (a bare `agents` key introduces each
+  element), so `agentKeySets` segments on that instead.
+- **Step 7 — `md.Undecoded()` has the same limitation.** It reports
+  `agents.install_hint` with no element index, so it cannot say WHICH entry
+  carried the key. Replaced by `agentKeySets` + `knownAgentKeys`.
+- **Step 9 — `review_agent_mode` cannot be built "over `review_agent_field`".**
+  That helper's awk prints a value only `if (val != "")`, so `mode = ""` and an
+  absent `mode` are both the empty string — and AC1 needs them distinguished
+  (absent ⇒ `cli`, explicit-empty ⇒ named error). Added `review_agent_keys`,
+  the shell analogue of `agentKeySets`, which reads key PRESENCE. Step 11 needs
+  it too: a forbidden or unknown KEY is forbidden whatever its value.
+- **Every `done:` predicate ran `go test ./tools/...` from the repo root**,
+  where there is no `go.mod` (the module is rooted at `tools/`). All nine
+  corrected to `go test -C tools ./...`.
+- **Four `done:` predicates asserted TRANSIENT state.** Three RED steps used
+  `grep -q FAIL`, which stops holding the moment the GREEN lands, and T8's used
+  `! grep -q 'review_agent_mode' …` — an assertion that the helper is ABSENT,
+  which T9 permanently falsifies. All now assert durable evidence (the required
+  test functions or test names exist). Two more pinned exact test COUNTS, so
+  adding a test broke them; they now name the required functions.
+
 **Deferred to a follow-up spec, not fixed here:**
 `speccraft-state test-command` returns `pytest -q` in this repo, parsed out of
 a *documentation example* inside `.speccraft/conventions.md`'s own description
