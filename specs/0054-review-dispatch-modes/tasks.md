@@ -12,11 +12,11 @@ contract: done-means-v1
 - [x] T3 — GREEN: mode validation plus the new Agent fields in toml.go
   done: $ go test -C tools ./internal/delegate/ -run 'Test_LoadConfig_Mode_' -count=1 && grep -q 'SubagentType' tools/internal/delegate/toml.go && grep -q 'PluginRoot' tools/internal/delegate/toml.go
 - [x] T4 — RED: strict keys, per-mode enums, new-field decoding and defaults
-  done: $ test "$(grep -cE '^func Test_LoadConfig_(StrictKeys|Effort|SubagentModel|NewModeFields)' tools/internal/delegate/mode_test.go)" -eq 4
+  done: $ for t in StrictKeys_RejectedOnNewModes Effort_OutsideSixValues_IsNamedError SubagentModel_OutsideFiveValues_IsNamedError NewModeFields_DecodeAndDefault; do grep -qE "^func Test_LoadConfig_$t\(" tools/internal/delegate/mode_test.go || exit 1; done
 - [x] T5 — GREEN: validateAgent strict-field and enum arms
   done: $ go test -C tools ./internal/delegate/ -run 'Test_LoadConfig_(StrictKeys|Effort|SubagentModel|NewModeFields)' -count=1
 - [x] T6 — RED: unknown keys rejected on new modes, permissive on cli, every real registry still loads
-  done: $ test "$(grep -cE '^func Test_LoadConfig_(UnknownKey|RealRegistries)' tools/internal/delegate/mode_test.go)" -eq 3
+  done: $ for t in UnknownKey_OnNewMode_IsNamedError UnknownKey_OnCLIEntry_StillLoads KnownKey_OnLegacyEntry_IsNotEnumChecked RealRegistries_LoadUnchanged; do grep -qE "^func Test_LoadConfig_$t\(" tools/internal/delegate/mode_test.go || exit 1; done
 - [x] T7 — GREEN: per-entry unknown-key scoping via agentKeySets (NOT MetaData.Undecoded — it reports "agents.install_hint" with no element index, so it cannot say which entry carried the key)
   done: $ go test -C tools ./internal/delegate/ -count=1 && grep -q 'knownAgentKeys' tools/internal/delegate/toml.go
 - [ ] T8 — RED: review_agent_mode rows in spec-review-dispatch.bats

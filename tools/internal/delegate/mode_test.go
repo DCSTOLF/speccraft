@@ -7,6 +7,7 @@ package delegate_test
 // value — including case variants — is a named error.
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -262,6 +263,87 @@ func Test_LoadConfig_UnknownKey_OnCLIEntry_StillLoads(t *testing.T) {
 	}
 }
 
+func Test_LoadConfig_KnownKey_OnLegacyEntry_IsNotEnumChecked(t *testing.T) {
+	// THE REGRESSION FLOOR, second half. Test_LoadConfig_UnknownKey_On...
+	// covers a key the schema does not know; this covers one it DOES know but
+	// which belongs to another mode. Found by cross-vendor review of Phase A:
+	// the effort enum check fired on every explicit mode, so a host registry
+	// carrying `effort` as a note on a cli entry stopped loading on upgrade —
+	// exactly the breakage conventions.md §"A capability key added to
+	// host-owned config is OPT-OUT" exists to prevent.
+	//
+	// The asymmetry made it worse than a uniform rule: an entry with no `mode`
+	// returned early and loaded, so DELETING `mode = "cli"` fixed the error.
+	for _, entry := range []string{
+		"name = \"a\"\nmode = \"cli\"\ncmd = [\"codex\"]\ninput = \"stdin\"\neffort = \"turbo\"\n",
+		"name = \"a\"\nmode = \"acp\"\nacp_agent = \"codex\"\neffort = \"turbo\"\n",
+		"name = \"a\"\ncmd = [\"codex\"]\ninput = \"stdin\"\neffort = \"turbo\"\n",
+		"name = \"a\"\nmode = \"cli\"\ncmd = [\"codex\"]\nmodel = \"gpt-5\"\n",
+	} {
+		root := writeRegistry(t, oneAgent(entry))
+		cfg, err := delegate.LoadConfig(root)
+		if err != nil {
+			t.Errorf("a legacy entry must not be enum-checked, got: %v\nentry:\n%s", err, entry)
+			continue
+		}
+		// Ignored, not honoured: a cli entry must not come back claiming an
+		// effort the dispatcher would then have to interpret.
+		if got := cfg.Agents[0].Mode; got != "cli" && got != "acp" {
+			t.Errorf("Mode = %q, want cli or acp", got)
+		}
+	}
+}
+
+func Test_LoadConfig_Effort_ValidatedOnOwningModeOnly(t *testing.T) {
+	// The two halves of the same rule, asserted together so neither can drift:
+	// the mode that OWNS `effort` still rejects a bad value, and the identical
+	// value on a mode that does not own it is ignored. Keeping these in one
+	// test is the point — scoping the check by deleting it would pass the
+	// permissive half alone.
+	const bad = "effort = \"turbo\"\n"
+
+	root := writeRegistry(t, oneAgent("name = \"owner\"\nmode = \"codex-plugin\"\n"+bad))
+	if _, err := delegate.LoadConfig(root); err == nil {
+		t.Error("codex-plugin owns effort, so a bad value must still be rejected")
+	}
+
+	root = writeRegistry(t, oneAgent("name = \"other\"\nmode = \"cli\"\ncmd = [\"x\"]\n"+bad))
+	if _, err := delegate.LoadConfig(root); err != nil {
+		t.Errorf("cli does not own effort, so the same value must be ignored, got: %v", err)
+	}
+}
+
+func Test_LoadConfig_UnknownKeys_ReportedDeterministically(t *testing.T) {
+	// Two unknown keys on one new-mode entry. The loop over them is a Go map,
+	// so returning on the first one makes the error text depend on hash order
+	// and any assertion naming a specific key flakes. Report ALL of them, in
+	// sorted order, so the message is a function of the input alone.
+	root := writeRegistry(t, oneAgent(
+		"name = \"needle\"\nmode = \"subagent\"\nzeta = 1\nalpha = 2\n"))
+	var first string
+	for i := 0; i < 24; i++ {
+		_, err := delegate.LoadConfig(root)
+		if err == nil {
+			t.Fatal("two unknown keys on a subagent entry must be an error, got nil")
+		}
+		if i == 0 {
+			first = err.Error()
+			continue
+		}
+		if err.Error() != first {
+			t.Fatalf("error text is not deterministic across loads:\n  %s\n  %s", first, err.Error())
+		}
+	}
+	for _, want := range []string{"needle", "alpha", "zeta"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("error must mention every unknown key, missing %q: %s", want, first)
+		}
+	}
+	if strings.Index(first, "alpha") > strings.Index(first, "zeta") {
+		t.Errorf("unknown keys must be listed in sorted order, got: %s", first)
+	}
+}
+
 func Test_LoadConfig_RealRegistries_LoadUnchanged(t *testing.T) {
 	// Every registry this repo actually ships must keep loading. LoadConfig
 	// resolves <root>/.speccraft/agents.toml, so each candidate is staged into
@@ -271,13 +353,41 @@ func Test_LoadConfig_RealRegistries_LoadUnchanged(t *testing.T) {
 		filepath.Join(repoRoot, ".speccraft", "agents.toml"),
 		filepath.Join(repoRoot, "templates", "speccraft", "agents.toml"),
 	}
-	// Plus any registry fixture under tests/ — a glob, so fixtures added later
-	// are covered without editing this test.
-	extra, err := filepath.Glob(filepath.Join(repoRoot, "tests", "**", "agents.toml"))
+	// Plus every registry fixture anywhere under tests/, so fixtures added
+	// later are covered without editing this test.
+	//
+	// NOT filepath.Glob("tests/**/agents.toml"): Go's Glob has no recursive
+	// `**` — each star matches only non-separator runs, so that pattern means
+	// `tests/<one-dir>/agents.toml` and matched NOTHING in this tree. The loop
+	// was silently empty while claiming to cover the fixture corpus. Caught by
+	// cross-vendor review of Phase A; an assertion over an empty set is not an
+	// assertion.
+	walked := 0
+	err := filepath.WalkDir(filepath.Join(repoRoot, "tests"),
+		func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			walked++
+			if !d.IsDir() && d.Name() == "agents.toml" {
+				candidates = append(candidates, path)
+			}
+			return nil
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidates = append(candidates, extra...)
+
+	// Prove the walk reached a populated tree. Asserting len(candidates) >= 2
+	// would NOT bite — the two shipped registries are appended unconditionally
+	// above — and there are legitimately zero agents.toml fixtures under tests/
+	// today, so the count of matches cannot be asserted either. What can go
+	// silently wrong is the walk root: point it at the wrong directory and every
+	// future fixture is skipped. That is what this catches.
+	if walked < 2 {
+		t.Fatalf("walk of %s visited %d entries; the fixture tree is not being traversed",
+			filepath.Join(repoRoot, "tests"), walked)
+	}
 
 	for _, src := range candidates {
 		body, err := os.ReadFile(src)
@@ -285,10 +395,40 @@ func Test_LoadConfig_RealRegistries_LoadUnchanged(t *testing.T) {
 			t.Fatalf("cannot read %s: %v", src, err)
 		}
 		root := writeRegistry(t, string(body))
-		if _, err := delegate.LoadConfig(root); err != nil {
+		cfg, err := delegate.LoadConfig(root)
+		if err != nil {
 			t.Errorf("%s must load unchanged, got: %v", src, err)
+			continue
+		}
+		// "Unchanged" is about the decoded VALUES, not merely the absence of an
+		// error: a loader that accepted the file and then normalized a mode or
+		// dropped a cmd would pass an error-only assertion.
+		if len(cfg.Agents) == 0 {
+			t.Errorf("%s decoded to zero agents", src)
+		}
+		for _, a := range cfg.Agents {
+			if a.Name == "" {
+				t.Errorf("%s: an agent decoded with an empty name", src)
+			}
+			if !contains([]string{"cli", "acp", "codex-plugin", "subagent"}, a.Mode) {
+				t.Errorf("%s: agent %q decoded mode %q, outside the valid set", src, a.Name, a.Mode)
+			}
+			if a.Mode == "cli" && len(a.Cmd) == 0 {
+				t.Errorf("%s: cli agent %q decoded an empty cmd", src, a.Name)
+			}
 		}
 	}
+}
+
+// contains is local to the test: asserting against delegate's own unexported
+// helper would make the assertion depend on the code under test.
+func contains(set []string, v string) bool {
+	for _, s := range set {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // assertNamesAgentAndModes pins the diagnostic quality the AC asks for: the

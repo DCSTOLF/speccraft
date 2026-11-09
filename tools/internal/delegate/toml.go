@@ -131,6 +131,46 @@ func contains(set []string, v string) bool {
 	return false
 }
 
+// insertSorted returns set with v inserted in lexicographic position. Local for
+// the same reason as joinWith: it keeps this file dependency-free, and the sets
+// it orders are the handful of keys on one registry entry, where an insertion
+// sort is the clearer form anyway.
+func insertSorted(set []string, v string) []string {
+	out := make([]string, 0, len(set)+1)
+	placed := false
+	for _, s := range set {
+		if !placed && v < s {
+			out = append(out, v)
+			placed = true
+		}
+		out = append(out, s)
+	}
+	if !placed {
+		out = append(out, v)
+	}
+	return out
+}
+
+// validateAgentKeys reports every unknown key on one entry, sorted.
+//
+// All of them, not the first: the loop source is a Go map, so returning on the
+// first unknown key made the message depend on hash order — the same registry
+// produced `unknown key "alpha"` on one load and `"zeta"` on the next, and any
+// assertion naming a specific key would flake.
+func validateAgentKeys(name, mode string, keys map[string]bool) error {
+	var unknown []string
+	for k := range keys {
+		if !contains(knownAgentKeys, k) {
+			unknown = insertSorted(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	return fmt.Errorf("agents.toml: agent %q (mode %q) has unknown key(s) %s",
+		name, mode, joinWith(unknown, ", "))
+}
+
 // validateAgents normalizes an omitted mode to cli, rejects an explicitly
 // empty or unrecognised one, enforces per-mode strict keys and enums on the
 // new modes, and applies the subagent defaults.
@@ -169,16 +209,19 @@ func validateAgents(cfg *Config, defined []map[string]bool) error {
 		// limitation as IsDefined — both verified against BurntSushi/toml).
 		// Per-entry resolution comes from agentKeySets instead.
 		if _, isNewMode := forbiddenFields[a.Mode]; isNewMode {
-			for k := range keys {
-				if !contains(knownAgentKeys, k) {
-					return fmt.Errorf(
-						"agents.toml: agent %q (mode %q) has unknown key %q",
-						a.Name, a.Mode, k)
-				}
+			if err := validateAgentKeys(a.Name, a.Mode, keys); err != nil {
+				return err
 			}
 		}
 
-		if keys["effort"] && !contains(ValidEfforts, a.Effort) {
+		// Enum checks belong to the mode that OWNS the field. Unscoped, this one
+		// fired on cli/acp entries too, so a host registry carrying `effort` on
+		// a non-codex entry stopped loading on upgrade — the breakage
+		// conventions.md §"A capability key added to host-owned config is
+		// OPT-OUT" exists to prevent. It was asymmetric as well: an entry with
+		// no `mode` returns early above and loaded fine, so deleting
+		// `mode = "cli"` appeared to "fix" the error.
+		if a.Mode == "codex-plugin" && keys["effort"] && !contains(ValidEfforts, a.Effort) {
 			return fmt.Errorf(
 				"agents.toml: agent %q has effort %q; valid values are %s",
 				a.Name, a.Effort, joinWith(ValidEfforts, ", "))

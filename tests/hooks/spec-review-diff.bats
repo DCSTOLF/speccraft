@@ -85,10 +85,17 @@ teardown() {
   [[ "$output" == *"invalid:missing-path"* ]]
 
   # claude-p's shape: path and sha256 collapsed onto one line.
+  #
+  # The reason is pinned, not matched loosely as *"invalid:"*: a validator that
+  # rejected every response for an unrelated reason would satisfy a bare
+  # "something was invalid" assertion, and this case exists to prove the
+  # pairing logic specifically. The map form above yields missing-path (the
+  # path never parses); this one yields malformed (a path with no digest
+  # before end of stream) — two shapes, two distinct reasons.
   printf 'reference_access:\n- path: .speccraft/architecture.md, sha256: %s\n' "$d" > "$TEST_DIR/oneline.out"
   run review_validate_reference_access "$TEST_DIR/oneline.out" "$dig"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"invalid:"* ]]
+  [[ "$output" == *"invalid:malformed"* ]]
 }
 
 # ---- AC8/AC9: usable reviewed_sha256 parser + provenance-gate classifier ------
