@@ -183,26 +183,70 @@ newline and nothing else. The budget measures the untrimmed artifact (an
 upper bound on what is sent). Digest attestation is over reference files, not
 the payload, and is unaffected.
 
-**Output.** `--json` emits `{status, threadId, rawOutput, touchedFiles,
-reasoningSummary}`. **`status` is a number, not a string**: round 2 confirmed
-`buildResultStatus` yields `0` on success and `1` otherwise
-(`scripts/lib/codex.mjs:754` in 1.0.6) — it is never the string `"completed"`.
-Success is therefore all three of: `status === 0` (numeric), a **zero exit
-code**, and a **non-empty `rawOutput`**.
+**Output.** The payload fields are **nested**, because this spec reads the
+background path.
 
-`review_parse_codex_task_output` extracts `rawOutput` as the response.
+> **Factual correction (T1, against the installed 1.0.6).** This section
+> previously documented `--json` as emitting a flat
+> `{status, threadId, rawOutput, touchedFiles, reasoningSummary}`. That is the
+> **foreground** `task --json` shape
+> (`scripts/codex-companion.mjs:511-517`). §Command mandates the
+> **background** lifecycle, and `result <job-id> --json` emits
+> `{job, storedJob}` with that same payload stored one level down
+> (`handleResult`, `:910-925`; `scripts/lib/tracked-jobs.mjs:166` →
+> `result: execution.payload`; the companion's own renderer agrees,
+> `scripts/lib/render.mjs:402`). A parser written to the flat shape reads
+> `undefined` on every live run. No design intent changes here — only the
+> field paths, which were misstated.
+
+The authoritative paths are:
+
+| Meaning | Path |
+|---|---|
+| the reviewer's response | **`.storedJob.result.rawOutput`** |
+| numeric completion status | **`.storedJob.result.status`** |
+| files written | **`.storedJob.result.touchedFiles`** |
+
+**Two different fields are named `status`, at different depths, with different
+types.** This is the trap in this interface:
+
+| Path | Type | Values |
+|---|---|---|
+| `.job.status`, `.storedJob.status` | string | `queued`, `running`, `completed`, `failed`, `cancelled` |
+| `.storedJob.result.status` | **number** | `0` success, `1` otherwise |
+
+`buildResultStatus` yields `0` on success and `1` otherwise
+(`scripts/lib/codex.mjs:754` in 1.0.6), so **the numeric one is never the
+string `"completed"`** — the claim round 2 established, and it holds for that
+field only. The **outer** job status is a string whose success value *is*
+exactly `"completed"`, and the launch payload's `status` is the string
+`"queued"` (`:700-709`), which is neither terminal nor a verdict. Checking
+`.status == "completed"` at the wrong depth therefore looks plausible and is
+wrong; checking it against the launch payload is wrong twice.
+
+Success is all three of: `.storedJob.result.status === 0` (numeric), a **zero
+exit code**, and a **non-empty `.storedJob.result.rawOutput`**.
+
+`review_parse_codex_task_output` extracts `.storedJob.result.rawOutput` as the
+response, and that path **only**: output that parses as JSON but has no
+`.storedJob.result.rawOutput` is `failed codex-output-unparseable`, never
+silently retried against the flat foreground shape. One mandated flow, one
+tested path; a fallback would mask a caller that forgot `--background`.
 Distinct failure cases, so a transport fault is never mistaken for a verdict:
 
 The table is **total over the three inputs** (exit status, JSON validity,
 field contents), so no combination is left to an implementer's judgement:
 
+Every field below is the nested path from the table above; `result` abbreviates
+`.storedJob.result` and the depth is never left implicit:
+
 | Condition | Outcome |
 |---|---|
-| zero exit, valid JSON, `status === 0`, non-empty `rawOutput` | the response (success) |
+| zero exit, valid JSON, `result.status === 0` (numeric), non-empty `result.rawOutput` | the response (success) |
 | **non-zero exit, with stdout that IS valid success-shaped JSON** | `failed codex-task-error` |
 | non-zero exit, with stdout that does not parse as JSON | `failed codex-task-error` (stderr excerpt attached by the caller — see below) |
-| zero exit, `status` non-zero, empty `rawOutput`, or valid JSON missing either field | `failed codex-output-unparseable` |
-| non-empty `touchedFiles` | `failed codex-wrote-files`, **even with a valid verdict in `rawOutput`** |
+| zero exit, `result.status` non-zero, empty `result.rawOutput`, or valid JSON missing either field — **including JSON carrying a flat top-level `rawOutput` and no `.storedJob.result`** | `failed codex-output-unparseable` |
+| non-empty `result.touchedFiles` | `failed codex-wrote-files`, **even with a valid verdict in `result.rawOutput`** |
 
 The second row is the quadrant that matters and the one easiest to get wrong:
 a companion that printed a well-formed result **and then exited non-zero** has
@@ -871,25 +915,46 @@ convention requires.
 9. `review_parse_codex_task_output <file> <exit-status>` fixtures, exercising
    the **public two-argument signature** (a one-argument call is a test
    failure, since the classification below cannot be implemented without the
-   status), with **numeric** `status`:
-   `{"status":0,...}` + non-empty `rawOutput` + zero exit → the response;
-   `{"status":1,...}` → `failed codex-output-unparseable`; `status: 0` with
-   empty or absent `rawOutput` → `failed codex-output-unparseable`; invalid
-   JSON with zero exit → `failed codex-output-unparseable`; non-zero exit with
-   non-JSON stdout → `failed codex-task-error`; non-empty `touchedFiles` →
-   `failed codex-wrote-files` even with a valid verdict in `rawOutput`.
-   One row is **verbatim captured 1.0.6 output**.
+   status). Every fixture carries the **nested background shape** verified in
+   §Output — `.storedJob.result.{status,rawOutput,touchedFiles}`, with
+   `status` **numeric** — because that is the only shape the mandated flow
+   produces:
+   `result.status = 0` + non-empty `result.rawOutput` + zero exit → the
+   response; `result.status = 1` → `failed codex-output-unparseable`;
+   `result.status = 0` with empty or absent `result.rawOutput` →
+   `failed codex-output-unparseable`; invalid JSON with zero exit →
+   `failed codex-output-unparseable`; non-zero exit with non-JSON stdout →
+   `failed codex-task-error`; non-empty `result.touchedFiles` →
+   `failed codex-wrote-files` even with a valid verdict in `result.rawOutput`.
    **Required row — the quadrant:** valid **success-shaped** JSON
-   (`status: 0`, non-empty `rawOutput`) with a **non-zero exit code** →
-   `failed codex-task-error`. Neither accepting the verdict nor filing it as
-   `codex-output-unparseable` passes, so the table is total over
+   (`result.status = 0`, non-empty `result.rawOutput`) with a **non-zero exit
+   code** → `failed codex-task-error`. Neither accepting the verdict nor
+   filing it as `codex-output-unparseable` passes, so the table is total over
    (exit status × JSON validity × field contents) and no combination is left
    to implementer judgement.
-9a. **Negative:** a fixture whose `status` is the *string* `"completed"` is
-   **not** treated as success — it is `codex-output-unparseable`. Round 2
-   confirmed 1.0.6 never emits that value (`buildResultStatus`, `codex.mjs:754`);
-   this row fails if string-status matching is reintroduced, which would have
-   misrecorded every successful review as a failure.
+   **Required row — the flat shape is not accepted:** a fixture carrying a
+   top-level `rawOutput` and `status: 0` with **no `.storedJob.result`** is
+   `failed codex-output-unparseable`, not the response. That is the foreground
+   payload; accepting it would mean a caller that forgot `--background` silently
+   produced a verdict. There is no fallback path, so this row fails the moment
+   one is introduced.
+   Fixture provenance, stated so it is not overclaimed:
+   `printusage-1.0.6.txt` is **verbatim captured** from the installed
+   companion, and `task-success-1.0.6.json` is **derived from the 1.0.6 source**
+   (field-for-field, line references in `INTERFACE-1.0.6.md`) rather than from
+   a live run, since a live task needs auth, network and a paid turn. Replacing
+   it with a real capture is AC26's gated live smoke, not a unit fixture.
+9a. **Negative:** a fixture whose `.storedJob.result.status` is the *string*
+   `"completed"` is **not** treated as success — it is
+   `codex-output-unparseable`. T1 re-confirmed against the installed 1.0.6 that
+   this field is always numeric (`buildResultStatus`, `codex.mjs:754`); this row
+   fails if string-status matching is reintroduced, which would have misrecorded
+   every successful review as a failure.
+   **And the depth trap:** a fixture whose **outer** `.storedJob.status` is the
+   string `"completed"` while `.storedJob.result.status` is `1` must be
+   `failed codex-output-unparseable`. The outer string field genuinely does take
+   the value `"completed"` on success, so a parser reading the right value at the
+   wrong depth passes every other row in AC9 and fails only this one.
 10. `review_with_deadline 1 <stub that sleeps 30>` returns 124 within 5 s and
     leaves no child process alive. It bounds each individual companion
     invocation; the **job** deadline is AC6a's cancel path, and a test asserts
@@ -1229,6 +1294,16 @@ convention requires.
   first task should **re-verify them against the installed plugin** before
   coding the adapter, since two of round 2's three P1s were exactly this class
   of error; the pinned fixtures (AC5a, AC9) exist so a drift fails a test.
+- **T1 did that re-verification** (2026-11-10, against
+  `openai-codex/codex/1.0.6`, sha `db52e28`). All five facts above held
+  exactly, line numbers included. It found **one** error, now corrected in
+  §Output and ACs 9/9a: the output shape was documented from the *foreground*
+  `task --json` payload while §Command mandates the *background* lifecycle,
+  whose fields are nested under `.storedJob.result`. That correction changes no
+  design intent and so carries no revision bump — it restates a misread of an
+  external API. The reasoning this vindicates is the note above: re-verify
+  before coding. Full line references in
+  `tests/hooks/fixtures/review-dispatch/codex/INTERFACE-1.0.6.md`.
 
 ## Out of scope
 

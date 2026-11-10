@@ -30,7 +30,7 @@ contract: done-means-v1
 - [x] T12 — RED: review_agent_transport and the 80 KB budget rows
   done: $ for t in 'review_agent_transport returns file for codex-plugin' 'review_agent_transport returns file for subagent' 'review_agent_transport returns the registry input for cli and acp' 'an 80 KB payload is ok for codex-plugin and for subagent' 'the same 80 KB payload is refuse:argv-limit for cli plus argv' 'review_budget_check and review_dispatch_payload keep their 0052 signatures'; do grep -qxF -- "@test \"$t\" {" tests/hooks/spec-review-dispatch.bats || exit 1; done
 - [x] T13 — GREEN: review_agent_transport — acp returns `acp`, NOT its absent `input` (which review_budget_check would normalize to stdin, exempting the one mode most likely to overflow argv)
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-dispatch.bats tests/hooks/spec-review-payload.bats
+  done: $ o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-dispatch.bats -f 'transport|80 KB|signatures' 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 6 && p=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-payload.bats -f budget 2>&1) && test "$(printf '%s\n' "$p" | grep -cE '^ok ')" -ge 4
 - [ ] T14 — RED: review_with_deadline returns 124, leaves no child, uses no timeout(1)
   done: $ test -f tests/hooks/spec-review-codex.bats && ! grep -q 'review_with_deadline()' commands/spec/review.lib.sh
 - [ ] T15 — GREEN: review_with_deadline
