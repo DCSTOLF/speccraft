@@ -1,0 +1,60 @@
+{
+  "job": {
+    "id": "task-mhqk3x2p-a7f2kd",
+    "kind": "task",
+    "kindLabel": "Codex task",
+    "jobClass": "task",
+    "title": "Review spec 0054 against the composed payload",
+    "summary": "Review spec 0054 against the composed payload",
+    "workspaceRoot": "/workspaces/example",
+    "write": false,
+    "createdAt": "2026-11-10T19:58:00.000Z",
+    "startedAt": "2026-11-10T19:58:01.120Z",
+    "completedAt": "2026-11-10T19:59:44.880Z",
+    "status": "completed",
+    "phase": "done",
+    "pid": null,
+    "logFile": "/workspaces/example/.codex-plugin/logs/task-mhqk3x2p-a7f2kd.log",
+    "threadId": "01957f2c-8d31-7a4e-9b0c-2f4e8a1d5c63",
+    "turnId": "turn_01957f2c8d317a4e9b0c2f4e8a1d5c63",
+    "progressPreview": [],
+    "elapsed": "1m 43s",
+    "duration": "1m 43s"
+  },
+  "storedJob": {
+    "id": "task-mhqk3x2p-a7f2kd",
+    "kind": "task",
+    "kindLabel": "Codex task",
+    "jobClass": "task",
+    "title": "Review spec 0054 against the composed payload",
+    "summary": "Review spec 0054 against the composed payload",
+    "workspaceRoot": "/workspaces/example",
+    "write": false,
+    "createdAt": "2026-11-10T19:58:00.000Z",
+    "startedAt": "2026-11-10T19:58:01.120Z",
+    "completedAt": "2026-11-10T19:59:44.880Z",
+    "status": "completed",
+    "phase": "done",
+    "pid": null,
+    "logFile": "/workspaces/example/.codex-plugin/logs/task-mhqk3x2p-a7f2kd.log",
+    "threadId": "01957f2c-8d31-7a4e-9b0c-2f4e8a1d5c63",
+    "turnId": "turn_01957f2c8d317a4e9b0c2f4e8a1d5c63",
+    "request": {
+      "cwd": "/workspaces/example",
+      "model": "gpt-5.3-codex",
+      "effort": "high",
+      "prompt": "<payload read from --prompt-file>",
+      "write": false,
+      "resumeLast": false,
+      "jobId": "task-mhqk3x2p-a7f2kd"
+    },
+    "result": {
+      "status": 0,
+      "threadId": "01957f2c-8d31-7a4e-9b0c-2f4e8a1d5c63",
+      "rawOutput": "verdict: changes-requested\n\nreference_access:\n  spec.md: 3f786850e387550fdab836ed7e6dc881de23001b\n  guardrails.md: 89e6c98d92887913cadf06b2adb97f26cde4849b\n\nfindings:\n- AC12 does not say which transport an acp agent uses when its registry entry omits input.\n",
+      "touchedFiles": [],
+      "reasoningSummary": "Read the spec and guardrails, cross-checked the acceptance criteria against the payload."
+    },
+    "rendered": "verdict: changes-requested\n\nfindings:\n- AC12 does not say which transport an acp agent uses when its registry entry omits input.\n"
+  }
+}

@@ -5,8 +5,8 @@ contract: done-means-v1
 
 # Tasks
 
-- [ ] T1 — Re-verify the installed 1.0.6 companion interface and capture the pinned fixtures
-  done: $ test -s tests/hooks/fixtures/review-dispatch/codex/printusage-1.0.6.txt && test -s tests/hooks/fixtures/review-dispatch/codex/task-success-1.0.6.json && test -x tests/hooks/fixtures/review-dispatch/codex/stub-node.sh
+- [x] T1 — Re-verify the installed 1.0.6 companion interface and capture the pinned fixtures
+  done: $ d=tests/hooks/fixtures/review-dispatch/codex && test -s "$d/printusage-1.0.6.txt" && test -s "$d/task-success-1.0.6.json" && test -x tests/hooks/stubs/stub-node.sh && grep -qF -- 'codex-companion.mjs task [--background]' "$d/printusage-1.0.6.txt" && test "$(grep -cF -- '--prompt-file' "$d/printusage-1.0.6.txt")" -eq 0 && test "$(jq -r '.storedJob.result.status' "$d/task-success-1.0.6.json")" = "0" && test -n "$(jq -r '.storedJob.result.rawOutput' "$d/task-success-1.0.6.json")" && test "$(jq -r 'has("rawOutput")' "$d/task-success-1.0.6.json")" = "false"
 - [x] T2 — RED: Go mode enum, omitted-normalizes-to-cli, empty and case-variant rejection
   done: $ test "$(grep -cE '^func Test_LoadConfig_Mode_' tools/internal/delegate/mode_test.go)" -eq 4
 - [x] T3 — GREEN: mode validation plus the new Agent fields in toml.go

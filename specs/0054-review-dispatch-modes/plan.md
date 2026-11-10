@@ -58,6 +58,27 @@ floor (each is the only design that keeps 0052's suites byte-unedited).
 - **Every `done:` predicate ran `go test ./tools/...` from the repo root**,
   where there is no `go.mod` (the module is rooted at `tools/`). All nine
   corrected to `go test -C tools ./...`.
+- **T1 — spec.md §Output describes the FOREGROUND shape, but §Command mandates
+  the BACKGROUND path.** The fifth instance of the same failure, and the first
+  found by reading the companion rather than by review. §Output says `--json`
+  emits a flat `{status, threadId, rawOutput, …}` and that
+  `review_parse_codex_task_output` "extracts `rawOutput`". That is true of
+  foreground `task --json` (`codex-companion.mjs:511-517`). On the mandated
+  background path, `handleResult` (`:910-925`) emits `{job, storedJob}` with
+  the flat payload nested at `storedJob.result` (`tracked-jobs.mjs:166`), so
+  the real paths are **`.storedJob.result.rawOutput`** and
+  **`.storedJob.result.status`**. A parser written against §Output literally
+  would read `undefined` on every live run. Worse, there are two fields named
+  `status` at different depths — the outer job status is a STRING whose success
+  value is exactly `"completed"`, which is the value spec.md:189 warns "is
+  never" emitted (true only of the inner, numeric one). ACs 6/9/10 need
+  restating; fixtures and `INTERFACE-1.0.6.md` pin the verified shapes.
+- **T1 — an executed stub may not live under `fixtures/`.** `stub-node.sh` is
+  dropped on PATH as `node`, and `tests-portability-sweep.bats:61-62` states
+  the boundary outright: a fixture that must be executed has to move out of
+  `fixtures/`, or the GNU-form sweep stops seeing it. Moved to
+  `tests/hooks/stubs/`; proven load-bearing by planting `readlink -f` in it and
+  watching the sweep name the file, which it could not do before the move.
 - **Four `done:` predicates asserted TRANSIENT state.** Three RED steps used
   `grep -q FAIL`, which stops holding the moment the GREEN lands, and T8's used
   `! grep -q 'review_agent_mode' …` — an assertion that the helper is ABSENT,
