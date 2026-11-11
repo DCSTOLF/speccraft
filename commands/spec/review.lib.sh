@@ -756,7 +756,7 @@ _review_each_path() {
 #                path outside the tier table is permitted here — that is how the
 #                prior review.md rides along as scoped-round evidence — and a
 #                typo cannot hide in that allowance, because it will not exist.
-review_compose_payload() {
+_review_compose_payload_stream() {
   local template="${1:-}" spec_src="${2:-}"
   [ -n "$template" ] && [ -f "$template" ] || {
     review_error "review_compose_payload: template not found: '${template:-}'"; return 1; }
@@ -865,6 +865,91 @@ review_compose_payload() {
     printf '\n'
   done < <(_review_each_path "$reference_set")
   return 0
+}
+
+# _review_normalize_payload_ends <file> — emit the file with its two ends
+# normalized: no leading whitespace, exactly one trailing newline.
+#
+# AC8. The Codex companion trims the prompt it is given
+# (`options.prompt?.trim()`, scripts/lib/codex.mjs:1127 in 1.0.6) and that
+# cannot be switched off, so the payload's ends are pinned instead. With both
+# ends fixed, the companion's trim removes exactly the final newline and
+# nothing else, and "what the budget measured" differs from "what the reviewer
+# read" by exactly one known byte.
+#
+# ONLY the ends are touched. Interior blank lines separate the payload's
+# sections and must survive, or the reviewer reads a wall of text.
+#
+# Leading horizontal whitespace on the first content line is stripped too, not
+# just leading blank lines: AC8 requires the payload to BEGIN with a
+# non-whitespace byte, and an indented first template line is otherwise
+# indistinguishable from a leading newline at the byte level.
+#
+# Buffered in awk because the last content line cannot be known until EOF. The
+# payload is bounded by the review budget, so this is a few tens of KB.
+_review_normalize_payload_ends() {
+  LC_ALL=C awk '
+    { line[NR] = $0 }
+    END {
+      first = 0
+      for (i = 1; i <= NR; i++) {
+        if (line[i] ~ /^[ \t]*$/) continue
+        first = i
+        break
+      }
+      # Nothing but whitespace: emit nothing rather than a lone newline, so a
+      # caller checking for an empty payload sees one.
+      if (first == 0) exit 0
+
+      last = 0
+      for (i = NR; i >= 1; i--) {
+        if (line[i] ~ /^[ \t]*$/) continue
+        last = i
+        break
+      }
+
+      head = line[first]
+      sub(/^[ \t]+/, "", head)
+      printf "%s\n", head
+      for (i = first + 1; i <= last; i++) printf "%s\n", line[i]
+    }
+  ' "$1"
+}
+
+# review_compose_payload — see _review_compose_payload_stream for the body.
+#
+# This wrapper exists only to normalize the composed stream's two ends (AC8),
+# and it does so for EVERY branch, the early reference-less return included:
+# normalization placed at the end of the composer's happy path would miss that
+# branch, which returns before it.
+#
+# The stream goes to a FILE rather than through `$(...)`, per
+# .speccraft/conventions.md §"A byte-exactness contract measures a FILE".
+#
+# Stated precisely, because it is tempting to overclaim: substitution here
+# would NOT currently change the result. `$(...)` strips every trailing
+# newline and a following `printf '%s\n'` adds exactly one back, which happens
+# to be what AC8 wants — checked by routing the stream that way and watching
+# all 131 payload rows still pass. The file route is used because it does not
+# depend on those two effects cancelling, because a shell variable cannot hold
+# a NUL byte, and because the whole payload need not sit in memory.
+#
+# The ASSERTIONS are a different matter: a test that measured a trailing
+# newline through `$(...)` could never fail, which is why the boundary suite
+# measures the file.
+#
+# On failure nothing is emitted: a partial payload that reached a reviewer
+# would be reviewed as if complete.
+review_compose_payload() {
+  local _rcp_body _rcp_rc=0
+  _rcp_body="$(mktemp)"
+  _review_compose_payload_stream "$@" > "$_rcp_body" || _rcp_rc=$?
+  if [ "$_rcp_rc" -ne 0 ]; then
+    rm -f "$_rcp_body"
+    return "$_rcp_rc"
+  fi
+  _review_normalize_payload_ends "$_rcp_body"
+  rm -f "$_rcp_body"
 }
 
 # ---------------------------------------------------------------------------
