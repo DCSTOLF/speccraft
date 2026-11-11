@@ -35,6 +35,13 @@
 #                             roots; a single global flag cannot express that.
 #   STUB_CODEX_SETUP_RAW      literal text `setup` prints instead of JSON, for
 #                             the unparseable-output row
+#   STUB_CODEX_EXPECT_PROMPT_FILE
+#                             path the `task` --prompt-file argument must be
+#                             INODE-EQUAL to. Compared with `test -ef`, never
+#                             by shelling out to stat with its GNU-only format
+#                             flag, which the portability sweep flags on sight.
+#                             Proves the round artifact itself was handed over
+#                             rather than a copy of it; a mismatch exits 65.
 #   STUB_CODEX_JOB_ID         job id handed back by `task --background`
 #   STUB_CODEX_STATUS_SEQUENCE
 #                             space-separated job statuses, consumed one per
@@ -155,6 +162,30 @@ setup)
 	;;
 
 task)
+	if [ -n "${STUB_CODEX_EXPECT_PROMPT_FILE:-}" ]; then
+		# Pull the value that follows --prompt-file out of the argv.
+		_pf=''
+		_want_pf=0
+		for _a in "$@"; do
+			if [ "$_want_pf" = 1 ]; then
+				_pf=$_a
+				_want_pf=0
+				continue
+			fi
+			[ "$_a" = "--prompt-file" ] && _want_pf=1
+		done
+		if [ -z "$_pf" ]; then
+			printf 'stub-node.sh: task invoked with no --prompt-file\n' >&2
+			exit 65
+		fi
+		# `test -ef` compares device+inode, so a byte-identical COPY fails here.
+		if [ ! "$_pf" -ef "$STUB_CODEX_EXPECT_PROMPT_FILE" ]; then
+			printf 'stub-node.sh: --prompt-file %s is not the artifact %s\n' \
+				"$_pf" "$STUB_CODEX_EXPECT_PROMPT_FILE" >&2
+			exit 65
+		fi
+	fi
+
 	# enqueueBackgroundTask's payload: jobId plus the STRING status "queued".
 	printf '{\n'
 	printf '  "jobId": "%s",\n' "$job_id"

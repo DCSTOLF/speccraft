@@ -1853,3 +1853,82 @@ review_codex_preflight() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# AC6 / AC7 — the background launch argv.
+# ---------------------------------------------------------------------------
+
+# review_codex_task_argv <agents.toml> <agent> <root> <payload> <cwd> —
+# emit the companion launch argv, NUL-separated, one word per record.
+#
+# NUL-separated rather than a single string because the payload path and the
+# repo root are arbitrary filesystem paths: a space in either would be split
+# into two arguments by any whitespace-joined form, and the round artifact
+# would be handed over under a truncated name. Callers dispatch with
+# `xargs -0`, which preserves the word boundaries this emits.
+#
+# The emitted argv is `task --background --fresh --json --prompt-file <payload>
+# --cwd <cwd>`, plus `--model`/`--effort` only when the registry sets them.
+#
+# Three flags are NEVER emitted, and each is a correctness requirement rather
+# than a preference:
+#   --write        a reviewer is read-only; a review that edited the tree is a
+#                  defect, never a verdict (AC: touchedFiles wins over all).
+#   --resume
+#   --resume-last  a reviewer must not inherit a prior thread's context, or the
+#                  round's payload stops being what was reviewed. `--fresh` is
+#                  the positive counterpart and is always emitted.
+#
+# Background, not foreground: a foreground task cannot be cancelled, and the
+# Codex broker is spawned detached and unref'd, so only `companion cancel
+# <job-id>` reaches the running turn.
+#
+# The payload is passed BY PATH and is the round's own artifact — never a copy.
+# AC7 pins that with an inode comparison, because a copy would decouple what
+# the budget measured from what the reviewer read.
+review_codex_task_argv() {
+  local toml="${1:-}" agent="${2:-}" root="${3:-}" payload="${4:-}" cwd="${5:-}"
+
+  [ -n "$toml" ] && [ -f "$toml" ] || {
+    review_error "review_codex_task_argv: registry not found: '${toml:-}'"
+    return 2
+  }
+  [ -n "$agent" ] || { review_error "review_codex_task_argv: agent required"; return 2; }
+  [ -n "$root" ] || { review_error "review_codex_task_argv: plugin root required"; return 2; }
+  [ -n "$cwd" ] || { review_error "review_codex_task_argv: cwd required"; return 2; }
+  [ -n "$payload" ] && [ -f "$payload" ] || {
+    review_error "review_codex_task_argv: payload artifact not found: '${payload:-}'"
+    return 2
+  }
+
+  local keys
+  keys="$(review_agent_keys "$toml" "$agent")" || return 2
+  [ -n "$keys" ] || {
+    review_error "review_codex_task_argv: no agent named \"$agent\" in $toml"
+    return 2
+  }
+
+  local model="" effort=""
+  if printf '%s\n' "$keys" | grep -qx 'model'; then
+    model="$(review_agent_field "$toml" "$agent" model)"
+  fi
+  if printf '%s\n' "$keys" | grep -qx 'effort'; then
+    effort="$(review_agent_field "$toml" "$agent" effort)"
+  fi
+
+  # Built in a local array-free way: the positional list is the only portable
+  # ordered collection across bash 3.2 and zsh, so the words are emitted
+  # directly instead of being accumulated.
+  printf '%s\0' \
+    node \
+    "$root/scripts/codex-companion.mjs" \
+    task \
+    --background \
+    --fresh \
+    --json \
+    --prompt-file "$payload" \
+    --cwd "$cwd"
+
+  [ -z "$model" ] || printf '%s\0' --model "$model"
+  [ -z "$effort" ] || printf '%s\0' --effort "$effort"
+}
+

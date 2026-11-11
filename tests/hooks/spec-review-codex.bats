@@ -36,6 +36,30 @@ assert_named_failure() {
   }
 }
 
+# assert_line / refute_line — LINE-EXACT assertions over $output.
+#
+# Both spelled with grep -qxF plus an explicit branch, never `grep -qvx`: -v
+# inverts PER LINE, so `grep -qvx needle` succeeds whenever ANY line differs
+# from the needle, which is true of essentially every multi-line output and
+# makes the assertion inert. A bare `! grep -q ...` is no better as a
+# non-final statement under `set -e`.
+assert_line() {
+  printf '%s\n' "$output" | grep -qxF -- "$1" || {
+    echo "expected a line exactly '$1'; got:" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+}
+
+refute_line() {
+  if printf '%s\n' "$output" | grep -qxF -- "$1"; then
+    echo "did not expect a line exactly '$1'; got:" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  fi
+  return 0
+}
+
 # count_procs — how many processes currently run EXACTLY this command line.
 # Matched whole-line against `ps -eo args=` rather than with `pkill -f`, which
 # would also match this very test's own argv and so could never be trusted.
@@ -879,4 +903,197 @@ count_setup_calls() {
   [ "$status" -eq 0 ]
   run grep -qF -- "$TEST_DIR/pathy-root/scripts/codex-companion.mjs setup" "$ARGV_LOG"
   [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# AC6 / AC7 — review_codex_task_argv
+# ---------------------------------------------------------------------------
+
+# argv_lines <toml> <agent> <root> <payload> <cwd> — run the builder and render
+# its NUL-separated argv one word per line.
+#
+# Written through a FILE, not captured in `$(...)`: command substitution
+# discards NUL bytes, so capturing the argv that way would silently merge
+# adjacent words and an empty argument would vanish entirely.
+argv_lines() {
+  review_codex_task_argv "$1" "$2" "$3" "$4" "$5" > "$TEST_DIR/argv.nul" || return $?
+  tr '\0' '\n' < "$TEST_DIR/argv.nul"
+}
+
+codex_argv_fixture() {
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  printf 'payload bytes\n' > "$TEST_DIR/payload.md"
+  write_registry "$1"
+}
+
+@test "review_codex_task_argv emits exactly the background launch argv" {
+  source "$LIB"
+  codex_env
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  [ "$status" -eq 0 ]
+
+  local expected
+  expected="$(printf '%s\n' \
+    node \
+    "$TEST_DIR/root/scripts/codex-companion.mjs" \
+    task --background --fresh --json \
+    --prompt-file "$TEST_DIR/payload.md" \
+    --cwd "$FAKE_REPO")"
+
+  [ "$output" = "$expected" ] || {
+    echo "argv mismatch." >&2
+    echo "--- want ---" >&2; printf '%s\n' "$expected" >&2
+    echo "--- got ----" >&2; printf '%s\n' "$output" >&2
+    return 1
+  }
+}
+
+@test "review_codex_task_argv: --model appears only when the registry sets it" {
+  source "$LIB"
+  codex_env
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  refute_line '--model'
+
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"
+model = "gpt-5.3-codex"'
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  assert_line '--model'
+  assert_line 'gpt-5.3-codex'
+}
+
+@test "review_codex_task_argv: --effort appears only when the registry sets it" {
+  source "$LIB"
+  codex_env
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  refute_line '--effort'
+
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"
+effort = "high"'
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  assert_line '--effort'
+  assert_line 'high'
+}
+
+@test "review_codex_task_argv: --write never appears in the argv" {
+  source "$LIB"
+  codex_env
+  # Asserted against an entry that sets every optional field, so the flag
+  # cannot be absent merely because the argv is short.
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"
+model = "gpt-5.3-codex"
+effort = "high"'
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  [ "$status" -eq 0 ]
+  refute_line '--write'
+}
+
+@test "review_codex_task_argv: --resume never appears in the argv" {
+  source "$LIB"
+  codex_env
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"
+model = "gpt-5.3-codex"
+effort = "high"'
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  [ "$status" -eq 0 ]
+  refute_line '--resume'
+}
+
+@test "review_codex_task_argv: --resume-last never appears in the argv" {
+  source "$LIB"
+  codex_env
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"
+model = "gpt-5.3-codex"
+effort = "high"'
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  [ "$status" -eq 0 ]
+  refute_line '--resume-last'
+  # --fresh is the positive counterpart: a reviewer must never inherit the
+  # prior thread's context, so its ABSENCE would be the same defect.
+  assert_line '--fresh'
+}
+
+@test "review_codex_task_argv: the argv is NUL-separated, so a path with spaces survives" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  mkdir -p "$TEST_DIR/a dir"
+  printf 'payload\n' > "$TEST_DIR/a dir/pay load.md"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run argv_lines "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/a dir/pay load.md" "$FAKE_REPO"
+  [ "$status" -eq 0 ]
+  # One line, intact — not split into "pay" and "load.md", which is exactly
+  # what a space-separated argv would do to the round artifact's path.
+  assert_line "$TEST_DIR/a dir/pay load.md"
+}
+
+@test "review_codex_task_argv: the dispatched --prompt-file is the round artifact itself, not a copy" {
+  source "$LIB"
+  codex_env
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  # The stub compares with `test -ef` (device+inode), never by shelling out to
+  # stat with its GNU-only format flag, which the portability sweep flags.
+  # A byte-identical copy therefore fails this check.
+  export STUB_CODEX_EXPECT_PROMPT_FILE="$TEST_DIR/payload.md"
+
+  review_codex_task_argv "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" \
+    "$TEST_DIR/payload.md" "$FAKE_REPO" > "$TEST_DIR/argv.nul"
+  # `xargs -0 env`, not a bare `xargs -0`: with no utility given, xargs
+  # defaults to `echo`, so the argv would merely be printed and BOTH halves of
+  # this row would pass without the companion ever running. `env` executes the
+  # argv's own first word, which is what a real dispatch does.
+  run xargs -0 env < "$TEST_DIR/argv.nul"
+  [ "$status" -eq 0 ] || {
+    echo "dispatching the built argv must hand over the artifact itself; got: $output" >&2
+    return 1
+  }
+
+  # And the proof bites: pointing the builder at a COPY must be rejected.
+  cp "$TEST_DIR/payload.md" "$TEST_DIR/payload-copy.md"
+  review_codex_task_argv "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" \
+    "$TEST_DIR/payload-copy.md" "$FAKE_REPO" > "$TEST_DIR/argv2.nul"
+  run xargs -0 env < "$TEST_DIR/argv2.nul"
+  [ "$status" -ne 0 ] || {
+    echo "a byte-identical copy must NOT satisfy the inode proof" >&2
+    return 1
+  }
+}
+
+@test "review_codex_task_argv: a missing payload or an unknown agent is a named error" {
+  source "$LIB"
+  codex_env
+  codex_argv_fixture '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_task_argv "$TEST_DIR/agents.toml" nosuchagent "$TEST_DIR/root" "$TEST_DIR/payload.md" "$FAKE_REPO"
+  assert_named_failure 'nosuchagent'
+
+  run review_codex_task_argv "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/nope.md" "$FAKE_REPO"
+  assert_named_failure "$TEST_DIR/nope.md"
 }
