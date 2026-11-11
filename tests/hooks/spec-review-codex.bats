@@ -12,6 +12,11 @@
 setup() {
   PLUGIN_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
   LIB="$PLUGIN_DIR/commands/spec/review.lib.sh"
+  # The adapter moved to a sibling lib at step 28. Every static guard below
+  # scans BOTH files: pointed at review.lib.sh alone they passed VACUOUSLY
+  # after the extraction, because the code they forbid had moved out from
+  # under them. A guard that cannot see its subject is worse than no guard.
+  CODEX_LIB="$PLUGIN_DIR/commands/spec/review-codex.lib.sh"
   STUB_NODE="$PLUGIN_DIR/tests/hooks/stubs/stub-node.sh"
   CODEX_FIX="$PLUGIN_DIR/tests/hooks/fixtures/review-dispatch/codex"
   export PATH="$PLUGIN_DIR/bin:$PATH"
@@ -229,7 +234,7 @@ count_procs() {
 @test "review_with_deadline uses no timeout(1)" {
   # macOS has no timeout(1), so reaching for it would work in CI and fail on
   # the platform this convention exists to protect.
-  run grep -nE '(^|[^[:alnum:]_-])timeout[[:space:]]+[0-9]' "$LIB"
+  run sh -c "cat '$LIB' '$CODEX_LIB' | grep -nE '(^|[^[:alnum:]_-])timeout[[:space:]]+[0-9]'"
   [ "$status" -ne 0 ]
 }
 
@@ -242,7 +247,7 @@ count_procs() {
   # draws: the lib must be free to DOCUMENT the form it refuses to use, and the
   # first version of this guard flagged its own explanatory comment. The
   # mutation test below proves the filter did not make the guard inert.
-  run sh -c "grep -vE '^[[:space:]]*#' '$LIB' | grep -nE 'wait[[:space:]]+-n'"
+  run sh -c "cat '$LIB' '$CODEX_LIB' | grep -vE '^[[:space:]]*#' | grep -nE 'wait[[:space:]]+-n'"
   [ "$status" -ne 0 ]
 }
 
@@ -267,7 +272,7 @@ count_procs() {
   # `set -m` is the other obvious route to a killable process group. zsh rejects
   # it outright in a non-interactive script ("can't change option: -m"), and a
   # lib must not change the CALLER's shell options anyway.
-  run grep -nE '^[[:space:]]*set[[:space:]]+[-+]m([[:space:]]|$)' "$LIB"
+  run sh -c "cat '$LIB' '$CODEX_LIB' | grep -nE '^[[:space:]]*set[[:space:]]+[-+]m([[:space:]]|\$)'"
   [ "$status" -ne 0 ]
 }
 
@@ -1451,7 +1456,7 @@ count_calls() {
 @test "the poll interval defaults to 5 seconds" {
   # Pinned statically so the tests above may shorten it without the default
   # silently drifting. AC6a fixes the interval at 5 s.
-  run grep -qxF 'REVIEW_CODEX_POLL_INTERVAL_S="${REVIEW_CODEX_POLL_INTERVAL_S:-5}"' "$LIB"
+  run grep -qxF 'REVIEW_CODEX_POLL_INTERVAL_S="${REVIEW_CODEX_POLL_INTERVAL_S:-5}"' "$CODEX_LIB"
   [ "$status" -eq 0 ]
 }
 
@@ -1576,7 +1581,7 @@ count_calls() {
   # because the lib legitimately contains a kill in review_with_deadline, which
   # bounds a single invocation rather than the job.
   local body
-  body="$(fn_body "$LIB" _review_codex_poll)$(fn_body "$LIB" review_codex_job_cancel)"
+  body="$(fn_body "$CODEX_LIB" _review_codex_poll)$(fn_body "$CODEX_LIB" review_codex_job_cancel)"
   [ -n "$body" ] || { echo "could not extract the function bodies" >&2; return 1; }
 
   if printf '%s\n' "$body" | grep -qE '(^|[^[:alnum:]_])kill([[:space:]]|$)'; then
@@ -1721,7 +1726,7 @@ mode = "codex-plugin"'
   # agent name, so a round could report a codex-plugin verdict that no
   # companion ever produced. Comment lines are excluded so the lib may explain
   # the prohibition, and the row below proves the filter still bites.
-  run sh -c "grep -vE '^[[:space:]]*#' '$LIB' | grep -nE 'codex[[:space:]]+exec'"
+  run sh -c "cat '$LIB' '$CODEX_LIB' | grep -vE '^[[:space:]]*#' | grep -nE 'codex[[:space:]]+exec'"
   [ "$status" -ne 0 ]
 }
 
