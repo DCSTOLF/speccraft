@@ -250,3 +250,409 @@ count_procs() {
   sleep 1
   [ "$(count_procs "sleep 2533")" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AC5 / AC5a / AC5d — review_codex_plugin_root
+#
+# Every row runs under a FAKE HOME and a stub `node`, never the real plugin:
+# the suite must pass on a machine with no Codex plugin and no auth. The repo
+# root is controlled by cd-ing into a directory outside any speccraft repo, so
+# `speccraft-state find-root` fails and the lib falls back to `pwd`.
+# ---------------------------------------------------------------------------
+
+# make_companion_root <dir> [manifest-version] — a plausible plugin root.
+# Always writes scripts/codex-companion.mjs. A version argument also writes the
+# companion-OWNED manifest at .claude-plugin/plugin.json, which is the only
+# version source for a root that installed_plugins.json has never heard of.
+make_companion_root() {
+  local dir="$1" version="${2:-}"
+  mkdir -p "$dir/scripts"
+  printf '// stub companion\n' > "$dir/scripts/codex-companion.mjs"
+  if [ -n "$version" ]; then
+    mkdir -p "$dir/.claude-plugin"
+    printf '{ "name": "codex", "version": "%s" }\n' "$version" \
+      > "$dir/.claude-plugin/plugin.json"
+  fi
+}
+
+# make_bare_root <dir> — a directory that LOOKS like a root but has no
+# companion. This is the companion-missing case, not not-installed.
+make_bare_root() {
+  mkdir -p "$1"
+}
+
+# write_installed <json-array-for-the-codex-key>
+write_installed() {
+  mkdir -p "$FAKE_HOME/.claude/plugins"
+  printf '{ "version": 2, "plugins": { "codex@openai-codex": %s } }\n' "$1" \
+    > "$FAKE_HOME/.claude/plugins/installed_plugins.json"
+}
+
+# write_registry <toml-body>
+write_registry() {
+  printf '%s\n' "$1" > "$TEST_DIR/agents.toml"
+}
+
+# codex_env — fake HOME, a stub `node` first on PATH, an argv log, and a cwd
+# that stands in for the repo root.
+codex_env() {
+  FAKE_HOME="$TEST_DIR/home"
+  FAKE_REPO="$TEST_DIR/repo"
+  ARGV_LOG="$TEST_DIR/argv.log"
+  mkdir -p "$FAKE_HOME" "$FAKE_REPO" "$TEST_DIR/bin"
+  ln -sf "$STUB_NODE" "$TEST_DIR/bin/node"
+  : > "$ARGV_LOG"
+  export HOME="$FAKE_HOME"
+  export STUB_CODEX_ARGV_LOG="$ARGV_LOG"
+  export STUB_CODEX_STATE_DIR="$TEST_DIR"
+  export STUB_CODEX_FIXTURE_DIR="$CODEX_FIX"
+  export PATH="$TEST_DIR/bin:$PATH"
+  cd "$FAKE_REPO"
+}
+
+# assert_single_reason <expected-substring> — the diagnostic must carry EXACTLY
+# one of the four reason tokens. AC5 requires the two version failures to stay
+# siblings: a fixture satisfying several failure conditions must still name one
+# token, never a concatenation like "companion-missing unknown-version".
+assert_single_reason() {
+  local want="$1" n
+  n="$(printf '%s\n' "$output" \
+    | grep -oE 'not-installed|companion-missing|unsupported-companion|unknown-version' \
+    | grep -c .)" || n=0
+  [ "$n" -eq 1 ] || {
+    echo "expected exactly 1 reason token, found $n in: $output" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF -- "$want" || {
+    echo "expected the diagnostic to name '$want'; got: $output" >&2
+    return 1
+  }
+}
+
+@test "review_codex_plugin_root: an explicit plugin_root wins over installed_plugins.json" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/explicit" 1.0.6
+  make_companion_root "$TEST_DIR/installed"
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/installed\", \"version\": \"1.0.6\" }]"
+  write_registry "[[agents]]
+name = \"codex\"
+mode = \"codex-plugin\"
+plugin_root = \"$TEST_DIR/explicit\""
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/explicit" ]
+}
+
+@test "review_codex_plugin_root: the local-scope entry whose projectPath is the repo root wins" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/local-root"
+  make_companion_root "$TEST_DIR/user-root"
+  write_installed "[
+    { \"scope\": \"user\",  \"installPath\": \"$TEST_DIR/user-root\",  \"version\": \"1.0.6\" },
+    { \"scope\": \"local\", \"installPath\": \"$TEST_DIR/local-root\", \"version\": \"1.0.6\", \"projectPath\": \"$FAKE_REPO\" }
+  ]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/local-root" ]
+}
+
+@test "review_codex_plugin_root: a local entry for a DIFFERENT project does not win" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/local-root"
+  make_companion_root "$TEST_DIR/user-root"
+  write_installed "[
+    { \"scope\": \"user\",  \"installPath\": \"$TEST_DIR/user-root\",  \"version\": \"1.0.6\" },
+    { \"scope\": \"local\", \"installPath\": \"$TEST_DIR/local-root\", \"version\": \"1.0.6\", \"projectPath\": \"$TEST_DIR/some-other-repo\" }
+  ]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/user-root" ]
+}
+
+@test "review_codex_plugin_root: otherwise the user-scope entry's installPath is used" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/user-root"
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/user-root\", \"version\": \"1.0.6\" }]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/user-root" ]
+}
+
+@test "review_codex_plugin_root: a root without scripts/codex-companion.mjs is companion-missing" {
+  source "$LIB"
+  codex_env
+  make_bare_root "$TEST_DIR/empty-root"
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/empty-root\", \"version\": \"1.0.6\" }]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  assert_single_reason 'companion-missing'
+}
+
+@test "review_codex_plugin_root: no codex@openai-codex entry at all is not-installed" {
+  source "$LIB"
+  codex_env
+  write_installed '[]'
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  assert_single_reason 'not-installed'
+}
+
+@test "review_codex_plugin_root: a wholly absent installed_plugins.json is not-installed" {
+  source "$LIB"
+  codex_env
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  assert_single_reason 'not-installed'
+}
+
+@test "review_codex_plugin_root: a version below the range is unsupported-companion <version>" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/old-root"
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/old-root\", \"version\": \"1.0.5\" }]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  # The version must appear, so an operator can see WHICH version was rejected.
+  assert_single_reason 'unsupported-companion 1.0.5'
+}
+
+@test "review_codex_plugin_root: an absent version is unknown-version" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/nover-root"
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/nover-root\" }]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  assert_single_reason 'unknown-version'
+}
+
+@test "review_codex_plugin_root: an unparseable version is unknown-version" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/badver-root"
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/badver-root\", \"version\": \"not-a-version\" }]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  assert_single_reason 'unknown-version'
+}
+
+@test "review_codex_plugin_root: the reason token is exactly one of the four, never concatenated" {
+  source "$LIB"
+  codex_env
+  # Two failure conditions at once: no companion AND an unparseable version.
+  make_bare_root "$TEST_DIR/doubly-bad"
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/doubly-bad\", \"version\": \"nope\" }]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  # assert_single_reason counts the tokens, so a concatenated
+  # "companion-missing unknown-version" fails here even though it contains the
+  # expected substring.
+  assert_single_reason 'companion-missing'
+}
+
+@test "review_codex_plugin_root: an explicit root absent from installed_plugins.json reads its own manifest" {
+  source "$LIB"
+  codex_env
+  # AC5d's load-bearing row. Sourcing the version only from
+  # installed_plugins.json would leave this valid root permanently
+  # unknown-version, with no configuration that could ever satisfy it.
+  make_companion_root "$TEST_DIR/byo-root" 1.0.6
+  write_installed '[]'
+  write_registry "[[agents]]
+name = \"codex\"
+mode = \"codex-plugin\"
+plugin_root = \"$TEST_DIR/byo-root\""
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/byo-root" ]
+}
+
+@test "review_codex_plugin_root: a root present in BOTH sources reads installed_plugins.json" {
+  source "$LIB"
+  codex_env
+  # The manifest says 1.0.6; installed_plugins.json says 1.0.5. One resolution
+  # path yields one version, and for a root it knows about that path is
+  # installed_plugins.json — so this must be REJECTED as unsupported, not
+  # accepted off the manifest.
+  make_companion_root "$TEST_DIR/both-root" 1.0.6
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/both-root\", \"version\": \"1.0.5\" }]"
+  write_registry "[[agents]]
+name = \"codex\"
+mode = \"codex-plugin\"
+plugin_root = \"$TEST_DIR/both-root\""
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  assert_single_reason 'unsupported-companion 1.0.5'
+}
+
+@test "review_codex_plugin_root: a root in NEITHER source is unknown-version" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/orphan-root"
+  write_installed '[]'
+  write_registry "[[agents]]
+name = \"codex\"
+mode = \"codex-plugin\"
+plugin_root = \"$TEST_DIR/orphan-root\""
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  assert_single_reason 'unknown-version'
+}
+
+@test "review_codex_plugin_root: a manifest present but unparseable is unknown-version" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/badmanifest-root"
+  mkdir -p "$TEST_DIR/badmanifest-root/.claude-plugin"
+  printf '{ this is not json\n' > "$TEST_DIR/badmanifest-root/.claude-plugin/plugin.json"
+  write_installed '[]'
+  write_registry "[[agents]]
+name = \"codex\"
+mode = \"codex-plugin\"
+plugin_root = \"$TEST_DIR/badmanifest-root\""
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  assert_single_reason 'unknown-version'
+}
+
+@test "review_codex_plugin_root: 1.0.6 and above resolve, forward-compatibly" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/newer-root"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  # Each of these must be accepted; the range is open-ended above 1.0.6.
+  local v
+  for v in 1.0.6 1.0.7 1.0.10 1.7.0 2.0.0 10.0.0; do
+    write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/newer-root\", \"version\": \"$v\" }]"
+    run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+    [ "$status" -eq 0 ] || {
+      echo "version $v must resolve, got: $output" >&2
+      return 1
+    }
+  done
+
+  # And 1.0.10 must not be read as "below 1.0.6" by a string comparison, which
+  # is the classic dotted-version bug.
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/newer-root\", \"version\": \"1.0.10\" }]"
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+}
+
+@test "review_codex_plugin_root: versions below the range are rejected across components" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/low-root"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  local v
+  for v in 0.9.9 1.0.0 1.0.5; do
+    write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/low-root\", \"version\": \"$v\" }]"
+    run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+    [ "$status" -ne 0 ] || {
+      echo "version $v must be rejected, got exit 0" >&2
+      return 1
+    }
+    printf '%s\n' "$output" | grep -qF "unsupported-companion $v" || {
+      echo "expected 'unsupported-companion $v'; got: $output" >&2
+      return 1
+    }
+  done
+}
+
+@test "review_codex_plugin_root: a companion whose help omits the flags still resolves" {
+  source "$LIB"
+  codex_env
+  # AC5a. The stub's `help` prints the VERBATIM 1.0.6 usage text, which omits
+  # --prompt-file, --cwd and --json even though handleTask accepts all three.
+  # A help-text capability probe would therefore fail closed against the one
+  # install this spec targets. This row is the regression guard.
+  make_companion_root "$TEST_DIR/real-ish" 1.0.6
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/real-ish\", \"version\": \"1.0.6\" }]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  # Sanity: the fixture really does omit the flags, or this row proves nothing.
+  run grep -c -- '--prompt-file' "$CODEX_FIX/printusage-1.0.6.txt"
+  [ "$output" = "0" ]
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/real-ish" ]
+}
+
+@test "review_codex_plugin_root: resolution invokes no help or --help subcommand" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/quiet-root" 1.0.6
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/quiet-root\", \"version\": \"1.0.6\" }]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+
+  # The stub logs every argv it is handed. Resolution reads JSON and the
+  # filesystem only, so it must not have run the companion at all.
+  run grep -cE 'help' "$ARGV_LOG"
+  [ "$output" = "0" ]
+}
+
+@test "review_codex_plugin_root: an unknown agent and a missing registry are named distinctly" {
+  source "$LIB"
+  codex_env
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" nosuchagent
+  assert_named_failure 'nosuchagent'
+
+  run review_codex_plugin_root "$TEST_DIR/nosuch.toml" codex
+  assert_named_failure "$TEST_DIR/nosuch.toml"
+}

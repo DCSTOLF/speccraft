@@ -1531,3 +1531,208 @@ review_with_deadline() {
   return 124
 }
 
+# ---------------------------------------------------------------------------
+# AC5 / AC5a / AC5d — resolving the Codex plugin root and its version.
+# ---------------------------------------------------------------------------
+
+# The lowest version whose handleTask is known to accept this spec's argv
+# (--prompt-file, --cwd, --json). The range is open-ended above it, so a newer
+# companion resolves forward-compatibly rather than needing a bump here.
+REVIEW_CODEX_MIN_VERSION="1.0.6"
+REVIEW_CODEX_PLUGIN_KEY="codex@openai-codex"
+
+# _review_codex_installed_json — the host registry path, under $HOME so tests
+# can redirect the whole lookup with a fake HOME.
+_review_codex_installed_json() {
+  printf '%s\n' "${HOME:-}/.claude/plugins/installed_plugins.json"
+}
+
+# _review_canonical_dir <path> — absolute, symlink-resolved directory path.
+#
+# Canonicalized with `cd` plus `pwd -P`, never with the GNU-only canonicalizers
+# — realpath's -m flag, or readlink's -f — because macOS's userland has
+# neither. The portability guard rejects both on sight, a comment included,
+# which is why they are named descriptively here rather than spelled out; the
+# first version of this comment tripped that guard.
+#
+# A non-directory is echoed unchanged, so the caller's own existence check
+# produces the diagnostic rather than this helper swallowing the path.
+_review_canonical_dir() {
+  local d="${1:-}"
+  [ -n "$d" ] && [ -d "$d" ] || { printf '%s\n' "$d"; return 0; }
+  ( CDPATH='' cd -- "$d" 2>/dev/null && pwd -P )
+}
+
+# _review_version_parseable <version> — numeric dotted components only.
+# Anything else ("", "not-a-version", "1.0.6-beta") is UNPARSEABLE and maps to
+# unknown-version, never to a guess: a version we cannot read is not a version
+# we may compare against the supported range.
+_review_version_parseable() {
+  case "${1:-}" in
+    '') return 1 ;;
+    *[!0-9.]*) return 1 ;;
+    .* | *.) return 1 ;;
+    *..*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# _review_version_ge <a> <b> — true when a >= b, compared COMPONENT-WISE and
+# numerically. A string compare would read 1.0.10 as below 1.0.6, which is the
+# classic dotted-version bug; `$((...))` also strips leading zeros.
+_review_version_ge() {
+  local a="${1:-0}" b="${2:-0}" ai bi
+  while [ -n "$a" ] || [ -n "$b" ]; do
+    ai="${a%%.*}"
+    bi="${b%%.*}"
+    [ -n "$ai" ] || ai=0
+    [ -n "$bi" ] || bi=0
+    ai=$((ai))
+    bi=$((bi))
+    if [ "$ai" -ne "$bi" ]; then
+      [ "$ai" -gt "$bi" ]
+      return $?
+    fi
+    case "$a" in *.*) a="${a#*.}" ;; *) a="" ;; esac
+    case "$b" in *.*) b="${b#*.}" ;; *) b="" ;; esac
+  done
+  return 0
+}
+
+# _review_codex_version_for_root <root> — the version for an ALREADY-RESOLVED
+# root, from whichever source owns it.
+#
+# Which source is not a preference, it is a consequence of how the root was
+# found (AC5d): a root installed_plugins.json knows about is described by that
+# entry, and a root it has never heard of can only describe itself, via the
+# companion-owned manifest. Sourcing the version ONLY from
+# installed_plugins.json would leave a valid explicit plugin_root permanently
+# unknown-version with no configuration able to satisfy it. A root present in
+# both is read from installed_plugins.json, so one root yields one version.
+#
+# Echoes the raw version string, or nothing when neither source has one.
+_review_codex_version_for_root() {
+  local root="$1" reg entry_version canon
+  reg="$(_review_codex_installed_json)"
+  canon="$(_review_canonical_dir "$root")"
+
+  if [ -f "$reg" ]; then
+    # Match on the canonicalized installPath so a symlinked or trailing-slash
+    # spelling of the same root still finds its entry.
+    entry_version="$(
+      jq -r --arg key "$REVIEW_CODEX_PLUGIN_KEY" '
+        (.plugins[$key] // []) | .[] | select(.installPath != null)
+        | [.installPath, (.version // "")] | @tsv
+      ' "$reg" 2>/dev/null | while IFS="$(printf '\t')" read -r ipath iver; do
+        [ -n "$ipath" ] || continue
+        if [ "$(_review_canonical_dir "$ipath")" = "$canon" ]; then
+          printf '%s\n' "$iver"
+          break
+        fi
+      done
+    )"
+    if [ -n "$entry_version" ]; then
+      printf '%s\n' "$entry_version"
+      return 0
+    fi
+  fi
+
+  # Fall through to the companion-owned manifest. An unparseable manifest
+  # yields nothing, which the caller maps to unknown-version.
+  local manifest
+  manifest="$root/.claude-plugin/plugin.json"
+  if [ -f "$manifest" ]; then
+    jq -r '.version // empty' "$manifest" 2>/dev/null || true
+  fi
+}
+
+# _review_codex_root_from_registry — the installPath per AC5's precedence:
+# the `local` entry whose projectPath is THIS repo, else the `user` entry.
+# A local entry belonging to a different project must not win, which is why
+# projectPath is compared rather than merely being present.
+_review_codex_root_from_registry() {
+  local reg repo
+  reg="$(_review_codex_installed_json)"
+  [ -f "$reg" ] || return 1
+  repo="$(speccraft-state find-root 2>/dev/null || pwd)"
+  repo="$(_review_canonical_dir "$repo")"
+
+  local found
+  found="$(
+    jq -r --arg key "$REVIEW_CODEX_PLUGIN_KEY" --arg repo "$repo" '
+      (.plugins[$key] // []) as $e
+      | ( [ $e[] | select(.scope == "local" and .projectPath == $repo) ][0].installPath
+          // [ $e[] | select(.scope == "user") ][0].installPath
+          // empty )
+    ' "$reg" 2>/dev/null || true
+  )"
+  [ -n "$found" ] || return 1
+  printf '%s\n' "$found"
+}
+
+# review_codex_plugin_root <agents.toml> <agent> — echo the resolved plugin
+# root, or fail with EXACTLY ONE reason token.
+#
+# The reason tokens are siblings, never concatenated: `not-installed`,
+# `companion-missing`, `unsupported-companion <version>`, `unknown-version`.
+# AC5 pins that so the diagnostic stays greppable and reproducible — a message
+# carrying two tokens tells an operator nothing about which condition to fix.
+#
+# The capability check is version + readiness and NEVER help text. 1.0.6's own
+# printUsage omits --prompt-file, --cwd and --json even though handleTask
+# accepts all three, so a help-text probe fails closed against the single
+# install this spec targets. Readiness is review_codex_preflight's job; this
+# function resolves and version-checks only, and runs the companion not at all.
+review_codex_plugin_root() {
+  local toml="${1:-}" agent="${2:-}"
+  [ -n "$toml" ] && [ -f "$toml" ] || {
+    review_error "review_codex_plugin_root: registry not found: '${toml:-}'"
+    return 2
+  }
+  [ -n "$agent" ] || {
+    review_error "review_codex_plugin_root: agent required"
+    return 2
+  }
+
+  local keys
+  keys="$(review_agent_keys "$toml" "$agent")" || return 2
+  [ -n "$keys" ] || {
+    review_error "review_codex_plugin_root: no agent named \"$agent\" in $toml"
+    return 2
+  }
+
+  local root explicit=0
+  if printf '%s\n' "$keys" | grep -qx 'plugin_root'; then
+    root="$(review_agent_field "$toml" "$agent" plugin_root)"
+    explicit=1
+  fi
+
+  if [ "$explicit" -eq 0 ] || [ -z "${root:-}" ]; then
+    root="$(_review_codex_root_from_registry)" || {
+      review_error "review_codex_plugin_root: agent \"$agent\": codex-plugin-unavailable: not-installed"
+      return 1
+    }
+  fi
+
+  # Companion presence is checked BEFORE the version. A root with no companion
+  # is not a Codex install at all, so naming its version would be reporting on
+  # something that is not there — and AC5 allows exactly one token.
+  [ -f "$root/scripts/codex-companion.mjs" ] || {
+    review_error "review_codex_plugin_root: agent \"$agent\": codex-plugin-unavailable: companion-missing"
+    return 1
+  }
+
+  local version
+  version="$(_review_codex_version_for_root "$root")"
+  _review_version_parseable "${version:-}" || {
+    review_error "review_codex_plugin_root: agent \"$agent\": codex-plugin-unavailable: unknown-version"
+    return 1
+  }
+  _review_version_ge "$version" "$REVIEW_CODEX_MIN_VERSION" || {
+    review_error "review_codex_plugin_root: agent \"$agent\": codex-plugin-unavailable: unsupported-companion $version"
+    return 1
+  }
+
+  printf '%s\n' "$root"
+}
+
