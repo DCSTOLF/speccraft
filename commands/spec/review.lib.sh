@@ -1510,10 +1510,30 @@ review_with_deadline() {
   ) &
   job_pid=$!
 
-  while [ ! -s "$rcfile" ] && [ "$waited" -lt "$deadline_s" ]; do
-    sleep 1
-    waited=$((waited + 1))
+  # Ticks, not whole seconds. A one-second granularity would charge ~1s to
+  # EVERY companion invocation — and the adapter makes several per reviewer
+  # (launch, each status poll, result, cancel) — so a round would spend seconds
+  # purely in this loop. Sub-second ticks keep the deadline exact to the second
+  # while returning promptly when the command finishes.
+  #
+  # Fractional sleep is not in POSIX, so it is PROBED rather than assumed: GNU,
+  # BSD/macOS and busybox all accept it, and where it is missing the loop falls
+  # back to whole seconds and stays correct, just less responsive.
+  local tick ticks_per_s waited_ticks=0 deadline_ticks
+  if sleep 0.1 2>/dev/null; then
+    tick=0.1
+    ticks_per_s=10
+  else
+    tick=1
+    ticks_per_s=1
+  fi
+  deadline_ticks=$((deadline_s * ticks_per_s))
+
+  while [ ! -s "$rcfile" ] && [ "$waited_ticks" -lt "$deadline_ticks" ]; do
+    sleep "$tick"
+    waited_ticks=$((waited_ticks + 1))
   done
+  waited=$((waited_ticks / ticks_per_s))
 
   if [ -s "$rcfile" ]; then
     cmd_rc="$(cat "$rcfile")"
@@ -2038,4 +2058,151 @@ review_parse_codex_task_output() {
   }
 
   printf '%s\n' "$raw"
+}
+
+# ---------------------------------------------------------------------------
+# AC6a / AC6b — the job lifecycle.
+#
+# Every companion invocation below runs under review_with_deadline, which
+# bounds ONE invocation. The JOB deadline is the poll's own budget, and it ends
+# in `cancel`, never in a signal: the Codex broker is spawned detached and
+# unref'd, so killing the local caller proves only that the caller stopped.
+# ---------------------------------------------------------------------------
+
+# Fixed by AC6a. Overridable so tests need not spend the real interval, while
+# the default stays pinned by a test that greps this exact line.
+REVIEW_CODEX_POLL_INTERVAL_S="${REVIEW_CODEX_POLL_INTERVAL_S:-5}"
+
+# How long any single companion invocation may take. Separate from the job
+# budget: a wedged `status` call must not consume the whole review_timeout_s.
+REVIEW_CODEX_CALL_DEADLINE_S="${REVIEW_CODEX_CALL_DEADLINE_S:-60}"
+
+# review_codex_job_id <launch-output-file> — the job id from `task
+# --background --json`.
+#
+# Reads `.jobId` and nothing else. The launch payload also carries a `status`
+# field whose value is the STRING "queued" — neither terminal nor an id — so a
+# helper reaching for the wrong key would find something plausible.
+review_codex_job_id() {
+  local launch="${1:-}"
+  [ -n "$launch" ] && [ -f "$launch" ] || {
+    review_error "review_codex_job_id: launch output not found: '${launch:-}'"
+    return 2
+  }
+  local job_id
+  job_id="$(jq -r '.jobId // empty' "$launch" 2>/dev/null || true)"
+  [ -n "$job_id" ] || {
+    review_error "review_codex_job_id: no job id in the launch output: $launch"
+    return 1
+  }
+  printf '%s\n' "$job_id"
+}
+
+# review_codex_job_status <root> <job-id> — the job's status STRING.
+# Terminal: completed | failed | cancelled. Active: queued | running
+# (job-control.mjs:262 and codex-companion.mjs:291 in 1.0.6).
+review_codex_job_status() {
+  local root="${1:-}" job_id="${2:-}"
+  [ -n "$root" ] && [ -n "$job_id" ] || {
+    review_error "review_codex_job_status: root and job id required"
+    return 2
+  }
+  local out
+  out="$(review_with_deadline "$REVIEW_CODEX_CALL_DEADLINE_S" \
+    node "$root/scripts/codex-companion.mjs" status "$job_id" --json 2>/dev/null || true)"
+  local st
+  st="$(printf '%s\n' "$out" | jq -r '.job.status // empty' 2>/dev/null || true)"
+  [ -n "$st" ] || {
+    review_error "review_codex_job_status: could not read a status for job $job_id"
+    return 1
+  }
+  printf '%s\n' "$st"
+}
+
+# _review_codex_job_terminal <status> — true for the companion's own terminal
+# set, taken from the companion rather than guessed.
+_review_codex_job_terminal() {
+  case "${1:-}" in
+    completed | failed | cancelled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# review_codex_job_result <root> <job-id> <out-file> — capture `result <job-id>
+# --json` for review_parse_codex_task_output, and return the companion's own
+# exit status, which that parser needs as its second argument.
+review_codex_job_result() {
+  local root="${1:-}" job_id="${2:-}" out_file="${3:-}"
+  [ -n "$root" ] && [ -n "$job_id" ] && [ -n "$out_file" ] || {
+    review_error "review_codex_job_result: root, job id and output file required"
+    return 2
+  }
+  local rc=0
+  review_with_deadline "$REVIEW_CODEX_CALL_DEADLINE_S" \
+    node "$root/scripts/codex-companion.mjs" result "$job_id" --json \
+    > "$out_file" 2>/dev/null || rc=$?
+  return "$rc"
+}
+
+# _review_codex_poll <root> <job-id> <timeout-s> — poll until the job reports
+# terminal, echoing that status; return 124 when the budget runs out.
+#
+# The status is checked BEFORE the first sleep, so a job that finished during
+# launch is not charged a whole interval. The final sleep is clamped to the
+# remaining budget, so a 5 s interval cannot overshoot a 2 s deadline.
+_review_codex_poll() {
+  local root="${1:-}" job_id="${2:-}" timeout_s="${3:-}"
+  [ -n "$root" ] && [ -n "$job_id" ] && [ -n "$timeout_s" ] || {
+    review_error "_review_codex_poll: root, job id and timeout required"
+    return 2
+  }
+
+  local waited=0 st nap
+  while :; do
+    st="$(review_codex_job_status "$root" "$job_id" 2>/dev/null || true)"
+    if [ -n "$st" ] && _review_codex_job_terminal "$st"; then
+      printf '%s\n' "$st"
+      return 0
+    fi
+    [ "$waited" -lt "$timeout_s" ] || return 124
+
+    nap="$REVIEW_CODEX_POLL_INTERVAL_S"
+    [ "$((waited + nap))" -le "$timeout_s" ] || nap=$((timeout_s - waited))
+    [ "$nap" -gt 0 ] || return 124
+    sleep "$nap"
+    waited=$((waited + nap))
+  done
+}
+
+# review_codex_job_cancel <root> <job-id> — cancel the job and CONFIRM it
+# stopped. Zero only on confirmed cancellation.
+#
+# One cancel, then exactly one confirming status. AC6b: a cancel that reports
+# success while the following status still shows the job active is
+# `failed codex-cancel-unconfirmed <job-id>`, NOT a timeout — a reviewer that
+# may still be running must never be recorded as merely having timed out. The
+# job id is named so an operator can finish it off by hand.
+#
+# No signals anywhere in this path. `cancel` is the only route to
+# interruptAppServerTurn; a process-group kill would stop this caller and leave
+# the turn running, producing exactly the false timeout above.
+review_codex_job_cancel() {
+  local root="${1:-}" job_id="${2:-}"
+  [ -n "$root" ] && [ -n "$job_id" ] || {
+    review_error "review_codex_job_cancel: root and job id required"
+    return 2
+  }
+
+  review_with_deadline "$REVIEW_CODEX_CALL_DEADLINE_S" \
+    node "$root/scripts/codex-companion.mjs" cancel "$job_id" --json \
+    >/dev/null 2>&1 || true
+
+  local st
+  st="$(review_codex_job_status "$root" "$job_id" 2>/dev/null || true)"
+  if [ -n "$st" ] && _review_codex_job_terminal "$st"; then
+    return 0
+  fi
+
+  printf 'failed codex-cancel-unconfirmed %s\n' "$job_id"
+  return 1
 }

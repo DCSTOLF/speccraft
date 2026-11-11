@@ -1322,3 +1322,246 @@ nested_result() {
   [ "$status" -ne 0 ]
   assert_named_failure "$TEST_DIR/nosuch-output.json"
 }
+
+# ---------------------------------------------------------------------------
+# AC6a / AC6b — the job lifecycle: launch, poll, result, cancel-and-confirm
+#
+# The job deadline is NOT review_with_deadline. The broker is spawned detached
+# and unref'd, so killing the local caller proves only that the caller stopped;
+# only `companion cancel <job-id>` reaches the running turn. review_with_deadline
+# bounds each individual companion invocation, which is a different job.
+# ---------------------------------------------------------------------------
+
+# fn_body <file> <name> — the text of one shell function, used by the negative
+# rows that must assert something about a SPECIFIC function rather than about
+# the whole lib (which legitimately contains a kill, in review_with_deadline).
+fn_body() {
+  awk -v want="$2() {" '
+    $0 == want { inside = 1; next }
+    inside && /^}$/ { exit }
+    inside { print }
+  ' "$1"
+}
+
+# status_calls_after_cancel — how many `status` invocations the log records
+# AFTER the first `cancel`. Ordering matters here, not totals: the polling
+# statuses come before the cancel and the confirming one comes after.
+status_calls_after_cancel() {
+  awk '
+    /codex-companion.mjs cancel/ { seen_cancel = 1; next }
+    seen_cancel && /codex-companion.mjs status/ { n++ }
+    END { print n + 0 }
+  ' "$ARGV_LOG"
+}
+
+count_calls() {
+  grep -c "codex-companion.mjs $1" "$ARGV_LOG" 2>/dev/null || true
+}
+
+@test "review_codex_job_id extracts the job id from the launch output" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  export STUB_CODEX_JOB_ID='task-abc123-xyz'
+
+  node "$TEST_DIR/root/scripts/codex-companion.mjs" task --background --json \
+    > "$TEST_DIR/launch.json"
+
+  run review_codex_job_id "$TEST_DIR/launch.json"
+  [ "$status" -eq 0 ]
+  [ "$output" = "task-abc123-xyz" ]
+}
+
+@test "review_codex_job_id rejects a launch payload carrying no job id" {
+  source "$LIB"
+  codex_env
+  # The launch payload's own `status` is the STRING "queued", which is neither
+  # terminal nor a job id; a parser that reached for it would find something
+  # plausible and wrong.
+  printf '{ "status": "queued", "title": "x" }\n' > "$TEST_DIR/nojob.json"
+
+  run review_codex_job_id "$TEST_DIR/nojob.json"
+  [ "$status" -ne 0 ]
+  assert_named_failure 'job id'
+}
+
+@test "review_codex_job_status reports the job status string" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+
+  run review_codex_job_status "$TEST_DIR/root" task-1
+  [ "$status" -eq 0 ]
+  [ "$output" = "running" ]
+}
+
+@test "review_codex_job_result writes the companion result for the parser" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+
+  run review_codex_job_result "$TEST_DIR/root" task-1 "$TEST_DIR/result.json"
+  [ "$status" -eq 0 ]
+
+  # The file must be exactly what the parser expects to be handed, nested shape
+  # and all — the two helpers meet here.
+  run review_parse_codex_task_output "$TEST_DIR/result.json" 0
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF 'verdict: changes-requested'
+}
+
+@test "the poll returns as soon as the job reports terminal" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  export STUB_CODEX_STATUS_SEQUENCE='running running completed'
+  REVIEW_CODEX_POLL_INTERVAL_S=1
+
+  run _review_codex_poll "$TEST_DIR/root" task-1 20
+  [ "$status" -eq 0 ]
+  [ "$output" = "completed" ]
+}
+
+@test "the poll interval defaults to 5 seconds" {
+  # Pinned statically so the tests above may shorten it without the default
+  # silently drifting. AC6a fixes the interval at 5 s.
+  run grep -qxF 'REVIEW_CODEX_POLL_INTERVAL_S="${REVIEW_CODEX_POLL_INTERVAL_S:-5}"' "$LIB"
+  [ "$status" -eq 0 ]
+}
+
+@test "a never-terminating job returns the deadline signal from the poll" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+  REVIEW_CODEX_POLL_INTERVAL_S=1
+
+  run _review_codex_poll "$TEST_DIR/root" task-1 2
+  [ "$status" -eq 124 ]
+}
+
+@test "the poll does not overshoot a short budget with the DEFAULT 5 s interval" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+
+  # AC6a's literal scenario: review_timeout_s = 2 against the real 5 s
+  # interval. The last sleep must be CLAMPED to the remaining budget, or a 2 s
+  # deadline takes 5 s to notice — and every reviewer's timeout is late by the
+  # better part of an interval. The rows above all shorten the interval, so
+  # none of them exercises the clamp; a mutation removing it passed them all.
+  local t0 t1
+  t0=$(date +%s)
+  run _review_codex_poll "$TEST_DIR/root" task-1 2
+  t1=$(date +%s)
+
+  [ "$status" -eq 124 ]
+  [ "$((t1 - t0))" -lt 4 ] || {
+    echo "the poll took $((t1 - t0))s for a 2s budget; the interval was not clamped" >&2
+    return 1
+  }
+}
+
+@test "a never-terminating job at review_timeout_s=2 calls cancel exactly once" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+  REVIEW_CODEX_POLL_INTERVAL_S=1
+
+  _review_codex_poll "$TEST_DIR/root" task-1 2 || true
+  review_codex_job_cancel "$TEST_DIR/root" task-1 || true
+
+  [ "$(count_calls cancel)" -eq 1 ] || {
+    echo "expected exactly 1 cancel, got $(count_calls cancel):" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+}
+
+@test "the deadline path makes exactly one confirming status call after cancel" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+  REVIEW_CODEX_POLL_INTERVAL_S=1
+
+  _review_codex_poll "$TEST_DIR/root" task-1 2 || true
+  review_codex_job_cancel "$TEST_DIR/root" task-1 || true
+
+  # Exactly one: cancellation must be CONFIRMED, and confirming it twice would
+  # mean the first answer was not trusted.
+  [ "$(status_calls_after_cancel)" -eq 1 ] || {
+    echo "expected 1 confirming status after cancel, got $(status_calls_after_cancel):" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+}
+
+@test "a confirmed cancellation succeeds, so the caller can record a plain timeout" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  # The stub's default cancel is honest: the confirming status reports terminal.
+  export STUB_CODEX_STATUS_SEQUENCE='cancelled'
+
+  run review_codex_job_cancel "$TEST_DIR/root" task-1
+  [ "$status" -eq 0 ]
+}
+
+@test "a cancel whose following status still reports the job active is codex-cancel-unconfirmed" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  # AC6b, and round 2's confirmed broker defect: cancel reports success while
+  # the turn keeps running. A reviewer that may still be running is never
+  # reported as merely timed out.
+  export STUB_CODEX_CANCEL_CONFIRMS=0
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+
+  run review_codex_job_cancel "$TEST_DIR/root" task-99
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-cancel-unconfirmed task-99'
+}
+
+@test "the job id appears in the codex-cancel-unconfirmed message" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  export STUB_CODEX_CANCEL_CONFIRMS=0
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+
+  run review_codex_job_cancel "$TEST_DIR/root" task-needle-4242
+  [ "$status" -ne 0 ]
+  # Named so an operator can finish the job off by hand. A bare
+  # "cancel unconfirmed" would leave them nothing to act on.
+  printf '%s\n' "$output" | grep -qF 'task-needle-4242' || {
+    echo "the message must name the job id; got: $output" >&2
+    return 1
+  }
+}
+
+@test "the codex-plugin job timeout path never kills a process group" {
+  source "$LIB"
+  # AC10's second half. The broker is detached and unref'd, so a process-group
+  # kill would stop the local caller and leave the reviewer running — the exact
+  # false "timeout" AC6b exists to prevent. Scoped to these two functions
+  # because the lib legitimately contains a kill in review_with_deadline, which
+  # bounds a single invocation rather than the job.
+  local body
+  body="$(fn_body "$LIB" _review_codex_poll)$(fn_body "$LIB" review_codex_job_cancel)"
+  [ -n "$body" ] || { echo "could not extract the function bodies" >&2; return 1; }
+
+  if printf '%s\n' "$body" | grep -qE '(^|[^[:alnum:]_])kill([[:space:]]|$)'; then
+    echo "the job lifecycle must cancel, never kill:" >&2
+    printf '%s\n' "$body" | grep -nE '(^|[^[:alnum:]_])kill([[:space:]]|$)' >&2
+    return 1
+  fi
+  # And it must positively reach for cancel.
+  printf '%s\n' "$body" | grep -qF 'cancel' || {
+    echo "the cancel path must invoke the companion's cancel" >&2
+    return 1
+  }
+}
