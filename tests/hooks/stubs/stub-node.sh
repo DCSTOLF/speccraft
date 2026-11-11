@@ -27,6 +27,14 @@
 #   STUB_CODEX_STATE_DIR      where the poll counter lives (default: alongside the log)
 #   STUB_CODEX_READY          0 => setup reports ready:false (default 1)
 #   STUB_CODEX_NOT_READY_WHY  reason text when ready:false
+#   STUB_CODEX_NOT_READY_ROOTS
+#                             colon-separated plugin roots whose `setup` answers
+#                             ready:false regardless of STUB_CODEX_READY. AC5c
+#                             needs one root ready and another not in the SAME
+#                             round, to prove readiness is never assumed across
+#                             roots; a single global flag cannot express that.
+#   STUB_CODEX_SETUP_RAW      literal text `setup` prints instead of JSON, for
+#                             the unparseable-output row
 #   STUB_CODEX_JOB_ID         job id handed back by `task --background`
 #   STUB_CODEX_STATUS_SEQUENCE
 #                             space-separated job statuses, consumed one per
@@ -105,7 +113,28 @@ help | --help)
 	;;
 
 setup)
-	if [ "${STUB_CODEX_READY:-1}" = "0" ]; then
+	if [ -n "${STUB_CODEX_SETUP_RAW:-}" ]; then
+		printf '%s\n' "$STUB_CODEX_SETUP_RAW"
+		exit "${STUB_CODEX_EXIT:-0}"
+	fi
+
+	# Per-root readiness. $1 is the companion script path, so the root is its
+	# grandparent; matching on the path prefix lets one round hold a ready root
+	# and an unready one at the same time.
+	ready_for_this_root=${STUB_CODEX_READY:-1}
+	if [ -n "${STUB_CODEX_NOT_READY_ROOTS:-}" ]; then
+		_ifs_saved=$IFS
+		IFS=':'
+		for _nr in $STUB_CODEX_NOT_READY_ROOTS; do
+			[ -n "$_nr" ] || continue
+			case $1 in
+			"$_nr"/*) ready_for_this_root=0 ;;
+			esac
+		done
+		IFS=$_ifs_saved
+	fi
+
+	if [ "$ready_for_this_root" = "0" ]; then
 		why=${STUB_CODEX_NOT_READY_WHY:-codex login required}
 		printf '{\n'
 		printf '  "ready": false,\n'

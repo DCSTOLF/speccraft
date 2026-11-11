@@ -1736,3 +1736,120 @@ review_codex_plugin_root() {
   printf '%s\n' "$root"
 }
 
+# ---------------------------------------------------------------------------
+# AC5b / AC5c — the availability and auth preflight, memoized per root.
+# ---------------------------------------------------------------------------
+
+# The memo is a TSV file, one line per canonical root:
+#   <canonical-root><TAB><rc><TAB><reason>
+#
+# A file rather than an associative array because those need bash 4+ or zsh,
+# and macOS's /bin/bash is 3.2. Created lazily inside the function, never at
+# source time — sourcing this lib must stay free of side effects.
+REVIEW_CODEX_PREFLIGHT_MEMO="${REVIEW_CODEX_PREFLIGHT_MEMO:-}"
+
+# _review_codex_memo_init — ensure the memo file exists. Called as a PLAIN
+# command, never inside `$(...)`: a subshell assignment would be discarded and
+# every lookup would miss, silently turning the memo off.
+_review_codex_memo_init() {
+  if [ -n "${REVIEW_CODEX_PREFLIGHT_MEMO:-}" ] && [ -f "$REVIEW_CODEX_PREFLIGHT_MEMO" ]; then
+    return 0
+  fi
+  REVIEW_CODEX_PREFLIGHT_MEMO="$(mktemp)"
+  # EXPORTED so that a dispatcher which fans agents out through subshells still
+  # shares one memo. Without this, a per-agent subshell would start with the
+  # variable unset, mktemp a private memo, and preflight every agent
+  # separately — the per-round behaviour AC5c exists to forbid, reappearing as
+  # an invisible performance bug rather than a wrong answer.
+  export REVIEW_CODEX_PREFLIGHT_MEMO
+}
+
+# review_codex_preflight <plugin-root> — run the companion's own availability
+# and auth check, and return zero only when it reports ready.
+#
+# `setup --json` is the STRUCTURED missing/unauthenticated signal: its `ready`
+# field is node && codex && auth (codex-companion.mjs:203 in 1.0.6). Every
+# failure here is `codex-plugin-unavailable: not-ready <reason>` — NEVER
+# `codex-output-unparseable`, which belongs to task output alone (AC5b). An
+# availability problem reported as a parse problem sends an operator to inspect
+# a response that was never produced.
+#
+# Memoized per CANONICAL root, not per round (AC5c). plugin_root is a per-agent
+# field, so two codex-plugin agents in one round may resolve to different
+# installations, versions or auth states; preflighting "once per round" would
+# establish readiness for one and assume it for the other. Canonicalizing first
+# means one installation reached by two names preflights once, while two real
+# installations preflight once each. Failures are memoized too — re-running
+# setup per agent against a broken install is exactly when it is slowest.
+#
+# The companion is invoked by the path as GIVEN, while the memo key is the
+# canonical form: the operator sees the path they configured in the registry,
+# and the cache still collapses aliases of one install.
+#
+# NOTE: this invocation is not yet wrapped in review_with_deadline. The
+# dispatcher assembled in steps 25-27 owns the deadline value, so the bound is
+# applied there rather than hard-coding a second one here.
+review_codex_preflight() {
+  local root="${1:-}"
+  [ -n "$root" ] || {
+    review_error "review_codex_preflight: plugin root required"
+    return 2
+  }
+
+  local canon
+  canon="$(_review_canonical_dir "$root")"
+
+  _review_codex_memo_init
+
+  local hit memo_rc memo_reason
+  hit="$(awk -F'\t' -v k="$canon" '$1 == k { print; exit }' \
+    "$REVIEW_CODEX_PREFLIGHT_MEMO" 2>/dev/null || true)"
+  if [ -n "$hit" ]; then
+    memo_rc="$(printf '%s\n' "$hit" | cut -f2)"
+    memo_reason="$(printf '%s\n' "$hit" | cut -f3-)"
+    [ "$memo_rc" = "0" ] && return 0
+    review_error "review_codex_preflight: codex-plugin-unavailable: not-ready $memo_reason"
+    return 1
+  fi
+
+  local out ready reason
+  out="$(node "$root/scripts/codex-companion.mjs" setup --json 2>/dev/null || true)"
+  # NOT `.ready // empty`: jq's `//` yields the alternative when the left side
+  # is false OR null, so a companion honestly reporting `"ready": false` would
+  # be indistinguishable from one that emitted no JSON at all — and would be
+  # misreported as unparseable-setup-output instead of its real reason.
+  ready="$(printf '%s\n' "$out" \
+    | jq -r 'if has("ready") then (.ready | tostring) else "" end' 2>/dev/null || true)"
+
+  if [ "$ready" = "true" ]; then
+    printf '%s\t0\t\n' "$canon" >> "$REVIEW_CODEX_PREFLIGHT_MEMO"
+    return 0
+  fi
+
+  if [ -z "$ready" ]; then
+    # Not JSON, or no `ready` field at all. Still an availability failure: the
+    # companion could not tell us it was ready, so it is not ready.
+    reason="unparseable-setup-output"
+  else
+    # Prefer the companion's own nextSteps text — it is the only thing that
+    # distinguishes "no node" from "not logged in". gsub keeps tabs and
+    # newlines out of the TSV memo.
+    reason="$(printf '%s\n' "$out" \
+      | jq -r '(.nextSteps // []) | if length > 0 then (.[0] | gsub("[\t\n]"; " ")) else empty end' \
+        2>/dev/null || true)"
+    if [ -z "$reason" ]; then
+      reason="$(printf '%s\n' "$out" | jq -r '
+        [ (if (.node.available  // true) then empty else "node"  end),
+          (if (.codex.available // true) then empty else "codex" end),
+          (if (.auth.loggedIn   // true) then empty else "auth"  end) ]
+        | if length == 0 then "setup reported not ready" else "missing: " + join(",") end
+      ' 2>/dev/null || true)"
+    fi
+    [ -n "$reason" ] || reason="setup reported not ready"
+  fi
+
+  printf '%s\t1\t%s\n' "$canon" "$reason" >> "$REVIEW_CODEX_PREFLIGHT_MEMO"
+  review_error "review_codex_preflight: codex-plugin-unavailable: not-ready $reason"
+  return 1
+}
+

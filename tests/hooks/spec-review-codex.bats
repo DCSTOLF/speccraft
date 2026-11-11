@@ -656,3 +656,227 @@ mode = "codex-plugin"'
   run review_codex_plugin_root "$TEST_DIR/nosuch.toml" codex
   assert_named_failure "$TEST_DIR/nosuch.toml"
 }
+
+# ---------------------------------------------------------------------------
+# AC5b / AC5c — review_codex_preflight and its per-root memoization
+# ---------------------------------------------------------------------------
+
+# count_setup_calls — how many times the stub companion was asked to `setup`.
+# The stub logs one space-joined argv per invocation, so this counts calls
+# rather than inferring them.
+count_setup_calls() {
+  grep -c 'codex-companion.mjs setup' "$ARGV_LOG" 2>/dev/null || true
+}
+
+@test "review_codex_preflight: ready true returns zero" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/ok-root" 1.0.6
+
+  run review_codex_preflight "$TEST_DIR/ok-root"
+  [ "$status" -eq 0 ]
+}
+
+@test "review_codex_preflight: ready false is non-zero and names not-ready with the reason" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/unready-root" 1.0.6
+  export STUB_CODEX_READY=0
+  export STUB_CODEX_NOT_READY_WHY='Run `!codex login`.'
+
+  run review_codex_preflight "$TEST_DIR/unready-root"
+  [ "$status" -ne 0 ]
+  assert_named_failure 'not-ready'
+  # The reason must come FROM setup, not be invented here: it is the only
+  # structured signal distinguishing "no node" from "not logged in".
+  assert_named_failure 'codex login'
+}
+
+@test "review_codex_preflight: an unready companion is codex-plugin-unavailable, never codex-output-unparseable" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/unready2" 1.0.6
+  export STUB_CODEX_READY=0
+
+  run review_codex_preflight "$TEST_DIR/unready2"
+  [ "$status" -ne 0 ]
+  assert_named_failure 'codex-plugin-unavailable'
+  # AC5b pins this explicitly. An availability problem reported as an
+  # output-parse problem sends an operator looking at the reviewer's response
+  # when the reviewer never ran.
+  printf '%s\n' "$output" | grep -qF 'codex-output-unparseable' && {
+    echo "preflight must never report codex-output-unparseable; got: $output" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "review_codex_preflight: unparseable setup output is still codex-plugin-unavailable" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/raw-root" 1.0.6
+  export STUB_CODEX_SETUP_RAW='Codex is not installed. Run npm install -g @openai/codex'
+
+  run review_codex_preflight "$TEST_DIR/raw-root"
+  [ "$status" -ne 0 ]
+  assert_named_failure 'codex-plugin-unavailable'
+  printf '%s\n' "$output" | grep -qF 'codex-output-unparseable' && {
+    echo "preflight must never report codex-output-unparseable; got: $output" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "review_codex_preflight: two calls on the same root run setup ONCE" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/memo-root" 1.0.6
+
+  # Called DIRECTLY, not through `run`. The memo is process state, and `run`
+  # evaluates its command in a subshell whose variable assignments are
+  # discarded — so a `run`-based version of this row sees a fresh memo on every
+  # call and reports two setup calls no matter how correct the memoization is.
+  # That is how this row first failed, against a working implementation.
+  local rc1=0 rc2=0
+  review_codex_preflight "$TEST_DIR/memo-root" || rc1=$?
+  review_codex_preflight "$TEST_DIR/memo-root" || rc2=$?
+  [ "$rc1" -eq 0 ]
+  [ "$rc2" -eq 0 ]
+
+  [ "$(count_setup_calls)" -eq 1 ] || {
+    echo "expected 1 setup call, got $(count_setup_calls):" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+}
+
+@test "review_codex_preflight: two DIFFERENT roots run setup once each" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root-a" 1.0.6
+  make_companion_root "$TEST_DIR/root-b" 1.0.6
+
+  # Direct calls, so the memo is actually live across the two. Through `run`
+  # this row is VACUOUS — each fork starts with an empty memo, so two setup
+  # calls appear whether or not any memoization exists, and a memo that
+  # collapsed all roots to one entry would still pass.
+  local rc1=0 rc2=0
+  review_codex_preflight "$TEST_DIR/root-a" || rc1=$?
+  review_codex_preflight "$TEST_DIR/root-b" || rc2=$?
+  [ "$rc1" -eq 0 ]
+  [ "$rc2" -eq 0 ]
+
+  # Per-ROUND memoization would establish readiness for one root and assume it
+  # for the other. plugin_root is a per-agent field, so two agents in one round
+  # can resolve to different installs, versions and auth states.
+  [ "$(count_setup_calls)" -eq 2 ] || {
+    echo "expected 2 setup calls (one per root), got $(count_setup_calls):" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+}
+
+@test "review_codex_preflight: two spellings of one root via a symlink run setup ONCE" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/real-root" 1.0.6
+  ln -s "$TEST_DIR/real-root" "$TEST_DIR/link-root"
+
+  # Direct calls: see the note on the same-root row — `run` forks, so the memo
+  # cannot be observed through it.
+  local rc1=0 rc2=0
+  review_codex_preflight "$TEST_DIR/real-root" || rc1=$?
+  review_codex_preflight "$TEST_DIR/link-root" || rc2=$?
+  [ "$rc1" -eq 0 ]
+  [ "$rc2" -eq 0 ]
+
+  # The memo key is formed AFTER canonicalization, so the same installation
+  # reached by two names preflights once. A key on the raw string would
+  # preflight twice and call it two installs.
+  [ "$(count_setup_calls)" -eq 1 ] || {
+    echo "expected 1 setup call across the symlinked spellings, got $(count_setup_calls):" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+}
+
+@test "review_codex_preflight: readiness is never assumed across roots" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/ready-one" 1.0.6
+  make_companion_root "$TEST_DIR/unready-one" 1.0.6
+  # One root ready, the other not, in the SAME round.
+  export STUB_CODEX_NOT_READY_ROOTS="$TEST_DIR/unready-one"
+
+  # Direct calls so one memo spans both roots — this is the row that catches a
+  # memo keyed loosely enough to answer for the wrong root. Through `run` the
+  # memo never spans the two and the row degenerates into a test of the stub.
+  local rc_ready=0 rc_unready=0 err_unready
+  review_codex_preflight "$TEST_DIR/ready-one" || rc_ready=$?
+  err_unready="$(review_codex_preflight "$TEST_DIR/unready-one" 2>&1 >/dev/null)" || rc_unready=$?
+
+  [ "$rc_ready" -eq 0 ]
+  [ "$rc_unready" -ne 0 ] || {
+    echo "the unready root must NOT inherit the ready root's result" >&2
+    return 1
+  }
+  printf '%s\n' "$err_unready" | grep -qF 'not-ready' || {
+    echo "expected not-ready for the unready root; got: $err_unready" >&2
+    return 1
+  }
+
+  # One setup per root: neither result may poison the other's memo entry.
+  [ "$(count_setup_calls)" -eq 2 ] || {
+    echo "expected 2 setup calls, got $(count_setup_calls):" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+}
+
+@test "review_codex_preflight: a failed preflight is memoized too, not retried" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/sticky-bad" 1.0.6
+  export STUB_CODEX_READY=0
+
+  # Direct calls again, for the memo. Both must fail, and the second must do so
+  # from the memo rather than by re-running setup.
+  local rc1=0 rc2=0 err2
+  review_codex_preflight "$TEST_DIR/sticky-bad" 2>/dev/null || rc1=$?
+  err2="$(review_codex_preflight "$TEST_DIR/sticky-bad" 2>&1 >/dev/null)" || rc2=$?
+  [ "$rc1" -ne 0 ]
+  [ "$rc2" -ne 0 ]
+  printf '%s\n' "$err2" | grep -qF 'not-ready' || {
+    echo "the memoized failure must still name not-ready; got: $err2" >&2
+    return 1
+  }
+
+  # Caching only the successes would re-run setup for every agent on a broken
+  # install — the case where the companion is slowest to answer.
+  [ "$(count_setup_calls)" -eq 1 ]
+}
+
+@test "review_codex_preflight: setup is invoked with --json, not the rendered form" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/json-root" 1.0.6
+
+  run review_codex_preflight "$TEST_DIR/json-root"
+  [ "$status" -eq 0 ]
+
+  # Without --json the companion prints human text, and `ready` would have to
+  # be scraped out of prose.
+  run grep -qF -- 'codex-companion.mjs setup --json' "$ARGV_LOG"
+  [ "$status" -eq 0 ]
+}
+
+@test "review_codex_preflight: the companion is addressed by its path under the given root" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/pathy-root" 1.0.6
+
+  run review_codex_preflight "$TEST_DIR/pathy-root"
+  [ "$status" -eq 0 ]
+  run grep -qF -- "$TEST_DIR/pathy-root/scripts/codex-companion.mjs setup" "$ARGV_LOG"
+  [ "$status" -eq 0 ]
+}
