@@ -1428,3 +1428,106 @@ review_classify() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Spec 0054 Phase C — the codex-plugin adapter (AC10 here; the rest follows).
+#
+# These helpers are extracted to commands/spec/review-codex.lib.sh in step 28;
+# they live here first so the dispatch seam stays in one file while it is being
+# built.
+# ---------------------------------------------------------------------------
+
+# _review_kill_tree <pid> — TERM a process and every descendant, DEEPEST FIRST.
+#
+# Depth-first matters: killing the parent before its children can leave the
+# grandchildren reparented to init and running, which is the exact shape of
+# "the reviewer kept going after we timed out".
+#
+# Portability notes, each one load-bearing:
+#   - no `pkill -f`: its pattern would also match the caller's own argv;
+#   - no process groups: the obvious route is `set -m`, and zsh refuses it in a
+#     script ("can't change option: -m"). A sourced lib must not change the
+#     caller's shell options in any case;
+#   - `ps -eo pid=,ppid=` is POSIX and works on both BSD and GNU userland,
+#     unlike `--ppid`, which is GNU-only.
+_review_kill_tree() {
+  local victim="$1" kid
+  for kid in $(ps -eo pid=,ppid= | awk -v p="$victim" '$2 == p {print $1}'); do
+    _review_kill_tree "$kid"
+  done
+  kill -TERM "$victim" 2>/dev/null || true
+}
+
+# review_with_deadline <seconds> <command> [args...] — run the command, and if
+# it has not finished within <seconds>, kill its whole tree and return 124.
+# Otherwise return the command's OWN exit status, unaltered. The command's
+# stdout passes straight through.
+#
+# This bounds ONE companion invocation. It is deliberately NOT the job deadline:
+# the Codex broker is spawned detached and `unref`'d, so killing the local
+# caller proves only that the caller stopped. Stopping the reviewer needs
+# `companion cancel <job-id>`, which is AC6a's path.
+#
+# Why a status file rather than `wait -n` on two jobs: `wait -n` is bash-only
+# (zsh answers "job not found: -n", rc 127) and these libs are sourced into the
+# caller's shell, which on macOS is zsh. Polling the file also sidesteps a
+# subtler trap — `kill -0` SUCCEEDS on a zombie, so an unreaped child that has
+# already exited still looks alive, and a kill -0 poll would wait out the full
+# deadline on a command that finished immediately.
+#
+# Granularity is one second, so a command that finishes sooner still costs up to
+# a second here. That is immaterial against a reviewer turn and against the
+# 5 s status poll, and it keeps the loop free of fractional-sleep assumptions.
+#
+# A command whose own exit status is 124 is indistinguishable from an expiry.
+# Nothing in this spec dispatches such a command: the companion's statuses are
+# 0 and 1, and the caller classifies on those.
+review_with_deadline() {
+  local deadline_s="${1:-}"
+  case "$deadline_s" in
+    '' | 0 | *[!0-9]*)
+      printf 'review_with_deadline: deadline must be a positive integer of seconds, got "%s"\n' \
+        "$deadline_s" >&2
+      return 2
+      ;;
+  esac
+  shift
+  [ "$#" -gt 0 ] || {
+    printf 'review_with_deadline: no command given\n' >&2
+    return 2
+  }
+
+  local rcfile waited=0 cmd_rc job_pid
+  rcfile="$(mktemp)"
+
+  # `set +e` inside the subshell is required, not defensive: this lib runs under
+  # `set -e`, which would abort the subshell the instant the command exits
+  # non-zero — before `echo $?` could record the status this function exists to
+  # return. Without it every failing reviewer invocation looks like a timeout.
+  (
+    set +e
+    "$@"
+    echo "$?" > "$rcfile"
+  ) &
+  job_pid=$!
+
+  while [ ! -s "$rcfile" ] && [ "$waited" -lt "$deadline_s" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if [ -s "$rcfile" ]; then
+    cmd_rc="$(cat "$rcfile")"
+    rm -f "$rcfile"
+    wait "$job_pid" 2>/dev/null || true
+    return "$cmd_rc"
+  fi
+
+  _review_kill_tree "$job_pid"
+  # Reap quietly. bash announces a signalled job ("Terminated") when it reaps
+  # one, and this function's stdout is parsed as reviewer output, so that notice
+  # must not leak into it.
+  wait "$job_pid" 2>/dev/null || true
+  rm -f "$rcfile"
+  return 124
+}
+

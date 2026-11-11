@@ -31,10 +31,10 @@ contract: done-means-v1
   done: $ for t in 'review_agent_transport returns file for codex-plugin' 'review_agent_transport returns file for subagent' 'review_agent_transport returns the registry input for cli and acp' 'an 80 KB payload is ok for codex-plugin and for subagent' 'the same 80 KB payload is refuse:argv-limit for cli plus argv' 'review_budget_check and review_dispatch_payload keep their 0052 signatures'; do grep -qxF -- "@test \"$t\" {" tests/hooks/spec-review-dispatch.bats || exit 1; done
 - [x] T13 — GREEN: review_agent_transport — acp returns `acp`, NOT its absent `input` (which review_budget_check would normalize to stdin, exempting the one mode most likely to overflow argv)
   done: $ o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-dispatch.bats -f 'transport|80 KB|signatures' 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 6 && p=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-payload.bats -f budget 2>&1) && test "$(printf '%s\n' "$p" | grep -cE '^ok ')" -ge 4
-- [ ] T14 — RED: review_with_deadline returns 124, leaves no child, uses no timeout(1)
-  done: $ test -f tests/hooks/spec-review-codex.bats && ! grep -q 'review_with_deadline()' commands/spec/review.lib.sh
-- [ ] T15 — GREEN: review_with_deadline
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-codex.bats -f review_with_deadline
+- [x] T14 — RED: review_with_deadline returns 124, leaves no child, uses no timeout(1)
+  done: $ test -f tests/hooks/spec-review-codex.bats && for t in 'review_with_deadline returns 124 when the deadline expires' 'review_with_deadline leaves no process from the killed tree alive' 'review_with_deadline kills the whole descendant tree, not just the job it launched' "review_with_deadline returns the command's own status when it finishes first" 'review_with_deadline names an error for a non-positive deadline' 'review_with_deadline uses no timeout(1)' 'review_with_deadline uses no wait -n, which zsh does not support' 'review_with_deadline works when EXECUTED under real zsh, not merely sourced'; do grep -qxF -- "@test \"$t\" {" tests/hooks/spec-review-codex.bats || exit 1; done
+- [x] T15 — GREEN: review_with_deadline
+  done: $ o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-codex.bats -f review_with_deadline 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 14 && grep -q 'review_with_deadline()' commands/spec/review.lib.sh
 - [ ] T16 — RED: review_codex_plugin_root, all resolution and version rows including AC5a and AC5d
   done: $ grep -q 'review_codex_plugin_root' tests/hooks/spec-review-codex.bats && grep -q 'claude-plugin/plugin.json' tests/hooks/spec-review-codex.bats
 - [ ] T17 — GREEN: review_codex_plugin_root with per-resolution-path version discovery
