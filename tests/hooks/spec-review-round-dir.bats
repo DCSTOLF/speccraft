@@ -632,3 +632,385 @@ make_round() {
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# AC15a / AC15b — quarantine
+#
+# Two outcomes leave a reviewer that MIGHT STILL BE RUNNING:
+# codex-cancel-unconfirmed and subagent-stop-failed. Deleting the round dir
+# then would destroy the only record of what was dispatched while the reviewer
+# is still live, so the dir is RETAINED and a quarantine record is written.
+# Quarantine beats unconditional cleanup, and beats the lease: a quarantined
+# dir outlives its own expiry.
+# ---------------------------------------------------------------------------
+
+# codex_stub_env — a stub `node` on PATH plus an argv log, so a quarantine
+# probe can be observed without a real Codex plugin.
+codex_stub_env() {
+  STUB_NODE="$PLUGIN_DIR/tests/hooks/stubs/stub-node.sh"
+  CODEX_FIX="$PLUGIN_DIR/tests/hooks/fixtures/review-dispatch/codex"
+  ARGV_LOG="$TEST_DIR/argv.log"
+  FAKE_HOME="$TEST_DIR/home"
+  mkdir -p "$TEST_DIR/bin" "$FAKE_HOME/.claude/plugins"
+  ln -sf "$STUB_NODE" "$TEST_DIR/bin/node"
+  : > "$ARGV_LOG"
+  export HOME="$FAKE_HOME"
+  export PATH="$TEST_DIR/bin:$PATH"
+  export STUB_CODEX_ARGV_LOG="$ARGV_LOG"
+  export STUB_CODEX_STATE_DIR="$TEST_DIR"
+  export STUB_CODEX_FIXTURE_DIR="$CODEX_FIX"
+}
+
+make_companion_root() {
+  mkdir -p "$1/scripts" "$1/.claude-plugin"
+  printf '// stub companion\n' > "$1/scripts/codex-companion.mjs"
+  printf '{ "name": "codex", "version": "1.0.6" }\n' > "$1/.claude-plugin/plugin.json"
+}
+
+q_field() {
+  awk -v k="$2" '$1 == k { $1 = ""; sub(/^[ \t]+/, ""); print; exit }' "$1/quarantine"
+}
+
+@test "review_round_quarantine records the id, outcome, time and mode" {
+  source "$LIB"
+  codex_stub_env
+  local d root
+  d="$(review_round_dir_create spec 0054 600)"
+  root="$TEST_DIR/root-a"
+  make_companion_root "$root"
+
+  run review_round_quarantine "$d" task-abc123 codex-cancel-unconfirmed codex-plugin "$root"
+  [ "$status" -eq 0 ]
+  [ -f "$d/quarantine" ]
+
+  [ "$(q_field "$d" id)" = "task-abc123" ]
+  [ "$(q_field "$d" outcome)" = "codex-cancel-unconfirmed" ]
+  [ "$(q_field "$d" mode)" = "codex-plugin" ]
+  # A timestamp, so an operator can tell a quarantine from last week from one
+  # from a minute ago.
+  printf '%s\n' "$(q_field "$d" at)" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' || {
+    echo "expected an ISO-8601 UTC timestamp, got: $(q_field "$d" at)" >&2
+    return 1
+  }
+}
+
+@test "a codex-plugin quarantine records the canonical resolved companion root" {
+  source "$LIB"
+  codex_stub_env
+  local d real link
+  d="$(review_round_dir_create spec 0054 600)"
+  real="$TEST_DIR/real-root"
+  link="$TEST_DIR/link-root"
+  make_companion_root "$real"
+  ln -s "$real" "$link"
+
+  # Recorded CANONICAL: the probe later runs against this path, possibly long
+  # after the symlink that named it has gone.
+  review_round_quarantine "$d" task-1 codex-cancel-unconfirmed codex-plugin "$link"
+  [ "$(q_field "$d" root)" = "$(cd "$real" && pwd -P)" ]
+}
+
+@test "a codex-plugin quarantine without a root is a named error" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+
+  # Without a root there is nothing to probe, and probing an arbitrary install
+  # would ask the wrong companion about someone else's job.
+  run review_round_quarantine "$d" task-1 codex-cancel-unconfirmed codex-plugin
+  assert_named_failure 'root'
+  [ ! -f "$d/quarantine" ]
+}
+
+@test "a subagent quarantine omits the root" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+
+  run review_round_quarantine "$d" agent-7 subagent-stop-failed subagent
+  [ "$status" -eq 0 ]
+  [ "$(q_field "$d" mode)" = "subagent" ]
+  [ -z "$(q_field "$d" root)" ] || {
+    echo "a subagent quarantine must record no companion root; got: $(q_field "$d" root)" >&2
+    return 1
+  }
+}
+
+@test "review_round_quarantined returns zero for a quarantined dir" {
+  source "$LIB"
+  codex_stub_env
+  local d clean rc=0
+  d="$(review_round_dir_create spec 0054 600)"
+  clean="$(review_round_dir_create spec 0055 600)"
+  review_round_quarantine "$d" agent-7 subagent-stop-failed subagent
+
+  review_round_quarantined "$d" || rc=$?
+  [ "$rc" -eq 0 ]
+  rc=0
+  review_round_quarantined "$clean" || rc=$?
+  [ "$rc" -ne 0 ]
+}
+
+@test "review_round_cleanup refuses a quarantined dir and deletes nothing" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+  printf 'payload\n' > "$d/payload.md"
+  review_round_quarantine "$d" agent-7 subagent-stop-failed subagent
+
+  run review_round_cleanup "$d"
+  assert_named_failure 'quarantin'
+  [ -d "$d" ]
+  [ -f "$d/payload.md" ]
+  [ -f "$d/quarantine" ]
+}
+
+@test "review_round_sweep reports and does not delete a quarantined dir whose lease expired" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+  printf 'payload\n' > "$d/payload.md"
+  review_round_quarantine "$d" task-xyz codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root-a"
+  printf 'expires_at 1\n' > "$d/lease"
+
+  run review_round_sweep
+  [ "$status" -eq 0 ]
+  [ -d "$d" ] || { echo "a quarantined dir was deleted by the sweep" >&2; return 1; }
+  [ -f "$d/payload.md" ]
+
+  # Which assertion is load-bearing, since the protection is doubled on
+  # purpose: retention alone does NOT prove the sweep's own branch, because
+  # review_round_cleanup independently refuses a quarantined dir — disabling
+  # the sweep's check leaves this row passing. The row that catches that is
+  # "the sweep report line is grep-able in the stated shape", because the
+  # cleanup refusal retains the dir silently and emits no report.
+  #
+  # Both layers are kept: the sweep decides to report, and cleanup is the
+  # backstop for any future caller that deletes without asking.
+}
+
+@test "a quarantined dir outlives its own expired lease" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+  review_round_quarantine "$d" task-xyz codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root-a"
+  printf 'expires_at 1\n' > "$d/lease"
+  age_dir "$d"
+
+  # Three sweeps: it is quarantine, not a not-yet-expired lease, that retains it.
+  review_round_sweep >/dev/null
+  review_round_sweep >/dev/null
+  review_round_sweep >/dev/null
+  [ -d "$d" ]
+}
+
+@test "the sweep report line is grep-able in the stated shape" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+  review_round_quarantine "$d" task-xyz codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root-a"
+  printf 'expires_at 1\n' > "$d/lease"
+
+  run review_round_sweep
+  [ "$status" -eq 0 ]
+  # <dir>: quarantined <outcome> <id> lease-expired <iso-ts>
+  printf '%s\n' "$output" \
+    | grep -qE "^$d: quarantined codex-cancel-unconfirmed task-xyz lease-expired [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" || {
+    echo "the report line is not in the stated shape; got: $output" >&2
+    return 1
+  }
+}
+
+@test "removing the quarantine file lets the same sweep reclaim the dir" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+  review_round_quarantine "$d" task-xyz codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root-a"
+  printf 'expires_at 1\n' > "$d/lease"
+
+  review_round_sweep >/dev/null
+  [ -d "$d" ]
+
+  # Operator action: the one escape hatch that needs no probe.
+  rm -f "$d/quarantine"
+  review_round_sweep >/dev/null
+  [ ! -d "$d" ]
+}
+
+@test "a quarantined codex-plugin round is reclaimed after a stub status reports the job inactive" {
+  source "$LIB"
+  codex_stub_env
+  local d root
+  d="$(review_round_dir_create spec 0054 600)"
+  root="$TEST_DIR/root-live"
+  make_companion_root "$root"
+  review_round_quarantine "$d" task-live codex-cancel-unconfirmed codex-plugin "$root"
+  printf 'expires_at 1\n' > "$d/lease"
+
+  # The job is terminal now, so the quarantine's reason is gone.
+  export STUB_CODEX_STATUS_SEQUENCE='cancelled'
+  run review_round_quarantine_resolve "$d"
+  [ "$status" -eq 0 ]
+  [ ! -f "$d/quarantine" ]
+
+  # And the sweep can now do its job.
+  review_round_sweep >/dev/null
+  [ ! -d "$d" ]
+}
+
+@test "a still-running job leaves the quarantine in place" {
+  source "$LIB"
+  codex_stub_env
+  local d root rc=0
+  d="$(review_round_dir_create spec 0054 600)"
+  root="$TEST_DIR/root-busy"
+  make_companion_root "$root"
+  review_round_quarantine "$d" task-busy codex-cancel-unconfirmed codex-plugin "$root"
+
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+  review_round_quarantine_resolve "$d" || rc=$?
+  [ "$rc" -ne 0 ]
+  [ -f "$d/quarantine" ] || { echo "a still-running job must stay quarantined" >&2; return 1; }
+}
+
+@test "the status probe goes to the root recorded in the quarantine file, not a re-resolved one" {
+  source "$LIB"
+  codex_stub_env
+  local d recorded other
+  d="$(review_round_dir_create spec 0054 600)"
+  recorded="$TEST_DIR/root-recorded"
+  other="$TEST_DIR/root-other"
+  make_companion_root "$recorded"
+  make_companion_root "$other"
+
+  review_round_quarantine "$d" task-rec codex-cancel-unconfirmed codex-plugin "$recorded"
+
+  # NOW make re-resolution produce a DIFFERENT answer: installed_plugins.json
+  # points only at `other`. An implementation that re-resolves instead of
+  # reading the record back would probe `other` and still look correct on
+  # every other row — this is the only row that proves the field is USED.
+  printf '{ "version": 2, "plugins": { "codex@openai-codex": [{ "scope": "user", "installPath": "%s", "version": "1.0.6" }] } }\n' \
+    "$other" > "$FAKE_HOME/.claude/plugins/installed_plugins.json"
+
+  export STUB_CODEX_STATUS_SEQUENCE='cancelled'
+  run review_round_quarantine_resolve "$d"
+  [ "$status" -eq 0 ]
+
+  grep -qF -- "$recorded/scripts/codex-companion.mjs status task-rec" "$ARGV_LOG" || {
+    echo "the probe did not go to the RECORDED root:" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+  if grep -qF -- "$other/scripts/codex-companion.mjs" "$ARGV_LOG"; then
+    echo "the probe went to a re-resolved root instead of the recorded one:" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  fi
+}
+
+@test "two installations with one quarantined job each are probed with their own companion" {
+  source "$LIB"
+  codex_stub_env
+  local d1 d2 r1 r2
+  d1="$(review_round_dir_create spec 0054 600)"
+  d2="$(review_round_dir_create spec 0055 600)"
+  r1="$TEST_DIR/inst-1"
+  r2="$TEST_DIR/inst-2"
+  make_companion_root "$r1"
+  make_companion_root "$r2"
+  review_round_quarantine "$d1" job-one codex-cancel-unconfirmed codex-plugin "$r1"
+  review_round_quarantine "$d2" job-two codex-cancel-unconfirmed codex-plugin "$r2"
+
+  export STUB_CODEX_STATUS_SEQUENCE='cancelled'
+  review_round_quarantine_resolve "$d1" >/dev/null
+  review_round_quarantine_resolve "$d2" >/dev/null
+
+  # Per-root call counts: each job asked its OWN companion about itself.
+  [ "$(grep -cF -- "$r1/scripts/codex-companion.mjs status job-one" "$ARGV_LOG")" -eq 1 ]
+  [ "$(grep -cF -- "$r2/scripts/codex-companion.mjs status job-two" "$ARGV_LOG")" -eq 1 ]
+  [ "$(grep -cF -- "$r1/scripts/codex-companion.mjs status job-two" "$ARGV_LOG")" -eq 0 ]
+  [ "$(grep -cF -- "$r2/scripts/codex-companion.mjs status job-one" "$ARGV_LOG")" -eq 0 ]
+}
+
+@test "a quarantined subagent round is reclaimed by no probe" {
+  source "$LIB"
+  codex_stub_env
+  local d rc=0
+  d="$(review_round_dir_create spec 0054 600)"
+  review_round_quarantine "$d" agent-7 subagent-stop-failed subagent
+
+  review_round_quarantine_resolve "$d" || rc=$?
+  [ "$rc" -ne 0 ] || {
+    echo "a subagent quarantine must not resolve itself" >&2
+    return 1
+  }
+  [ -f "$d/quarantine" ]
+
+  # And nothing was asked of any companion: there is no subagent equivalent of
+  # `status <job-id>`, so only an operator removing the file resolves this.
+  [ "$(grep -c 'codex-companion.mjs' "$ARGV_LOG")" -eq 0 ] || {
+    echo "a companion was probed for a SUBAGENT quarantine:" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+}
+
+@test "no Agent-tool termination query is attempted for a quarantined subagent round" {
+  # Negative over the lib: there is no API by which a shell can ask whether a
+  # subagent is still alive, so reaching for one would be inventing a
+  # capability. Comment lines excluded; the next row proves the filter bites.
+  run sh -c "cat '$LIB' | grep -vE '^[[:space:]]*#' | grep -nE 'TaskStop|AgentStatus|agent-status'"
+  [ "$status" -ne 0 ]
+}
+
+@test "the Agent-tool guard bites on an executable line" {
+  local probe="$TEST_DIR/probe2.sh"
+  printf '%s\n' '# a comment mentioning TaskStop must not trip it' > "$probe"
+  run sh -c "cat '$probe' | grep -vE '^[[:space:]]*#' | grep -nE 'TaskStop|AgentStatus|agent-status'"
+  [ "$status" -ne 0 ]
+
+  printf '%s\n' 'f() { TaskStop "$1"; }' >> "$probe"
+  run sh -c "cat '$probe' | grep -vE '^[[:space:]]*#' | grep -nE 'TaskStop|AgentStatus|agent-status'"
+  [ "$status" -eq 0 ]
+}
+
+@test "no exit path both quarantines and deletes" {
+  source "$LIB"
+  codex_stub_env
+  local d outcome
+  # AC15a. Asserted for BOTH quarantining outcomes: the two rules are mutually
+  # exclusive by construction, not by the order a caller happens to use.
+  for outcome in codex-cancel-unconfirmed subagent-stop-failed; do
+    d="$(review_round_dir_create spec 0054 600)"
+    printf 'payload\n' > "$d/payload.md"
+    if [ "$outcome" = codex-cancel-unconfirmed ]; then
+      review_round_quarantine "$d" job-x "$outcome" codex-plugin "$TEST_DIR/root-a"
+    else
+      review_round_quarantine "$d" agent-x "$outcome" subagent
+    fi
+
+    # Direct cleanup: refused.
+    run review_round_cleanup "$d"
+    [ "$status" -ne 0 ] || {
+      echo "$outcome: cleanup deleted a quarantined dir" >&2
+      return 1
+    }
+    [ -d "$d" ]
+
+    # Sweep with an expired lease: reports, does not delete.
+    printf 'expires_at 1\n' > "$d/lease"
+    review_round_sweep >/dev/null
+    [ -d "$d" ] || {
+      echo "$outcome: the sweep deleted a quarantined dir" >&2
+      return 1
+    }
+    [ -f "$d/payload.md" ]
+  done
+}

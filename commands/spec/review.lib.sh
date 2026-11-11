@@ -1806,6 +1806,14 @@ review_round_cleanup() {
       ;;
   esac
 
+  # Quarantine beats cleanup (AC15a). Checked HERE, immediately before the
+  # delete, so there is no path that validates the target and then removes it
+  # while a reviewer may still be running.
+  if review_round_quarantined "$canon_dir"; then
+    review_error "review_round_cleanup: refusing '$dir' — quarantined ($(_review_quarantine_field "$canon_dir" outcome) $(_review_quarantine_field "$canon_dir" id)); resolve or remove $canon_dir/quarantine first"
+    return 1
+  fi
+
   rm -rf "$canon_dir"
 }
 
@@ -1855,7 +1863,21 @@ review_round_sweep() {
     rc=0
     review_round_lease_expired "$entry" || rc=$?
     case "$rc" in
-      0 | 2) review_round_cleanup "$entry" >/dev/null 2>&1 || true ;;
+      0 | 2)
+        # Quarantined dirs are REPORTED, never deleted, even with an expired
+        # lease (AC15a): the lease says the round is over, the quarantine says
+        # a reviewer may still be running, and the second outranks the first.
+        # One grep-able line per retained dir, so an operator can list them.
+        if review_round_quarantined "$entry"; then
+          printf '%s: quarantined %s %s lease-expired %s\n' \
+            "$entry" \
+            "$(_review_quarantine_field "$entry" outcome)" \
+            "$(_review_quarantine_field "$entry" id)" \
+            "$(_review_iso_now)"
+        else
+          review_round_cleanup "$entry" >/dev/null 2>&1 || true
+        fi
+        ;;
     esac
   done
 
@@ -1878,4 +1900,150 @@ review_round_sweep() {
     fi
   done
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# AC15a / AC15b — quarantine.
+#
+# Two outcomes leave a reviewer that MIGHT STILL BE RUNNING:
+# `codex-cancel-unconfirmed` (cancel reported success, the confirming status
+# did not agree) and `subagent-stop-failed`. Deleting the round dir then would
+# destroy the only record of what was dispatched while the reviewer is still
+# live — and the payload is what an operator needs to finish the job by hand.
+#
+# So quarantine beats BOTH reclamation paths: review_round_cleanup refuses a
+# quarantined dir, and the sweep reports it instead of deleting it even once
+# its lease has expired. Those two are mutually exclusive by construction, not
+# by call order, which is what AC15a's "no exit path both quarantines and
+# deletes" asks for.
+# ---------------------------------------------------------------------------
+
+REVIEW_QUARANTINE_OUTCOMES="codex-cancel-unconfirmed subagent-stop-failed"
+
+# _review_iso_now — UTC ISO-8601, second precision. `date -u +…`, never
+# `date -d`, which BSD date does not have.
+_review_iso_now() {
+  date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+# review_round_quarantine <dir> <id> <outcome> <mode> [<companion-root>] —
+# retain the round dir and record why.
+#
+# A `codex-plugin` quarantine MUST carry a companion root, and it is recorded
+# CANONICALIZED. The probe that later resolves this quarantine runs against
+# this recorded path rather than re-resolving: `plugin_root` is per-agent, and
+# between rounds the install may be removed or the registry entry dropped, so
+# re-resolution can produce a different companion — which would then be asked
+# about a job it never ran. Without a root there is nothing to probe, and
+# probing an arbitrary install is worse than refusing.
+#
+# A `subagent` quarantine records NO root, because no shell-reachable API can
+# ask whether a subagent is still alive. Only an operator removing the file
+# resolves it.
+review_round_quarantine() {
+  local dir="${1:-}" q_id="${2:-}" outcome="${3:-}" mode="${4:-}" root="${5:-}"
+
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_round_quarantine: round dir not found: '${dir:-}'"
+    return 2
+  }
+  [ -n "$q_id" ] || { review_error "review_round_quarantine: id required"; return 2; }
+  contains_word() { case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
+  contains_word "$REVIEW_QUARANTINE_OUTCOMES" "$outcome" || {
+    review_error "review_round_quarantine: unknown outcome '$outcome' (known: $REVIEW_QUARANTINE_OUTCOMES)"
+    return 2
+  }
+
+  case "$mode" in
+    codex-plugin)
+      [ -n "$root" ] || {
+        review_error "review_round_quarantine: mode codex-plugin requires a companion root — the resolving probe must go to the install that ran the job, never to a re-resolved one"
+        return 2
+      }
+      root="$(_review_canonical_dir "$root")"
+      ;;
+    subagent)
+      [ -z "$root" ] || {
+        review_error "review_round_quarantine: mode subagent takes no companion root (got '$root')"
+        return 2
+      }
+      ;;
+    *)
+      review_error "review_round_quarantine: mode must be codex-plugin or subagent, got '${mode:-}'"
+      return 2
+      ;;
+  esac
+
+  # Same-dir temp + rename: a half-written quarantine record would be read as
+  # "not quarantined" and the dir reclaimed under a live reviewer.
+  local tmp="$dir/.quarantine.tmp.$$"
+  {
+    printf 'id %s\n' "$q_id"
+    printf 'outcome %s\n' "$outcome"
+    printf 'mode %s\n' "$mode"
+    printf 'at %s\n' "$(_review_iso_now)"
+    [ -z "$root" ] || printf 'root %s\n' "$root"
+  } > "$tmp"
+  mv -f "$tmp" "$dir/quarantine"
+}
+
+# review_round_quarantined <dir> — zero when the dir is quarantined.
+review_round_quarantined() {
+  local dir="${1:-}"
+  [ -n "$dir" ] && [ -f "$dir/quarantine" ]
+}
+
+# _review_quarantine_field <dir> <key> — one recorded value.
+_review_quarantine_field() {
+  [ -f "$1/quarantine" ] || return 1
+  awk -v k="$2" '$1 == k { $1 = ""; sub(/^[ \t]+/, ""); print; exit }' "$1/quarantine"
+}
+
+# review_round_quarantine_resolve <dir> — ask the recorded companion whether
+# the quarantined job is still running; clear the quarantine if it is not.
+#
+# codex-plugin only. The probe goes to the root RECORDED in the file — read
+# back, never re-derived — which is the whole reason that field exists.
+# A subagent quarantine is refused: there is no API by which a shell can ask
+# whether a subagent is alive, so inventing a probe would mean guessing.
+review_round_quarantine_resolve() {
+  local dir="${1:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_round_quarantine_resolve: round dir not found: '${dir:-}'"
+    return 2
+  }
+  review_round_quarantined "$dir" || {
+    review_error "review_round_quarantine_resolve: not quarantined: '$dir'"
+    return 2
+  }
+
+  local mode q_id root
+  mode="$(_review_quarantine_field "$dir" mode)"
+  q_id="$(_review_quarantine_field "$dir" id)"
+
+  case "$mode" in
+    subagent)
+      review_error "review_round_quarantine_resolve: a subagent quarantine ($q_id) cannot be resolved by a probe — no shell-reachable API reports whether a subagent is still running; remove $dir/quarantine once it is known to have stopped"
+      return 1
+      ;;
+    codex-plugin) : ;;
+    *)
+      review_error "review_round_quarantine_resolve: unknown recorded mode '${mode:-}' in $dir/quarantine"
+      return 2
+      ;;
+  esac
+
+  root="$(_review_quarantine_field "$dir" root)"
+  [ -n "$root" ] || {
+    review_error "review_round_quarantine_resolve: $dir/quarantine records no companion root; cannot probe"
+    return 2
+  }
+
+  local st
+  st="$(review_codex_job_status "$root" "$q_id" 2>/dev/null || true)"
+  if [ -n "$st" ] && _review_codex_job_terminal "$st"; then
+    rm -f "$dir/quarantine"
+    return 0
+  fi
+  return 1
 }
