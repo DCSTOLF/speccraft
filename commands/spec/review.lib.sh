@@ -1503,12 +1503,36 @@ review_with_deadline() {
   # `set -e`, which would abort the subshell the instant the command exits
   # non-zero — before `echo $?` could record the status this function exists to
   # return. Without it every failing reviewer invocation looks like a timeout.
-  (
-    set +e
-    "$@"
-    echo "$?" > "$rcfile"
-  ) &
+  #
+  # Stdin must be restored explicitly. bash redirects a background job's stdin
+  # from /dev/null when job control is off, which it always is here, so the
+  # command would read NOTHING: the codex launch piped through xargs received
+  # no argv and ran `env` bare, and this lib's own stdin transport
+  # (`$cmd < artifact`) would hand a reviewer an empty payload while it still
+  # answered. fd 9, not fd 3 — bats holds fd 3 for its TAP stream and this lib
+  # is sourced into bats. If the duplication fails (stdin already closed), the
+  # command runs without it rather than the whole call failing.
+  local stdin_saved=0
+  if exec 9<&0 2>/dev/null; then
+    stdin_saved=1
+  fi
+
+  if [ "$stdin_saved" -eq 1 ]; then
+    (
+      set +e
+      exec 0<&9 9<&-
+      "$@"
+      echo "$?" > "$rcfile"
+    ) &
+  else
+    (
+      set +e
+      "$@"
+      echo "$?" > "$rcfile"
+    ) &
+  fi
   job_pid=$!
+  [ "$stdin_saved" -eq 0 ] || exec 9<&-
 
   # Ticks, not whole seconds. A one-second granularity would charge ~1s to
   # EVERY companion invocation — and the adapter makes several per reviewer
@@ -2205,4 +2229,170 @@ review_codex_job_cancel() {
 
   printf 'failed codex-cancel-unconfirmed %s\n' "$job_id"
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# AC11 / AC13 — the mode router and the unavailable diagnostic.
+# ---------------------------------------------------------------------------
+
+# review_codex_unavailable_message <reason> — the operator-facing guidance for
+# a codex-plugin agent that could not be reached.
+#
+# Names the remedy, not just the diagnosis: every reason here is fixed by
+# installing or authenticating the plugin, and `/codex:setup` is the command
+# that does both. Deliberately NOT a suggestion to fall back to the codex CLI —
+# that would review with a different tool under the same agent name.
+review_codex_unavailable_message() {
+  local reason="${1:-unknown}"
+  printf 'codex-plugin unavailable (%s). Run /codex:setup to install or authenticate the Codex plugin, or set mode = "cli" for this agent.\n' \
+    "$reason"
+}
+
+# _review_codex_dispatch <agents.toml> <agent> <artifact> <cwd> <timeout-s> —
+# the whole codex-plugin path: resolve, preflight, launch, poll, collect, parse.
+#
+# On success the reviewer's response goes to stdout. Every failure emits one
+# `failed <token>` line (or `timeout`) and returns non-zero, so the caller
+# records an outcome rather than a verdict.
+_review_codex_dispatch() {
+  local toml="$1" agent="$2" art="$3" cwd="$4" timeout_s="$5"
+
+  # Resolution and preflight failures are reported as the round outcome. Their
+  # own diagnostics already went to stderr with the exact reason token.
+  local root reason
+  if ! root="$(review_codex_plugin_root "$toml" "$agent" 2>"$REVIEW_CODEX_LAST_ERR")"; then
+    reason="$(_review_codex_reason_from "$REVIEW_CODEX_LAST_ERR")"
+    printf 'failed codex-plugin-unavailable %s\n' "$reason"
+    review_error "$(review_codex_unavailable_message "$reason")"
+    return 1
+  fi
+
+  if ! review_codex_preflight "$root" 2>"$REVIEW_CODEX_LAST_ERR"; then
+    reason="$(_review_codex_reason_from "$REVIEW_CODEX_LAST_ERR")"
+    printf 'failed codex-plugin-unavailable %s\n' "$reason"
+    review_error "$(review_codex_unavailable_message "$reason")"
+    return 1
+  fi
+
+  local argv_file launch_file result_file
+  argv_file="$(mktemp)"
+  launch_file="$(mktemp)"
+  result_file="$(mktemp)"
+
+  review_codex_task_argv "$toml" "$agent" "$root" "$art" "$cwd" > "$argv_file" || {
+    rm -f "$argv_file" "$launch_file" "$result_file"
+    printf 'failed codex-task-error\n'
+    return 1
+  }
+
+  # `xargs -0 env` executes the argv's own first word. A bare `xargs -0` would
+  # default to `echo` and launch nothing at all.
+  local launch_rc=0
+  review_with_deadline "$REVIEW_CODEX_CALL_DEADLINE_S" \
+    xargs -0 env < "$argv_file" > "$launch_file" 2>/dev/null || launch_rc=$?
+
+  local job_id
+  if [ "$launch_rc" -ne 0 ] || ! job_id="$(review_codex_job_id "$launch_file" 2>/dev/null)"; then
+    rm -f "$argv_file" "$launch_file" "$result_file"
+    printf 'failed codex-task-error\n'
+    return 1
+  fi
+
+  local poll_rc=0
+  _review_codex_poll "$root" "$job_id" "$timeout_s" >/dev/null || poll_rc=$?
+  if [ "$poll_rc" -eq 124 ]; then
+    rm -f "$argv_file" "$launch_file" "$result_file"
+    # The job outlived its budget. Cancel, and CONFIRM — an unconfirmed cancel
+    # is never reported as a plain timeout, because the reviewer may still be
+    # running.
+    local cancel_out cancel_rc=0
+    cancel_out="$(review_codex_job_cancel "$root" "$job_id")" || cancel_rc=$?
+    if [ "$cancel_rc" -ne 0 ]; then
+      printf '%s\n' "$cancel_out"
+      return 1
+    fi
+    printf 'timeout\n'
+    return 1
+  fi
+
+  local result_rc=0
+  review_codex_job_result "$root" "$job_id" "$result_file" || result_rc=$?
+
+  local parsed parse_rc=0
+  parsed="$(review_parse_codex_task_output "$result_file" "$result_rc")" || parse_rc=$?
+  rm -f "$argv_file" "$launch_file" "$result_file"
+  printf '%s\n' "$parsed"
+  return "$parse_rc"
+}
+
+# REVIEW_CODEX_LAST_ERR — scratch file for a helper's stderr, so the reason
+# token can be lifted out of it and reported as the round outcome.
+REVIEW_CODEX_LAST_ERR="${REVIEW_CODEX_LAST_ERR:-}"
+
+# _review_codex_reason_from <stderr-file> — the reason token a helper named.
+# Exactly one token per message (AC5), so the first match is the reason.
+_review_codex_reason_from() {
+  local f="${1:-}" line
+  [ -n "$f" ] && [ -f "$f" ] || { printf 'unknown\n'; return 0; }
+  line="$(grep -oE 'not-installed|companion-missing|unsupported-companion [^ ]+|unknown-version|not-ready .*' "$f" 2>/dev/null | head -1 || true)"
+  [ -n "$line" ] || line='unknown'
+  printf '%s\n' "$line"
+}
+
+# review_dispatch_agent <agents.toml> <agent> <artifact> [cwd] [timeout-s] —
+# the ONE seam every review command reaches a reviewer through.
+#
+# Four modes, one place. Without this the four review commands would each grow
+# their own dispatch, and a mode handled wrongly would be handled wrongly four
+# times. Routing is by the registry's `mode`, and the transport within `cli` is
+# by its `input` (spec 0052's contract, unchanged).
+#
+# `subagent` is a REFUSAL here and not an oversight: a subagent can only be
+# started by the orchestrating session's own tooling, never from a shell. The
+# branch says so by name and writes nothing to stdout — stdout is the
+# reviewer's response channel, and anything emitted there would be fed to the
+# verdict parser as though a reviewer had answered.
+review_dispatch_agent() {
+  local toml="${1:-}" agent="${2:-}" art="${3:-}"
+  local cwd="${4:-}" timeout_s="${5:-${REVIEW_TIMEOUT_S:-600}}"
+
+  [ -n "$toml" ] && [ -f "$toml" ] || {
+    review_error "review_dispatch_agent: registry not found: '${toml:-}'"
+    return 2
+  }
+  [ -n "$agent" ] || { review_error "review_dispatch_agent: agent required"; return 2; }
+  [ -n "$art" ] && [ -f "$art" ] || {
+    review_error "review_dispatch_agent: payload artifact not found: '${art:-}'"
+    return 2
+  }
+  [ -n "$cwd" ] || cwd="$(speccraft-state find-root 2>/dev/null || pwd)"
+
+  local mode
+  mode="$(review_agent_mode "$toml" "$agent")" || return 2
+
+  case "$mode" in
+    cli | acp)
+      local cmd transport
+      cmd="$(review_agent_field "$toml" "$agent" cmd)"
+      [ -n "$cmd" ] || {
+        review_error "review_dispatch_agent: agent \"$agent\" (mode $mode) has no cmd"
+        return 2
+      }
+      transport="$(review_agent_transport "$toml" "$agent")" || return 2
+      review_dispatch_payload "$cmd" "$transport" "$art"
+      ;;
+    codex-plugin)
+      [ -n "${REVIEW_CODEX_LAST_ERR:-}" ] && [ -f "${REVIEW_CODEX_LAST_ERR:-}" ] \
+        || REVIEW_CODEX_LAST_ERR="$(mktemp)"
+      _review_codex_dispatch "$toml" "$agent" "$art" "$cwd" "$timeout_s"
+      ;;
+    subagent)
+      review_error "review_dispatch_agent: agent \"$agent\" is mode subagent, which only the orchestrating session can dispatch; the command body must start it via its own subagent tooling, not this lib"
+      return 3
+      ;;
+    *)
+      review_error "review_dispatch_agent: unknown mode '$mode' for agent \"$agent\""
+      return 2
+      ;;
+  esac
 }

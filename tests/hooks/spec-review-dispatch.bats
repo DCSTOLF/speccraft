@@ -413,3 +413,106 @@ cmd = ["x"]
   run review_agent_mode "$t" ghost
   assert_named_failure 'ghost'
 }
+
+# ---- AC13: review_dispatch_agent, the mode router --------------------------
+#
+# One seam, four modes. The router is what keeps the four review commands from
+# each growing their own dispatch: every command reaches a reviewer through
+# here, so a mode handled wrongly is handled wrongly exactly once.
+
+@test "review_dispatch_agent routes a cli entry through its input mode" {
+  source "$LIB"
+  local toml art
+  printf 'payload bytes\n' > "$TEST_DIR/art.md"
+  art="$TEST_DIR/art.md"
+  # `cat` as the agent: with stdin transport it echoes the artifact's bytes,
+  # which proves the payload reached the command by the registry's input mode.
+  toml="$(reg 'name = "stubcli"
+mode = "cli"
+cmd = "cat"
+input = "stdin"')"
+
+  run review_dispatch_agent "$toml" stubcli "$art"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF 'payload bytes' || {
+    echo "the artifact's bytes must reach the cli agent; got: $output" >&2
+    return 1
+  }
+}
+
+@test "review_dispatch_agent honours a cli entry's file transport" {
+  source "$LIB"
+  local toml
+  printf 'file bytes\n' > "$TEST_DIR/art2.md"
+  # `--file <path>` is how file transport is spelled, so a command that prints
+  # its own argv shows the path rather than the bytes.
+  toml="$(reg 'name = "filecli"
+mode = "cli"
+cmd = "echo"
+input = "file"')"
+
+  run review_dispatch_agent "$toml" filecli "$TEST_DIR/art2.md"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qF -- "--file $TEST_DIR/art2.md" || {
+    echo "expected file transport to pass --file <path>; got: $output" >&2
+    return 1
+  }
+}
+
+@test "review_dispatch_agent returns non-zero for subagent with the orchestrating-session error" {
+  source "$LIB"
+  local toml
+  printf 'x\n' > "$TEST_DIR/art3.md"
+  toml="$(reg 'name = "sub"
+mode = "subagent"
+subagent_type = "general-purpose"')"
+
+  run review_dispatch_agent "$toml" sub "$TEST_DIR/art3.md"
+  [ "$status" -ne 0 ]
+  # A subagent cannot be dispatched from a shell at all: only the orchestrating
+  # session can start one. Saying so by name beats a generic failure, because
+  # the fix is "the command body must do this", not "the registry is wrong".
+  printf '%s\n' "$output" | grep -qF 'orchestrating session' || {
+    echo "expected the orchestrating-session error; got: $output" >&2
+    return 1
+  }
+}
+
+@test "review_dispatch_agent's subagent branch writes nothing to stdout" {
+  source "$LIB"
+  local toml out
+  printf 'x\n' > "$TEST_DIR/art4.md"
+  toml="$(reg 'name = "sub"
+mode = "subagent"
+subagent_type = "general-purpose"')"
+
+  # An absent function also writes nothing to stdout, so this row would pass
+  # before the function existed at all. Assert the premise first.
+  command -v review_dispatch_agent >/dev/null 2>&1 || {
+    echo "review_dispatch_agent is not defined; this row would pass vacuously" >&2
+    return 1
+  }
+
+  # Stdout is the reviewer's RESPONSE channel. Anything written here would be
+  # fed to the verdict parser as if a reviewer had answered.
+  out="$(review_dispatch_agent "$toml" sub "$TEST_DIR/art4.md" 2>/dev/null || true)"
+  [ -z "$out" ] || {
+    echo "the subagent branch must write nothing to stdout; got: $out" >&2
+    return 1
+  }
+}
+
+@test "review_dispatch_agent names an unknown mode rather than silently doing nothing" {
+  source "$LIB"
+  local toml
+  printf 'x\n' > "$TEST_DIR/art5.md"
+  toml="$(reg 'name = "weird"
+mode = "telepathy"')"
+
+  run review_dispatch_agent "$toml" weird "$TEST_DIR/art5.md"
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -qF 'telepathy' || {
+    echo "the error must name the offending mode; got: $output" >&2
+    return 1
+  }
+}

@@ -201,6 +201,31 @@ count_procs() {
   [ "$output" = "hello" ]
 }
 
+@test "review_with_deadline passes the caller's stdin through to the command" {
+  source "$LIB"
+  printf 'payload bytes\n' > "$TEST_DIR/in.txt"
+
+  # Backgrounding a job redirects its stdin to /dev/null when job control is
+  # off, which is always here. So the wrapper must restore stdin explicitly or
+  # the command silently reads NOTHING — and this lib's stdin transport
+  # (`$cmd < artifact`) would hand a reviewer an empty payload while it still
+  # answered. Found when the codex launch, piped through xargs, received no
+  # argv and ran `env` bare.
+  run review_with_deadline 5 cat < "$TEST_DIR/in.txt"
+  [ "$status" -eq 0 ]
+  assert_line 'payload bytes'
+}
+
+@test "review_with_deadline passes stdin through under real zsh too" {
+  source "$LIB"
+  printf 'zsh bytes\n' > "$TEST_DIR/zin.txt"
+  command -v zsh >/dev/null 2>&1 || { echo "zsh required — never silent-skip (see ci.yml)"; false; }
+
+  run zsh -c "source '$LIB'; set +e; review_with_deadline 5 cat < '$TEST_DIR/zin.txt'"
+  [ "$status" -eq 0 ]
+  assert_line 'zsh bytes'
+}
+
 @test "review_with_deadline uses no timeout(1)" {
   # macOS has no timeout(1), so reaching for it would work in CI and fail on
   # the platform this convention exists to protect.
@@ -1564,4 +1589,193 @@ count_calls() {
     echo "the cancel path must invoke the companion's cancel" >&2
     return 1
   }
+}
+
+# ---------------------------------------------------------------------------
+# AC11 — the unavailable round
+# ---------------------------------------------------------------------------
+
+# plant_codex_binary — a stub `codex` first on PATH that records being run.
+# The adapter talks to the companion through `node` and must never reach for
+# the codex CLI itself, so this marker must stay absent.
+plant_codex_binary() {
+  CODEX_MARKER="$TEST_DIR/codex-was-run"
+  cat > "$TEST_DIR/bin/codex" <<SH
+#!/usr/bin/env sh
+printf 'ran\n' >> "$CODEX_MARKER"
+exit 0
+SH
+  chmod +x "$TEST_DIR/bin/codex"
+}
+
+@test "an unavailable codex-plugin agent records failed codex-plugin-unavailable not-installed" {
+  source "$LIB"
+  codex_env
+  plant_codex_binary
+  write_installed '[]'
+  printf 'payload\n' > "$TEST_DIR/art.md"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_dispatch_agent "$TEST_DIR/agents.toml" codex "$TEST_DIR/art.md"
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-plugin-unavailable not-installed'
+}
+
+@test "the other agent in an unavailable round still dispatches" {
+  source "$LIB"
+  codex_env
+  plant_codex_binary
+  write_installed '[]'
+  printf 'payload bytes\n' > "$TEST_DIR/art.md"
+  # Both agents in ONE registry, as a real round would have them.
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"
+
+[[agents]]
+name = "stubcli"
+mode = "cli"
+cmd = "cat"
+input = "stdin"'
+
+  run review_dispatch_agent "$TEST_DIR/agents.toml" codex "$TEST_DIR/art.md"
+  [ "$status" -ne 0 ]
+
+  # One unavailable reviewer must not take the round down: quorum is computed
+  # from the responses that DID arrive.
+  run review_dispatch_agent "$TEST_DIR/agents.toml" stubcli "$TEST_DIR/art.md"
+  [ "$status" -eq 0 ]
+  assert_line 'payload bytes'
+}
+
+@test "the unavailable message names /codex:setup" {
+  source "$LIB"
+  codex_env
+  write_installed '[]'
+  printf 'payload\n' > "$TEST_DIR/art.md"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_unavailable_message not-installed
+  [ "$status" -eq 0 ]
+  # The actionable next step, not just a diagnosis.
+  printf '%s\n' "$output" | grep -qF '/codex:setup' || {
+    echo "the message must name /codex:setup; got: $output" >&2
+    return 1
+  }
+}
+
+@test "no codex binary is executed anywhere in the codex-plugin path" {
+  source "$LIB"
+  codex_env
+  plant_codex_binary
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/root\", \"version\": \"1.0.6\" }]"
+  printf 'payload\n' > "$TEST_DIR/art.md"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  # Without this, the row passes while review_dispatch_agent does not exist:
+  # nothing ran, so of course no codex binary ran.
+  command -v review_dispatch_agent >/dev/null 2>&1 || {
+    echo "review_dispatch_agent is not defined; this row would pass vacuously" >&2
+    return 1
+  }
+
+  run review_dispatch_agent "$TEST_DIR/agents.toml" codex "$TEST_DIR/art.md"
+  # The dispatch must actually have succeeded, or "no codex binary ran" is
+  # again vacuous — a failure before launch runs nothing either.
+  [ "$status" -eq 0 ] || {
+    echo "the agent should dispatch successfully here; got ($status): $output" >&2
+    return 1
+  }
+
+  # The adapter drives the COMPANION via node. Reaching for the codex CLI
+  # directly would bypass the plugin's own auth and job bookkeeping.
+  [ ! -f "$CODEX_MARKER" ] || {
+    echo "a codex binary was executed:" >&2
+    cat "$CODEX_MARKER" >&2
+    return 1
+  }
+}
+
+@test "the planted codex stub really would be caught if it ran" {
+  source "$LIB"
+  codex_env
+  plant_codex_binary
+  # Proves the row above is not passing because the stub is unreachable or
+  # non-executable: invoked directly, it must leave the marker.
+  codex --version >/dev/null 2>&1 || true
+  [ -f "$CODEX_MARKER" ] || {
+    echo "the planted stub did not record being run; the negative row is inert" >&2
+    return 1
+  }
+}
+
+@test "no codex exec fallback appears in the adapter" {
+  # A `codex exec` fallback would review with a DIFFERENT tool under the same
+  # agent name, so a round could report a codex-plugin verdict that no
+  # companion ever produced. Comment lines are excluded so the lib may explain
+  # the prohibition, and the row below proves the filter still bites.
+  run sh -c "grep -vE '^[[:space:]]*#' '$LIB' | grep -nE 'codex[[:space:]]+exec'"
+  [ "$status" -ne 0 ]
+}
+
+@test "the codex exec guard bites on an executable line" {
+  local probe="$TEST_DIR/probe.lib.sh"
+  printf '%s\n' '# a comment mentioning codex exec must not trip it' > "$probe"
+  run sh -c "grep -vE '^[[:space:]]*#' '$probe' | grep -nE 'codex[[:space:]]+exec'"
+  [ "$status" -ne 0 ]
+
+  printf '%s\n' 'f() { codex exec "$1"; }' >> "$probe"
+  run sh -c "grep -vE '^[[:space:]]*#' '$probe' | grep -nE 'codex[[:space:]]+exec'"
+  [ "$status" -eq 0 ]
+}
+
+@test "a ready codex-plugin agent dispatches end to end and yields the response" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/root\", \"version\": \"1.0.6\" }]"
+  printf 'payload\n' > "$TEST_DIR/art.md"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+  REVIEW_CODEX_POLL_INTERVAL_S=1
+
+  run review_dispatch_agent "$TEST_DIR/agents.toml" codex "$TEST_DIR/art.md"
+  [ "$status" -eq 0 ] || {
+    echo "a ready agent must dispatch; got ($status): $output" >&2
+    return 1
+  }
+  # The response comes from .storedJob.result.rawOutput, through the whole
+  # launch -> poll -> result -> parse chain.
+  printf '%s\n' "$output" | grep -qxF 'verdict: changes-requested' || {
+    echo "expected the reviewer's verdict; got: $output" >&2
+    return 1
+  }
+}
+
+@test "an unready codex-plugin agent records not-ready, not a verdict" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  write_installed "[{ \"scope\": \"user\", \"installPath\": \"$TEST_DIR/root\", \"version\": \"1.0.6\" }]"
+  printf 'payload\n' > "$TEST_DIR/art.md"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+  export STUB_CODEX_READY=0
+
+  run review_dispatch_agent "$TEST_DIR/agents.toml" codex "$TEST_DIR/art.md"
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -qF 'codex-plugin-unavailable' || {
+    echo "expected codex-plugin-unavailable; got: $output" >&2
+    return 1
+  }
+  refute_line 'verdict: changes-requested'
 }
