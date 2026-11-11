@@ -1097,3 +1097,228 @@ mode = "codex-plugin"'
   run review_codex_task_argv "$TEST_DIR/agents.toml" codex "$TEST_DIR/root" "$TEST_DIR/nope.md" "$FAKE_REPO"
   assert_named_failure "$TEST_DIR/nope.md"
 }
+
+# ---------------------------------------------------------------------------
+# AC9 / AC9a — review_parse_codex_task_output
+#
+# Every fixture carries the NESTED background shape, .storedJob.result.*, which
+# is what `result <job-id> --json` actually emits (handleResult, 1.0.6
+# codex-companion.mjs:910-925; tracked-jobs.mjs:166 stores the payload one
+# level down). The flat shape is the FOREGROUND payload and is rejected.
+# ---------------------------------------------------------------------------
+
+# nested_result <json-for-.storedJob.result> [outer-job-status] — a faithful
+# `result --json` envelope wrapped around the given result object.
+nested_result() {
+  local inner="$1" outer_status="${2:-completed}"
+  printf '{ "job": { "id": "task-x", "status": "%s" },\n' "$outer_status"
+  printf '  "storedJob": { "id": "task-x", "status": "%s", "result": %s } }\n' \
+    "$outer_status" "$inner"
+}
+
+@test "review_parse_codex_task_output: the pinned 1.0.6 success fixture yields the response" {
+  source "$LIB"
+  codex_env
+
+  run review_parse_codex_task_output "$CODEX_FIX/task-success-1.0.6.json" 0
+  [ "$status" -eq 0 ]
+  # The response is the reviewer's own text, taken from
+  # .storedJob.result.rawOutput and nothing else.
+  printf '%s\n' "$output" | grep -qxF 'verdict: changes-requested' || {
+    echo "expected the reviewer's verdict line; got: $output" >&2
+    return 1
+  }
+}
+
+@test "review_parse_codex_task_output: the response is emitted byte-for-byte, multi-line intact" {
+  source "$LIB"
+  codex_env
+  nested_result '{ "status": 0, "rawOutput": "line one\nline two\nline three\n", "touchedFiles": [] }' \
+    > "$TEST_DIR/multi.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/multi.json" 0
+  [ "$status" -eq 0 ]
+  assert_line 'line one'
+  assert_line 'line two'
+  assert_line 'line three'
+}
+
+@test "review_parse_codex_task_output: a non-zero result.status is codex-output-unparseable" {
+  source "$LIB"
+  codex_env
+  nested_result '{ "status": 1, "rawOutput": "some text", "touchedFiles": [] }' \
+    > "$TEST_DIR/rc1.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/rc1.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-output-unparseable'
+}
+
+@test "review_parse_codex_task_output: an empty rawOutput is codex-output-unparseable" {
+  source "$LIB"
+  codex_env
+  nested_result '{ "status": 0, "rawOutput": "", "touchedFiles": [] }' \
+    > "$TEST_DIR/empty.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/empty.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-output-unparseable'
+}
+
+@test "review_parse_codex_task_output: an absent rawOutput is codex-output-unparseable" {
+  source "$LIB"
+  codex_env
+  nested_result '{ "status": 0, "touchedFiles": [] }' > "$TEST_DIR/norawout.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/norawout.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-output-unparseable'
+}
+
+@test "review_parse_codex_task_output: invalid JSON with a zero exit is codex-output-unparseable" {
+  source "$LIB"
+  codex_env
+  printf 'this is not json\n' > "$TEST_DIR/notjson.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/notjson.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-output-unparseable'
+}
+
+@test "review_parse_codex_task_output: a non-zero exit with non-JSON stdout is codex-task-error" {
+  source "$LIB"
+  codex_env
+  printf 'Error: codex is not authenticated\n' > "$TEST_DIR/err.txt"
+
+  run review_parse_codex_task_output "$TEST_DIR/err.txt" 1
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-task-error'
+}
+
+@test "review_parse_codex_task_output: a non-zero exit with success-shaped JSON is codex-task-error" {
+  source "$LIB"
+  codex_env
+  # THE quadrant, and the one easiest to get wrong. A companion that printed a
+  # well-formed result and THEN exited non-zero had a transport failure, and a
+  # transport failure never becomes a verdict. Accepting the response because
+  # it "looks fine" is wrong, and so is filing it as codex-output-unparseable
+  # when the output parsed perfectly well.
+  nested_result '{ "status": 0, "rawOutput": "verdict: approve", "touchedFiles": [] }' \
+    > "$TEST_DIR/goodjson-badexit.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/goodjson-badexit.json" 1
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-task-error'
+  refute_line 'failed codex-output-unparseable'
+  refute_line 'verdict: approve'
+}
+
+@test "review_parse_codex_task_output: non-empty touchedFiles is codex-wrote-files even with a valid verdict" {
+  source "$LIB"
+  codex_env
+  nested_result '{ "status": 0, "rawOutput": "verdict: approve", "touchedFiles": ["src/main.go"] }' \
+    > "$TEST_DIR/wrote.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/wrote.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-wrote-files'
+  # A read-only reviewer that wrote is a defect, never a verdict — so the
+  # verdict must not be emitted alongside it.
+  refute_line 'verdict: approve'
+}
+
+@test "review_parse_codex_task_output: touchedFiles wins over a non-zero exit too" {
+  source "$LIB"
+  codex_env
+  # The spec is explicit that touchedFiles wins over EVERY other row, so this
+  # must not be reported as the transport error.
+  nested_result '{ "status": 1, "rawOutput": "x", "touchedFiles": ["a.txt"] }' \
+    > "$TEST_DIR/wrote2.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/wrote2.json" 1
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-wrote-files'
+}
+
+@test "review_parse_codex_task_output: the FLAT foreground shape is codex-output-unparseable" {
+  source "$LIB"
+  codex_env
+  # This is the shape an earlier draft of the spec documented. It is what
+  # foreground `task --json` emits, and accepting it would mean a caller that
+  # forgot --background silently produced a verdict. There is no fallback, so
+  # this row fails the moment one is added.
+  printf '{ "status": 0, "threadId": "t", "rawOutput": "verdict: approve", "touchedFiles": [] }\n' \
+    > "$TEST_DIR/flat.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/flat.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-output-unparseable'
+  refute_line 'verdict: approve'
+}
+
+@test "review_parse_codex_task_output: a string result.status is never success" {
+  source "$LIB"
+  codex_env
+  # AC9a. 1.0.6's buildResultStatus is numeric (codex.mjs:754), so this value
+  # is never emitted there; the row exists so that reintroducing string-status
+  # matching fails loudly instead of misrecording every review.
+  nested_result '{ "status": "completed", "rawOutput": "verdict: approve", "touchedFiles": [] }' \
+    > "$TEST_DIR/strstatus.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/strstatus.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-output-unparseable'
+}
+
+@test "review_parse_codex_task_output: a string-typed zero result.status is never success" {
+  source "$LIB"
+  codex_env
+  # The sibling of the "completed" row, and the one that actually pins the TYPE
+  # check. A type-blind comparison that merely stringifies .status still
+  # rejects "completed" — so the "completed" row alone passes even against a
+  # parser with no type check at all. Only a string that stringifies to "0"
+  # separates the two, which a mutation run exposed.
+  nested_result '{ "status": "0", "rawOutput": "verdict: approve", "touchedFiles": [] }' \
+    > "$TEST_DIR/strzero.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/strzero.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-output-unparseable'
+  refute_line 'verdict: approve'
+}
+
+@test "review_parse_codex_task_output: the right value at the wrong DEPTH is never success" {
+  source "$LIB"
+  codex_env
+  # The depth trap. The OUTER job status is the string "completed" and that is
+  # genuinely its success value, while the inner numeric status says 1. A
+  # parser reading the right value at the wrong depth passes every other row
+  # in this file and fails only this one.
+  nested_result '{ "status": 1, "rawOutput": "verdict: approve", "touchedFiles": [] }' completed \
+    > "$TEST_DIR/depth.json"
+
+  run review_parse_codex_task_output "$TEST_DIR/depth.json" 0
+  [ "$status" -ne 0 ]
+  assert_line 'failed codex-output-unparseable'
+  refute_line 'verdict: approve'
+}
+
+@test "review_parse_codex_task_output: a one-argument call is a named error" {
+  source "$LIB"
+  codex_env
+  nested_result '{ "status": 0, "rawOutput": "ok", "touchedFiles": [] }' > "$TEST_DIR/one.json"
+
+  # The classification is total over (exit status x JSON validity x fields), so
+  # it cannot be computed without the status. Defaulting the second argument
+  # would silently turn every transport failure into a verdict.
+  run review_parse_codex_task_output "$TEST_DIR/one.json"
+  assert_named_failure 'exit status'
+}
+
+@test "review_parse_codex_task_output: a missing stdout file is a named error, not a verdict" {
+  source "$LIB"
+  codex_env
+  run review_parse_codex_task_output "$TEST_DIR/nosuch-output.json" 0
+  [ "$status" -ne 0 ]
+  assert_named_failure "$TEST_DIR/nosuch-output.json"
+}

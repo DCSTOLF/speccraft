@@ -1932,3 +1932,110 @@ review_codex_task_argv() {
   [ -z "$effort" ] || printf '%s\0' --effort "$effort"
 }
 
+
+# ---------------------------------------------------------------------------
+# AC9 / AC9a — classifying the companion's task output.
+# ---------------------------------------------------------------------------
+
+# review_parse_codex_task_output <stdout-file> <exit-status> — classify one
+# completed companion invocation. On success the reviewer's response goes to
+# stdout and the return is zero; otherwise a single `failed <token>` line goes
+# to stdout and the return is non-zero.
+#
+# BOTH arguments are required. The classification is total over (exit status x
+# JSON validity x field contents), so it cannot be computed without the status;
+# defaulting it would silently turn every transport failure into a verdict.
+#
+# The fields are read from the NESTED background shape, `.storedJob.result.*`.
+# That is what `result <job-id> --json` emits (handleResult, 1.0.6
+# codex-companion.mjs:910-925; tracked-jobs.mjs:166 stores the payload one
+# level down, and the companion's own renderer reads
+# storedJob.result.rawOutput at render.mjs:402). The FLAT shape is the
+# FOREGROUND payload: it is rejected rather than accepted as a fallback,
+# because a caller that forgot --background would otherwise silently produce a
+# verdict, and one tested path beats two of which only one is exercised.
+#
+# Two fields are named `status` at different depths and this function must read
+# the inner one:
+#   .storedJob.status        string: queued|running|completed|failed|cancelled
+#   .storedJob.result.status NUMBER: 0 success, 1 otherwise
+# The outer one's success value really is the string "completed", so reading
+# the right value at the wrong depth looks plausible and is wrong. The inner
+# status must be numerically 0 AND of JSON type number, so a string "0" or
+# "completed" cannot pass.
+#
+# Precedence, in order, because the rows overlap:
+#   1. non-empty touchedFiles -> codex-wrote-files. Wins over EVERY other row:
+#      a read-only reviewer that wrote is a defect, never a verdict, and the
+#      verdict is withheld rather than reported alongside it.
+#   2. non-zero exit -> codex-task-error, whatever the JSON says. A companion
+#      that printed a well-formed result and THEN exited non-zero had a
+#      transport failure, and a transport failure never becomes a verdict.
+#      Filing this as codex-output-unparseable would be wrong too: the output
+#      parsed perfectly well.
+#   3. anything else short of success -> codex-output-unparseable.
+review_parse_codex_task_output() {
+  [ "$#" -eq 2 ] || {
+    review_error "review_parse_codex_task_output: both <stdout-file> and <exit status> are required (got $#)"
+    return 2
+  }
+  local out_file="$1" cmd_status="$2"
+
+  [ -n "$out_file" ] && [ -f "$out_file" ] || {
+    review_error "review_parse_codex_task_output: companion stdout not found: '${out_file:-}'"
+    return 2
+  }
+  case "$cmd_status" in
+    '' | *[!0-9]*)
+      review_error "review_parse_codex_task_output: exit status must be a non-negative integer, got '$cmd_status'"
+      return 2
+      ;;
+  esac
+
+  # Empty when the file is not JSON, or carries no nested result object — which
+  # is also how the flat foreground shape lands here.
+  local result
+  result="$(jq -c '.storedJob.result // empty' "$out_file" 2>/dev/null || true)"
+
+  if [ -n "$result" ]; then
+    local touched
+    touched="$(printf '%s\n' "$result" \
+      | jq -r '(.touchedFiles // []) | length' 2>/dev/null || true)"
+    case "${touched:-0}" in
+      '' | 0) : ;;
+      *)
+        printf 'failed codex-wrote-files\n'
+        return 1
+        ;;
+    esac
+  fi
+
+  if [ "$cmd_status" -ne 0 ]; then
+    printf 'failed codex-task-error\n'
+    return 1
+  fi
+
+  [ -n "$result" ] || {
+    printf 'failed codex-output-unparseable\n'
+    return 1
+  }
+
+  local result_status raw
+  result_status="$(printf '%s\n' "$result" \
+    | jq -r 'if (.status | type) == "number" then (.status | tostring) else "" end' \
+      2>/dev/null || true)"
+  [ "$result_status" = "0" ] || {
+    printf 'failed codex-output-unparseable\n'
+    return 1
+  }
+
+  raw="$(printf '%s\n' "$result" \
+    | jq -r 'if (.rawOutput | type) == "string" then .rawOutput else "" end' \
+      2>/dev/null || true)"
+  [ -n "$raw" ] || {
+    printf 'failed codex-output-unparseable\n'
+    return 1
+  }
+
+  printf '%s\n' "$raw"
+}
