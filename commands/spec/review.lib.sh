@@ -1594,3 +1594,288 @@ review_dispatch_agent() {
       ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# Spec 0054 Phase E — the persistent round directory (ACs 14, 14a, 14b, 14c, 14e).
+#
+# A round dir holds the composed payload and the digest sidecar for the life of
+# a round. It must outlive the creating shell (reviewers run concurrently), be
+# invisible to git in an ALREADY-initialized repo with no migration, and be
+# reclaimable after a crash without ever deleting a round still running.
+#
+# Reclamation is LEASE-based, never age-based: an age rule cannot tell a round
+# that has run for an hour from one abandoned an hour ago, and rounds here
+# legitimately run long.
+# ---------------------------------------------------------------------------
+
+# Grace added to every lease beyond the round's own timeout, so a round that
+# uses its full budget and then finalizes is never reclaimed from under itself.
+REVIEW_ROUND_LEASE_GRACE_S="${REVIEW_ROUND_LEASE_GRACE_S:-300}"
+
+# review_round_parent — the directory holding every round dir.
+review_round_parent() {
+  local root
+  root="$(speccraft-state find-root 2>/dev/null || pwd)"
+  printf '%s\n' "$root/.speccraft/.review-rounds"
+}
+
+# _review_round_write_gitignore <parent> — write `*` into <parent>/.gitignore,
+# idempotently, via a same-dir temp plus rename.
+#
+# AC14a, and the reason there is no migration: the ignore rule lives INSIDE the
+# round parent, so a repo initialized before this spec ignores round dirs
+# without its own .gitignore being touched at all. (`/speccraft:init` only ever
+# appended `.speccraft/state.json` to the host's file.) A `*` here also ignores
+# this .gitignore itself, which is correct — it is machine state, not project
+# intent — and git still reads an ignored .gitignore.
+#
+# Same-dir temp + rename so a reader never sees a half-written rule: an empty
+# or truncated .gitignore would silently expose round payloads to `git add -A`.
+_review_round_write_gitignore() {
+  local parent="$1" tmp
+  if [ -f "$parent/.gitignore" ] && [ "$(cat "$parent/.gitignore")" = '*' ]; then
+    return 0
+  fi
+  tmp="$parent/.gitignore.tmp.$$"
+  printf '*\n' > "$tmp"
+  mv -f "$tmp" "$parent/.gitignore"
+}
+
+# review_round_lease_write <dir> <absolute-expiry-unix> — the lease, one line.
+#
+# Written ONCE per round and never renewed (AC14d): a renewable lease cannot
+# bound anything, because an abandoned round holding a renewer would keep
+# extending itself.
+review_round_lease_write() {
+  local dir="${1:-}" expiry="${2:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_round_lease_write: round dir not found: '${dir:-}'"
+    return 2
+  }
+  case "$expiry" in
+    '' | *[!0-9]*)
+      review_error "review_round_lease_write: expiry must be an absolute unix timestamp, got '$expiry'"
+      return 2
+      ;;
+  esac
+  printf 'expires_at %s\n' "$expiry" > "$dir/lease"
+}
+
+# review_round_lease_expired <dir> — 0 expired, 1 active, 2 missing/unparseable.
+#
+# Three outcomes rather than two because the sweep treats "expired" and "cannot
+# be read" the same way (both reclaimable) while a CALLER may want to tell them
+# apart, and because collapsing them would make an unparseable lease read as
+# active — the failure mode that leaks round dirs forever.
+review_round_lease_expired() {
+  local dir="${1:-}" expiry now
+  [ -n "$dir" ] && [ -f "$dir/lease" ] || return 2
+  expiry="$(awk '$1 == "expires_at" { print $2; exit }' "$dir/lease" 2>/dev/null || true)"
+  case "$expiry" in
+    '' | *[!0-9]*) return 2 ;;
+  esac
+  now="$(date +%s)"
+  [ "$now" -ge "$expiry" ]
+}
+
+# review_round_dir_create <kind> <id> <timeout-s> — create a round dir and echo
+# its path. Publishes atomically: the dir appears under its final name only
+# once it already holds its lease.
+#
+# The sequence matters (AC14c). The expiry is fixed at `mkdir` time, BEFORE any
+# fallible setup, and encoded in the temporary `.building-<expiry>-<rand>` name.
+# So a creator killed mid-build leaves a directory that the sweep can reclaim by
+# reading its own name — no age rule, no mtime, no guessing. The lease is then
+# written INSIDE that temp dir and the whole thing renamed, so no round ever
+# exists under its final name without a lease. Without that ordering, the
+# "missing lease ⇒ reclaim" rule would race every creation.
+#
+# The chosen temp name is RECORDED, in two places, because a successful create
+# renames it away and it cannot be observed by listing the directory
+# afterwards. AC14e permits interleaving or instrumentation; this is the latter.
+#
+#   <round-dir>/build-name  — the durable record, and the one that works.
+#   REVIEW_ROUND_BUILD_NAME — convenience for a direct caller only.
+#
+# The file is not redundant. Every real caller takes the round path by command
+# substitution (`dir="$(review_round_dir_create ...)"`), which runs this
+# function in a SUBSHELL, so the variable assignment is discarded before the
+# caller can read it — a variable alone is instrumentation that no caller and
+# no test can actually see.
+review_round_dir_create() {
+  local kind="${1:-}" round_id="${2:-}" timeout_s="${3:-}"
+  [ -n "$kind" ] && [ -n "$round_id" ] || {
+    review_error "review_round_dir_create: kind and id required"
+    return 2
+  }
+  case "$timeout_s" in
+    '' | *[!0-9]*)
+      review_error "review_round_dir_create: timeout-s must be a non-negative integer, got '${timeout_s:-}'"
+      return 2
+      ;;
+  esac
+
+  local parent
+  parent="$(review_round_parent)"
+  mkdir -p "$parent" || return 1
+  chmod 0700 "$parent" 2>/dev/null || true
+  _review_round_write_gitignore "$parent" || return 1
+
+  # `date +%s` plus shell arithmetic, never `date -d`: BSD date has no -d, so
+  # the GNU spelling would pass CI and fail on macOS.
+  local now expiry rand build final
+  now="$(date +%s)"
+  expiry=$((now + timeout_s + REVIEW_ROUND_LEASE_GRACE_S))
+  rand="$$-${RANDOM:-0}"
+
+  build="$parent/.building-$expiry-$rand"
+  mkdir -m 0700 "$build" || return 1
+  REVIEW_ROUND_BUILD_NAME=".building-$expiry-$rand"
+
+  review_round_lease_write "$build" "$expiry" || {
+    rm -rf "$build"
+    return 1
+  }
+
+  # Written BEFORE the rename, so it is inside the dir the instant it is
+  # published — there is no window in which a round exists without its record.
+  printf '%s\n' "$REVIEW_ROUND_BUILD_NAME" > "$build/build-name" || {
+    rm -rf "$build"
+    return 1
+  }
+
+  final="$parent/$kind-$round_id-$rand"
+  mv "$build" "$final" || {
+    rm -rf "$build"
+    return 1
+  }
+  chmod 0700 "$final" 2>/dev/null || true
+  printf '%s\n' "$final"
+}
+
+# review_round_cleanup <dir> — remove one round dir, refusing anything that is
+# not strictly inside the round parent. Non-zero refusals delete NOTHING.
+#
+# The refusals are not defensive padding: this function runs `rm -rf` on a path
+# assembled from a repo root, so `/`, an escaping `..`, and a symlink are each
+# one bug away from deleting a user's work.
+#
+# BOTH sides are resolved before comparing (spec 0050 defect A). On macOS
+# TMPDIR is itself a symlink, so the repo root resolves to a different prefix
+# than the path a caller holds; comparing one resolved side against one
+# unresolved side refuses every legitimate round dir instead.
+#
+# A symlink is refused rather than followed: deleting through one would remove
+# a target outside the parent while every path check still passed.
+review_round_cleanup() {
+  local dir="${1:-}"
+  [ -n "$dir" ] || {
+    review_error "review_round_cleanup: path required"
+    return 2
+  }
+  [ -e "$dir" ] || {
+    review_error "review_round_cleanup: not found: '$dir'"
+    return 2
+  }
+  [ ! -L "$dir" ] || {
+    review_error "review_round_cleanup: refusing a symlink: '$dir'"
+    return 1
+  }
+  [ -d "$dir" ] || {
+    review_error "review_round_cleanup: not a directory: '$dir'"
+    return 1
+  }
+
+  local parent canon_parent canon_dir
+  parent="$(review_round_parent)"
+  canon_parent="$(_review_canonical_dir "$parent")"
+  canon_dir="$(_review_canonical_dir "$dir")"
+
+  [ -n "$canon_parent" ] && [ -n "$canon_dir" ] || {
+    review_error "review_round_cleanup: could not resolve '$dir' against the round parent"
+    return 1
+  }
+
+  # STRICTLY inside: equal is refused too, since wiping the parent would take
+  # every concurrent round with it.
+  case "$canon_dir" in
+    "$canon_parent"/?*) : ;;
+    *)
+      review_error "review_round_cleanup: refusing '$dir' — not inside the .review-rounds parent ($canon_parent)"
+      return 1
+      ;;
+  esac
+
+  rm -rf "$canon_dir"
+}
+
+# review_round_sweep — reclaim abandoned round dirs. NO ARGUMENTS.
+#
+# Taking no argument is the point, not an omission. An age or `--max-age`
+# parameter would make "this directory is old" a deletion reason, and a round
+# that has legitimately run for an hour is indistinguishable by mtime from one
+# abandoned an hour ago. Every decision here comes from a LEASE or from an
+# expiry encoded in a `.building-` name, both of which are absolute timestamps
+# chosen by the creator. An argument is therefore a usage error rather than
+# something ignored: silently accepting one would read, at every call site, as
+# though age sweeping were supported.
+#
+# Two rules:
+#   published dirs  — reclaimed when the lease has EXPIRED, or is MISSING or
+#                     UNPARSEABLE. The last two are reclaimable because
+#                     review_round_dir_create publishes a dir only once it
+#                     already holds its lease, so a published round without one
+#                     is wreckage, never a round still being built.
+#   .building-* dirs — reclaimed once the expiry encoded in the NAME has passed.
+#                     Read off the name and never recomputed, so two builders
+#                     abandoned with different timeouts are each judged on their
+#                     own threshold. A fresh builder's expiry lies in the
+#                     future, which is what keeps a concurrent sweep from
+#                     racing every creation (AC14c).
+#
+# Deletion goes through review_round_cleanup, which re-validates that the
+# target is strictly inside the round parent — the sweep walks a glob, so it is
+# exactly the caller that should not be trusted to have built a safe path.
+review_round_sweep() {
+  [ "$#" -eq 0 ] || {
+    review_error "review_round_sweep: takes no arguments — reclamation is lease-based, never age-based (got: $*)"
+    return 2
+  }
+
+  local parent now entry name expiry rc
+  parent="$(review_round_parent)"
+  [ -d "$parent" ] || return 0
+  now="$(date +%s)"
+
+  # Published rounds. The glob does not match dotfiles, so `.gitignore` and the
+  # `.building-` dirs are both out of this loop by construction.
+  for entry in "$parent"/*; do
+    [ -d "$entry" ] || continue
+    [ ! -L "$entry" ] || continue
+    rc=0
+    review_round_lease_expired "$entry" || rc=$?
+    case "$rc" in
+      0 | 2) review_round_cleanup "$entry" >/dev/null 2>&1 || true ;;
+    esac
+  done
+
+  # Abandoned builders, judged on their own encoded expiry.
+  for entry in "$parent"/.building-*; do
+    [ -d "$entry" ] || continue
+    [ ! -L "$entry" ] || continue
+    name="${entry##*/}"
+    # `.building-<expiry>-<pid>-<rand>`, so the expiry is field 2.
+    expiry="$(printf '%s\n' "$name" | awk -F- '{print $2}')"
+    case "$expiry" in
+      '' | *[!0-9]*)
+        # A name we cannot read is left alone rather than guessed at: deleting
+        # on an unreadable name would be deleting on no evidence.
+        continue
+        ;;
+    esac
+    if [ "$now" -ge "$expiry" ]; then
+      review_round_cleanup "$entry" >/dev/null 2>&1 || true
+    fi
+  done
+  return 0
+}
