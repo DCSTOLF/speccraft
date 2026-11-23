@@ -1,7 +1,7 @@
 ---
 description: "Cross-model review of the active spec via aux agents"
 argument-hint: "[--quorum N] [--agents codex,opencode] [--diff]"
-allowed-tools: ["Read", "Write", "Bash"]
+allowed-tools: ["Read", "Write", "Bash", "Agent", "TaskStop", "Bash(shasum:*)", "Bash(sha256sum:*)"]
 ---
 
 Run cross-model review on the active spec.
@@ -17,6 +17,15 @@ Steps:
    ```bash
    PLUGIN_ROOT="$(speccraft-state plugin-root)"
    ```
+
+**Dispatch is mode-aware and shared.** The registry's `mode` selects how each
+reviewer is reached: `cli` and `acp` go through `aux-delegator`,
+`codex-plugin` drives the Codex plugin's companion, and `subagent` is
+dispatched by **this orchestrating session** via the Agent tool — a shell
+cannot start one. The full procedure (compose, budget-check, dispatch by
+mode, record outcomes, attestation, the subagent timeout protocol) lives in
+the shared `review-round` runbook at `skills/review-round/SKILL.md`. Follow it
+rather than re-deriving a per-command variant.
 
 2. Read `.speccraft/agents.toml`. Determine which agents to invoke:
    - If `--agents` flag provided, use that list (validate each exists).

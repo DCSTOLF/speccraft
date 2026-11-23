@@ -193,8 +193,22 @@ scan_gnu_forms() {
   #     equivalent of a value that file computes correctly in Go. A guard that fires
   #     on prose about a defect, in a language that cannot commit it, trains readers
   #     to weaken guards.
+  #     TWO exemptions, both for spellings that CANNOT execute the tool:
+  #     the `command -v` probe (which runs it only where it exists), and a
+  #     `Bash(sha256sum:*)` entry in a command's `allowed-tools` frontmatter.
+  #
+  #     The second was added by spec 0054 AC20. A permission string is a
+  #     capability GRANT, not an invocation: it tells the host "this command
+  #     may run that tool if it reaches for it". The reviewer's attestation
+  #     digest is computed by whichever primitive exists — review.lib.sh
+  #     probes `shasum -a 256` first and falls back to the GNU tool only where
+  #     shasum is absent — so BOTH grants must be listed or attestation fails
+  #     on whichever host lacks the preferred one. Granting a tool that does
+  #     not exist on this platform is inert; it is the probe that decides.
+  #     Scoped to the exact `Bash(sha256sum:` prefix, which no execution can
+  #     wear, rather than to the files or to the bare tool name.
   grep -rnE --exclude="*.go" "realpath[[:space:]]+-[A-Za-z]*m([[:space:]]|$)|sha256sum" "$root" 2>/dev/null \
-    | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum" || true
+    | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum|Bash\(sha256sum:" || true
   # (f) spec 0052 AC5: a regex INTERVAL EXPRESSION inside an awk program. mawk —
   #     this devcontainer's awk, and Debian's default — does not implement
   #     intervals and matches NOTHING for the form, silently, with exit 0. The

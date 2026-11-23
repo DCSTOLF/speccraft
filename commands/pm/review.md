@@ -1,7 +1,7 @@
 ---
 description: "Review the active product brief: pm-critic self-check, then cross-model review."
 argument-hint: ""
-allowed-tools: ["Read", "Write", "Edit", "Bash"]
+allowed-tools: ["Read", "Write", "Edit", "Bash", "Agent", "TaskStop", "Bash(shasum:*)", "Bash(sha256sum:*)"]
 ---
 
 Review the active product **brief**. Two stages: a cheap single-model
@@ -25,9 +25,16 @@ Steps:
    fix the brief, then re-run. The pm-critic is a single-model self-check,
    not a review quorum.
 
-3. **Cross-model review.** Only after pm-critic is satisfied, invoke the
-   `cross-reviewer` subagent (the same multi-model backend `/speccraft:spec:review`
-   uses, unchanged) over the enabled agents in `.speccraft/agents.toml`.
+3. **Cross-model review.** Only after pm-critic is satisfied, run the shared
+   `review-round` procedure (`skills/review-round/SKILL.md`) over the enabled
+   agents in `.speccraft/agents.toml`, with `KIND=brief`, `brief.md` as the
+   document under review and `templates/prompts/pm-review.md` as the template,
+   then synthesize via the `cross-reviewer` subagent.
+
+   It is the same multi-model backend `/speccraft:spec:review` uses, and that
+   backend now dispatches by the registry's `mode`: `cli` and `acp` through
+   `aux-delegator`, `codex-plugin` through the Codex plugin's companion, and
+   `subagent` from this orchestrating session via the Agent tool.
 
 4. **Write** `product/$ACTIVE/review.md` with the synthesized verdict.
 

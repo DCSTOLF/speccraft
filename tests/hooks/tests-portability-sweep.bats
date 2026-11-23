@@ -45,6 +45,7 @@ mention_only_filter() {
     | grep -vE "^[^:]+:[0-9]+:@test " \
     | grep -vE "make_gnu_tool|make_bsd_path|make_versioned_tool|make_digest_tool|for t in " \
     | grep -vE "command[[:space:]]+-v[[:space:]]+sha256sum" \
+    | grep -vE "Bash\(sha256sum:" \
     | grep -vE "^[^:]+/fixtures/[^:]+:[0-9]+:"
 }
 
@@ -115,8 +116,17 @@ executing_files() {
   #     dir ALONE, so the real tool is unreachable by construction. The builder
   #     spelling is exempted alongside the other fixture builders above, for the
   #     same reason — it takes a tool name as DATA and never executes one.
+  #   spec-review-round-runbook — added by spec 0054 AC20. It asserts that each
+  #     of the four review command files lists `Bash(sha256sum:*)` in its
+  #     `allowed-tools`, so the tool name appears as the NEEDLE of a `grep -qF`
+  #     and never as a command. The grant is a capability, not an invocation:
+  #     review.lib.sh probes `shasum -a 256` first and reaches the GNU tool only
+  #     where shasum is absent, so both grants must be listed or attestation
+  #     breaks on whichever host lacks the preferred primitive. Rewording is not
+  #     available here — the string IS the permission.
   expected="$(printf '%s\n' \
     fixtures/spec-review-payload/responses/historical/r4-claudep.out \
+    spec-review-round-runbook.bats \
     frontmatter-writer-guard.bats \
     spec-review-payload.bats \
     init-workspace.bats \
