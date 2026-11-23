@@ -2047,3 +2047,111 @@ review_round_quarantine_resolve() {
   fi
   return 1
 }
+
+# ---------------------------------------------------------------------------
+# ACs 17b / 17c — the content-aware tree snapshot.
+#
+# After a round, speccraft must tell whether a reviewer wrote outside its round
+# dir. A subagent runs with the orchestrator's own tools, so nothing stops it
+# editing the repo; `failed subagent-wrote-files` is how that is caught.
+#
+# Every cheaper implementation has a hole, and each is pinned by a required
+# test row rather than left to prose:
+#
+#   `git status --porcelain` text — a tracked file that was ALREADY dirty keeps
+#     a byte-identical ` M <path>` entry when its contents change again, and an
+#     untracked directory collapses to one `?? <dir>/` entry however many files
+#     appear beneath it.
+#   a path-only untracked inventory — editing the bytes of an existing
+#     untracked file adds and removes no paths at all.
+#   `--exclude-standard` — `bin/probe` and `tools/bin/probe` are gitignored
+#     here, so a built binary landing in either would be invisible. "Never
+#     commit built binaries from bin/" is a stated guardrail, which makes that
+#     the most consequential case rather than an edge one.
+#   `--directory` — collapses an untracked tree back to a single entry.
+#
+# So this hashes CONTENT, per file.
+# ---------------------------------------------------------------------------
+
+# The volatile set: paths that legitimately change mid-round and must not read
+# as a reviewer write. A CLOSED list of four (AC17b) — widening it is a visible
+# edit to the test that counts these entries, never a silent addition.
+#
+#   .claude/settings.local.json   the host tool rewrites it as permissions are granted
+#   .speccraft/state.json         session state, written by the hooks themselves
+#   tests/e2e/.logs               e2e run logs
+#   .speccraft/.review-rounds     the round dirs, including the round under way
+#
+# The last entry is what makes AC17c's installed-base first round clean: the
+# round parent and its .gitignore are both created by round setup, and both
+# live under it.
+REVIEW_TREE_VOLATILE=".claude/settings.local.json .speccraft/state.json tests/e2e/.logs .speccraft/.review-rounds"
+
+# _review_tree_is_volatile <repo-relative-path> — zero when the path IS a
+# volatile entry or lies beneath one.
+_review_tree_is_volatile() {
+  local p="$1" v
+  for v in $REVIEW_TREE_VOLATILE; do
+    [ "$p" != "$v" ] || return 0
+    case "$p" in
+      "$v"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# review_tree_snapshot — one line per file, digest-then-path, sorted.
+#
+# Enumerated from the repo root as: every TRACKED file, plus every untracked
+# file listed per-file. `--others` WITHOUT `--exclude-standard` is deliberate —
+# that flag is exactly what would hide a write into a gitignored `bin/` — and
+# without `--directory`, which would collapse an untracked tree to one entry.
+#
+# Non-regular entries are recorded by path and type but never read: a dangling
+# symlink has nothing to hash, and hashing a fifo would block forever.
+#
+# KNOWN LIMITATION, pinned by its own test rather than left implicit: git
+# enumerates untracked regular files and symlinks, but NOT fifos or sockets —
+# they appear in neither `ls-files --others` nor `status --porcelain`. So a
+# reviewer creating one outside its round dir is not detected. Catching that
+# would mean walking the whole worktree with find instead of asking git, and
+# for this check a false positive is far more damaging than missing an exotic
+# case (AC17c requires it to be sensitive WITHOUT being noisy). The `-p` and
+# `-e` arms below are therefore defensive, not reachable through git today.
+#
+# NUL-delimited throughout, so a path containing a space or newline is one
+# entry rather than several. `read -r -d ''` is used by both bash and zsh.
+review_tree_snapshot() {
+  local root digest
+  root="$(speccraft-state find-root 2>/dev/null || pwd)"
+  digest="$(_review_digest_cmd)" || return 1
+
+  (
+    cd "$root" 2>/dev/null || exit 1
+    {
+      git ls-files -z 2>/dev/null
+      git ls-files --others -z 2>/dev/null
+    } | {
+      while IFS= read -r -d '' p; do
+        [ -n "$p" ] || continue
+        if _review_tree_is_volatile "$p"; then
+          continue
+        fi
+        if [ -L "$p" ]; then
+          printf 'symlink%57s  %s\n' '' "$p"
+        elif [ -p "$p" ]; then
+          printf 'fifo%60s  %s\n' '' "$p"
+        elif [ -f "$p" ]; then
+          # The digest command is resolved once and executed by its resolved
+          # PATH; a literal GNU checksum invocation is barred on shipped
+          # surfaces and absent from a default macOS userland.
+          $digest "$p" 2>/dev/null || printf 'unreadable%54s  %s\n' '' "$p"
+        elif [ -e "$p" ]; then
+          printf 'special%57s  %s\n' '' "$p"
+        else
+          printf 'absent%58s  %s\n' '' "$p"
+        fi
+      done
+    } | LC_ALL=C sort -u
+  )
+}
