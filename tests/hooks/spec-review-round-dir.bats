@@ -423,7 +423,7 @@ lease_expiry() {
 @test "the round dir uses no date -d, which BSD date does not support" {
   # The expiry is now + timeout + 300, computed with shell arithmetic on
   # `date +%s`. GNU's -d would work in CI and fail on macOS.
-  run sh -c "grep -vE '^[[:space:]]*#' '$LIB' | grep -nE 'date[[:space:]]+-d[[:space:]]'"
+  run bash -c 'cat "$1"/commands/spec/review*.lib.sh | grep -vE "^[[:space:]]*#" | grep -nE "date[[:space:]]+-d[[:space:]]"' _ "$PLUGIN_DIR"
   [ "$status" -ne 0 ]
 }
 
@@ -524,7 +524,7 @@ make_round() {
 @test "no age or max-age option exists anywhere in the lib" {
   # The companion static check. Comment lines excluded so the lib may explain
   # why age sweeping is refused; the next row proves the filter still bites.
-  run sh -c "cat '$LIB' | grep -vE '^[[:space:]]*#' | grep -nE 'max[-_]age|--age'"
+  run bash -c 'cat "$1"/commands/spec/review*.lib.sh | grep -vE "^[[:space:]]*#" | grep -nE "max[-_]age|[-][-]age"' _ "$PLUGIN_DIR"
   [ "$status" -ne 0 ]
 }
 
@@ -966,7 +966,7 @@ q_field() {
   # Negative over the lib: there is no API by which a shell can ask whether a
   # subagent is still alive, so reaching for one would be inventing a
   # capability. Comment lines excluded; the next row proves the filter bites.
-  run sh -c "cat '$LIB' | grep -vE '^[[:space:]]*#' | grep -nE 'TaskStop|AgentStatus|agent-status'"
+  run bash -c 'cat "$1"/commands/spec/review*.lib.sh | grep -vE "^[[:space:]]*#" | grep -nE "TaskStop|AgentStatus|agent-status"' _ "$PLUGIN_DIR"
   [ "$status" -ne 0 ]
 }
 

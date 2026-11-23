@@ -245,12 +245,12 @@ assert_unchanged() {
 # ---------------------------------------------------------------------------
 
 @test "the enumeration passes no --exclude-standard" {
-  run sh -c "cat '$LIB' | grep -vE '^[[:space:]]*#' | grep -nF -- '--exclude-standard'"
+  run bash -c 'cat "$1"/commands/spec/review*.lib.sh | grep -vE "^[[:space:]]*#" | grep -nE "[-][-]exclude-standard"' _ "$PLUGIN_DIR"
   [ "$status" -ne 0 ]
 }
 
 @test "the enumeration passes no --directory" {
-  run sh -c "cat '$LIB' | grep -vE '^[[:space:]]*#' | grep -nE 'ls-files[^|;]*--directory'"
+  run bash -c 'cat "$1"/commands/spec/review*.lib.sh | grep -vE "^[[:space:]]*#" | grep -nE "ls-files[^|;]*--directory"' _ "$PLUGIN_DIR"
   [ "$status" -ne 0 ]
 }
 
@@ -271,7 +271,7 @@ assert_unchanged() {
 
 @test "the implementation never compares git status --porcelain text" {
   # Porcelain text cannot see either of the first two required rows above.
-  run sh -c "cat '$LIB' | grep -vE '^[[:space:]]*#' | grep -nF -- 'status --porcelain'"
+  run bash -c 'cat "$1"/commands/spec/review*.lib.sh | grep -vE "^[[:space:]]*#" | grep -nE "status --porcelain"' _ "$PLUGIN_DIR"
   [ "$status" -ne 0 ]
 }
 
@@ -309,7 +309,11 @@ assert_unchanged() {
   # token; the digest must go through _review_digest_cmd, whose resolved PATH
   # is what gets executed.
   source "$LIB"
-  grep -q '_review_digest_cmd' "$LIB"
+  # Scoped to the snapshot's own lib via the glob: pointed at review.lib.sh
+  # alone this passed after the extraction moved the snapshot out of it.
+  run bash -c 'cat "$1"/commands/spec/review*.lib.sh | grep -c "_review_digest_cmd"' _ "$PLUGIN_DIR"
+  [ "$status" -eq 0 ]
+  [ "$output" -ge 2 ]
 }
 
 # ---------------------------------------------------------------------------
