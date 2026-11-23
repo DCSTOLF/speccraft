@@ -15,6 +15,7 @@ guardrail_violations:
 convention_violations:
   - rule: "<which rule>"
     location: "<which paragraph>"
+payload_sha256: "<the SHA-256 of the payload file you were given to read>"
 reference_access:
   - path: "<repo-relative path, exactly as given to you>"
     sha256: "<the digest you computed AFTER reading that file>"

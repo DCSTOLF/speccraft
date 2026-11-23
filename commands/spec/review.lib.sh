@@ -979,6 +979,8 @@ review_compose_payload() {
 #   ACCESS-PATH <path>         one per list entry, in order
 #   ACCESS-SHA <digest>        the digest following a path, if any
 #   FAIL-PATH <path>           one per reference_access_failures entry
+#   PAYLOAD-SHA <digest>       the payload_sha256 a subagent attests (spec 0054)
+#   PERMISSION-DENIED <tool>   a tool the reviewer was refused mid-review
 #
 # Tolerant of how the shipped CLIs actually wrap YAML — fenced in ```yaml with
 # free-form prose after, values quoted or bare, empty lists written inline as
@@ -1000,6 +1002,10 @@ _review_parse_reference_access() {
       gsub(/^[ \t]+|[ \t]+$/, "", s)
       return s
     }
+    # Both at column 0, and both END any open block — they are siblings of
+    # reference_access, not entries within it.
+    /^[ \t]*payload_sha256:/ { print "PAYLOAD-SHA " scalar($0); blk=""; next }
+    /^[ \t]*permission_denied:/ { print "PERMISSION-DENIED " scalar($0); blk=""; next }
     /^[ \t]*reference_access:[ \t]*\[\]/            { print "HAS-ACCESS"; blk=""; next }
     /^[ \t]*reference_access:[ \t]*$/               { print "HAS-ACCESS"; blk="access"; next }
     /^[ \t]*reference_access_failures:[ \t]*\[\]/   { blk=""; next }
@@ -1025,14 +1031,62 @@ _review_parse_reference_access() {
 # refusal is a routine policy outcome about OUR payload, while a response that
 # fails validation is a fault in someone else's output.
 review_validate_reference_access() {
-  local resp="${1:-}" expected="${2:-}" parsed line kind value
+  local resp="${1:-}" expected="${2:-}" mode="${3:-}" payload="${4:-}"
+  local parsed line kind value
   [ -n "$resp" ] && [ -f "$resp" ] || {
     review_error "review_validate_reference_access: response file not found: '${resp:-}'"; return 2; }
   [ -n "$expected" ] && [ -f "$expected" ] || {
     review_error "review_validate_reference_access: expected-digests file not found: '${expected:-}'"; return 2; }
 
   parsed="$(_review_parse_reference_access "$resp")" || return 2
+
+  # A refused tool is a DISPATCH failure, checked FIRST and reported on its own
+  # terms. A subagent runs under the orchestrator's permission model and can be
+  # refused mid-review; filing that as an attestation fault would send an
+  # operator to inspect the reviewer's digests when the fix is a tool grant in
+  # allowed-tools. It is also why this arm precedes the HAS-ACCESS check: a
+  # reviewer denied Bash could not compute a digest at all, so its response
+  # legitimately carries no reference_access.
+  local denied
+  denied="$(printf '%s\n' "$parsed" | awk '$1 == "PERMISSION-DENIED" { $1 = ""; sub(/^[ \t]+/, ""); print; exit }')"
+  if [ -n "$denied" ]; then
+    review_error "review: the reviewer was denied the tool '$denied' mid-review"
+    printf 'failed subagent-permission-denied %s\n' "$denied"
+    return 1
+  fi
+
   printf '%s\n' "$parsed" | grep -q '^HAS-ACCESS$' || { printf 'invalid:absent\n'; return 1; }
+
+  # The payload digest, for `subagent` mode only (spec 0054 AC16).
+  #
+  # A subagent reads the payload from a FILE in the round dir rather than
+  # receiving it on a transport speccraft controls, so it attests WHICH BYTES
+  # it read. Without this, a reviewer that opened the wrong path — or a stale
+  # payload left by an earlier round — returns a verdict about something other
+  # than what was sent, and every other attestation arm still passes.
+  #
+  # Scoped to subagent: a cli or acp reviewer is handed the bytes directly, so
+  # there is nothing for it to confuse them with, and spec 0052's contract for
+  # those modes is unchanged.
+  if [ "$mode" = "subagent" ]; then
+    [ -n "$payload" ] && [ -f "$payload" ] || {
+      review_error "review_validate_reference_access: mode subagent requires the payload file"
+      return 2
+    }
+    local claimed want
+    claimed="$(printf '%s\n' "$parsed" | awk '$1 == "PAYLOAD-SHA" { print $2; exit }')"
+    [ -n "$claimed" ] || {
+      review_error "review: the subagent attested no payload_sha256"
+      printf 'invalid:missing-payload-digest\n'
+      return 1
+    }
+    want="$(review_digest "$payload" | awk '{print $1}')"
+    [ "$claimed" = "$want" ] || {
+      review_error "review: payload digest mismatch (attested $claimed, payload is $want)"
+      printf 'invalid:payload-digest-mismatch\n'
+      return 1
+    }
+  fi
   if printf '%s\n' "$parsed" | grep -q '^FAIL-PATH '; then
     review_error "review: the reviewer reported it could not read a reference file"
     printf 'invalid:read-failure\n'; return 1
