@@ -379,12 +379,104 @@ assert_unchanged() {
     echo "expected exactly 4 volatile entries, got $n: $REVIEW_TREE_VOLATILE" >&2
     return 1
   }
-  for p in .claude/settings.local.json .speccraft/state.json tests/e2e/.logs .speccraft/.review-rounds; do
+  # `.claude` is the whole TREE, which is what the spec's contract-level list
+  # names and what its justification requires: the orchestrating session writes
+  # permission allowlists anywhere under it while the round runs. A narrower
+  # `.claude/settings.local.json` made any other write there read as
+  # `failed subagent-wrote-files` against a reviewer that did nothing.
+  # AC17b's test row named only the settings file; that is a scoped wording
+  # correction recorded in the spec, not a reason to narrow the behaviour.
+  for p in .claude .speccraft/state.json tests/e2e/.logs .speccraft/.review-rounds; do
     printf '%s\n' $REVIEW_TREE_VOLATILE | grep -qxF "$p" || {
       echo "missing volatile entry '$p' in: $REVIEW_TREE_VOLATILE" >&2
       return 1
     }
   done
+}
+
+@test "review_tree_snapshot fails loudly when the enumeration fails" {
+  source "$LIB"
+  # The worst available failure mode, and a parity test CANNOT catch it: both
+  # shells failed identically, so bash/zsh agreement held while the function
+  # reported success with an empty snapshot. Two empty snapshots compare equal,
+  # so the before/after check passed and a reviewer could write anywhere in the
+  # repo undetected.
+  #
+  # Outside a git work tree, `git ls-files` exits non-zero. The old body sent
+  # that to /dev/null and returned the status of `sort`.
+  local out rc=0
+  out="$(cd "$TEST_DIR" && review_tree_snapshot . 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || {
+    echo "an empty snapshot from a failed enumeration must NOT be reported as success" >&2
+    echo "got rc=0 and output: [$out]" >&2
+    return 1
+  }
+  printf '%s\n' "$out" | grep -qF 'ls-files' || {
+    echo "the failure must name what went wrong; got: $out" >&2
+    return 1
+  }
+}
+
+@test "review_tree_snapshot succeeds inside a work tree, so the failure arm is not blanket" {
+  source "$LIB"
+  # Premise check for the row above: proving failure is only meaningful if the
+  # normal path still succeeds and still produces lines.
+  local out rc=0
+  out="$(review_tree_snapshot . 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || { echo "the normal path must succeed; got rc=$rc: $out" >&2; return 1; }
+  [ "$(printf '%s\n' "$out" | grep -c .)" -gt 0 ] || {
+    echo "the normal path must produce at least one line" >&2
+    return 1
+  }
+}
+
+@test "a write anywhere under .claude is excluded, not just the settings file" {
+  source "$LIB"
+  # The row that fails against the narrow entry. The orchestrating session is
+  # documented to write permission state under .claude/ during a round, so any
+  # path there must be volatile — otherwise an innocent reviewer is blamed.
+  mkdir -p .claude/plugins
+  snap "$TEST_DIR/before"
+  printf 'granted\n' > .claude/settings.local.json
+  printf 'other\n'   > .claude/some-other-state.json
+  printf 'nested\n'  > .claude/plugins/cache.json
+  snap "$TEST_DIR/after"
+  cmp -s "$TEST_DIR/before" "$TEST_DIR/after" || {
+    echo "writes under .claude/ must not register as reviewer writes:" >&2
+    diff "$TEST_DIR/before" "$TEST_DIR/after" >&2 || true
+    return 1
+  }
+}
+
+@test "a write just outside .claude is still counted" {
+  source "$LIB"
+  # The premise check for the row above: the snapshot must still be sensitive,
+  # or excluding `.claude` would have been indistinguishable from excluding
+  # everything.
+  snap "$TEST_DIR/before"
+  printf 'x\n' > not-dot-claude.json
+  snap "$TEST_DIR/after"
+  cmp -s "$TEST_DIR/before" "$TEST_DIR/after" && {
+    echo "an ordinary write must still change the snapshot" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "a path merely PREFIXED by a volatile entry is not excluded" {
+  source "$LIB"
+  # `.claudex/` is not under `.claude/`. A prefix test written as
+  # `case "$p" in "$v"*)` rather than `"$v"/*)` would wrongly exclude it, and
+  # a reviewer could then write there undetected.
+  mkdir -p .claudex
+  snap "$TEST_DIR/before"
+  printf 'x\n' > .claudex/file.json
+  snap "$TEST_DIR/after"
+  cmp -s "$TEST_DIR/before" "$TEST_DIR/after" && {
+    echo ".claudex/ is NOT under .claude/ and must still be counted" >&2
+    return 1
+  }
+  return 0
 }
 
 # ---------------------------------------------------------------------------

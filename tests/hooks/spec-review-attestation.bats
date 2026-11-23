@@ -196,6 +196,122 @@ mkexpected() {
   }
 }
 
+@test "the RECORDED outcome for a missing payload digest is exactly attestation-failed missing-payload-digest" {
+  source "$LIB"
+  mkpayload
+  mkexpected
+  printf 'verdict: approve\nreference_access:\n  - path: ".speccraft/architecture.md"\n    sha256: "aaaa"\n' \
+    > "$TEST_DIR/resp.out"
+
+  # EXACT, not a substring. The row above greps for the reason alone, which the
+  # raw validator token `invalid:missing-payload-digest` also satisfies — so it
+  # passed while every recorded outcome carried a spurious `invalid:` prefix
+  # that AC16 does not name. Only the whole-line form can tell them apart.
+  local tok out
+  tok="$(review_validate_reference_access "$TEST_DIR/resp.out" "$TEST_DIR/digests.txt" subagent "$TEST_DIR/payload.md" || true)"
+  out="$(review_attestation_outcome "$tok")"
+  [ "$out" = "attestation-failed missing-payload-digest" ] || {
+    echo "expected exactly 'attestation-failed missing-payload-digest'; got '$out' (from token '$tok')" >&2
+    return 1
+  }
+}
+
+@test "the RECORDED outcome for a wrong payload digest is exactly attestation-failed payload-digest-mismatch" {
+  source "$LIB"
+  mkpayload
+  mkexpected
+  printf 'verdict: approve\npayload_sha256: "deadbeef"\nreference_access:\n  - path: ".speccraft/architecture.md"\n    sha256: "aaaa"\n' \
+    > "$TEST_DIR/resp.out"
+
+  local tok out
+  tok="$(review_validate_reference_access "$TEST_DIR/resp.out" "$TEST_DIR/digests.txt" subagent "$TEST_DIR/payload.md" || true)"
+  out="$(review_attestation_outcome "$tok")"
+  [ "$out" = "attestation-failed payload-digest-mismatch" ] || {
+    echo "expected exactly 'attestation-failed payload-digest-mismatch'; got '$out' (from token '$tok')" >&2
+    return 1
+  }
+}
+
+@test "review_attestation_outcome strips the validator prefix for every 0052 reason" {
+  source "$LIB"
+  # The whole 0052 vocabulary, so a reason added later cannot reach an outcomes
+  # file still wearing its internal prefix.
+  local r out
+  for r in absent malformed read-failure duplicate-path unknown-path missing-path digest-mismatch; do
+    out="$(review_attestation_outcome "invalid:$r")"
+    [ "$out" = "attestation-failed $r" ] || {
+      echo "invalid:$r mapped to '$out', expected 'attestation-failed $r'" >&2
+      return 1
+    }
+  done
+}
+
+@test "review_attestation_outcome passes a dispatch failure through unchanged" {
+  source "$LIB"
+  # A refused tool is NOT an attestation fault and must not be relabelled as
+  # one on the way to the outcomes file.
+  local out
+  out="$(review_attestation_outcome 'failed subagent-permission-denied Bash')"
+  [ "$out" = "failed subagent-permission-denied Bash" ] || {
+    echo "a dispatch failure must pass through unchanged; got '$out'" >&2
+    return 1
+  }
+  out="$(review_attestation_outcome ok)"
+  [ "$out" = "ok" ]
+}
+
+@test "review_attestation_outcome refuses a token it does not recognise" {
+  source "$LIB"
+  # So a validator that starts emitting a new shape is a loud error rather than
+  # an outcomes file full of tokens nothing downstream can classify.
+  run review_attestation_outcome 'something-else'
+  [ "$status" -ne 0 ] || {
+    echo "an unrecognised token must not be mapped silently; got: $output" >&2
+    return 1
+  }
+}
+
+@test "a cli permission denial is NOT reported as a subagent denial" {
+  source "$LIB"
+  mkpayload
+  mkexpected
+  printf 'permission_denied: Bash\n' > "$TEST_DIR/resp.out"
+
+  # The remedy differs by mode, so the token must too. A subagent is refused by
+  # the ORCHESTRATOR's permission model (fix: the command's allowed-tools); a
+  # cli reviewer is refused by its own invocation (fix: that agent's cmd in
+  # agents.toml — this repo carries `--allowedTools … Bash(shasum:*)` on
+  # `claude -p` for exactly that reason). The arm was not mode-gated, so a cli
+  # refusal sent the operator to edit the wrong file.
+  local tok
+  tok="$(review_validate_reference_access "$TEST_DIR/resp.out" "$TEST_DIR/digests.txt" cli "$TEST_DIR/payload.md" || true)"
+  [ "$tok" = "failed permission-denied Bash" ] || {
+    echo "a cli denial must be 'failed permission-denied Bash'; got '$tok'" >&2
+    return 1
+  }
+  # And the subagent arm still names the subagent.
+  tok="$(review_validate_reference_access "$TEST_DIR/resp.out" "$TEST_DIR/digests.txt" subagent "$TEST_DIR/payload.md" || true)"
+  [ "$tok" = "failed subagent-permission-denied Bash" ] || {
+    echo "a subagent denial must be 'failed subagent-permission-denied Bash'; got '$tok'" >&2
+    return 1
+  }
+}
+
+@test "a denial with no mode argument is not attributed to a subagent" {
+  source "$LIB"
+  mkpayload
+  mkexpected
+  printf 'permission_denied: Read\n' > "$TEST_DIR/resp.out"
+  # Spec 0052's call shape passes no mode at all. It must not inherit the
+  # subagent token by default — the default is the mode that existed first.
+  local tok
+  tok="$(review_validate_reference_access "$TEST_DIR/resp.out" "$TEST_DIR/digests.txt" || true)"
+  [ "$tok" = "failed permission-denied Read" ] || {
+    echo "a modeless denial must not be a subagent denial; got '$tok'" >&2
+    return 1
+  }
+}
+
 @test "a wrong payload_sha256 is attestation-failed payload-digest-mismatch" {
   source "$LIB"
   mkpayload

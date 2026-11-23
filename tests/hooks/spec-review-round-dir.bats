@@ -771,6 +771,12 @@ q_field() {
 @test "review_round_sweep reports and does not delete a quarantined dir whose lease expired" {
   source "$LIB"
   codex_stub_env
+  # The probe must say the job is STILL RUNNING, so the quarantine is genuinely
+  # UNRESOLVED — which is the state AC15a's "reports and does not delete" rule
+  # is about. The sweep now probes (it previously did not), so a stub left on
+  # its default `completed` would make this row assert the opposite thing: a
+  # resolvable quarantine, which the sweep is supposed to reclaim.
+  export STUB_CODEX_STATUS_SEQUENCE='running'
   local d
   d="$(review_round_dir_create spec 0054 600)"
   printf 'payload\n' > "$d/payload.md"
@@ -796,6 +802,12 @@ q_field() {
 @test "a quarantined dir outlives its own expired lease" {
   source "$LIB"
   codex_stub_env
+  # The probe must say the job is STILL RUNNING, so the quarantine is genuinely
+  # UNRESOLVED — which is the state AC15a's "reports and does not delete" rule
+  # is about. The sweep now probes (it previously did not), so a stub left on
+  # its default `completed` would make this row assert the opposite thing: a
+  # resolvable quarantine, which the sweep is supposed to reclaim.
+  export STUB_CODEX_STATUS_SEQUENCE='running'
   local d
   d="$(review_round_dir_create spec 0054 600)"
   review_round_quarantine "$d" task-xyz codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root-a"
@@ -812,6 +824,12 @@ q_field() {
 @test "the sweep report line is grep-able in the stated shape" {
   source "$LIB"
   codex_stub_env
+  # The probe must say the job is STILL RUNNING, so the quarantine is genuinely
+  # UNRESOLVED — which is the state AC15a's "reports and does not delete" rule
+  # is about. The sweep now probes (it previously did not), so a stub left on
+  # its default `completed` would make this row assert the opposite thing: a
+  # resolvable quarantine, which the sweep is supposed to reclaim.
+  export STUB_CODEX_STATUS_SEQUENCE='running'
   local d
   d="$(review_round_dir_create spec 0054 600)"
   review_round_quarantine "$d" task-xyz codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root-a"
@@ -830,6 +848,12 @@ q_field() {
 @test "removing the quarantine file lets the same sweep reclaim the dir" {
   source "$LIB"
   codex_stub_env
+  # The probe must say the job is STILL RUNNING, so the quarantine is genuinely
+  # UNRESOLVED — which is the state AC15a's "reports and does not delete" rule
+  # is about. The sweep now probes (it previously did not), so a stub left on
+  # its default `completed` would make this row assert the opposite thing: a
+  # resolvable quarantine, which the sweep is supposed to reclaim.
+  export STUB_CODEX_STATUS_SEQUENCE='running'
   local d
   d="$(review_round_dir_create spec 0054 600)"
   review_round_quarantine "$d" task-xyz codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root-a"
@@ -863,6 +887,96 @@ q_field() {
   # And the sweep can now do its job.
   review_round_sweep >/dev/null
   [ ! -d "$d" ]
+}
+
+@test "the SWEEP itself reclaims a quarantine whose job has terminated" {
+  source "$LIB"
+  codex_stub_env
+  local d root
+  d="$(review_round_dir_create spec 0054 600)"
+  root="$TEST_DIR/root-sweep-live"
+  make_companion_root "$root"
+  review_round_quarantine "$d" task-sweep codex-cancel-unconfirmed codex-plugin "$root"
+  printf 'expires_at 1\n' > "$d/lease"
+
+  # The row above calls review_round_quarantine_resolve itself and only then
+  # sweeps — so it passed even though the sweep never probed anything, and a
+  # quarantine whose job had long since finished was reported forever and the
+  # round dir leaked until someone deleted it by hand. AC15a says the SWEEP
+  # reclaims it once a later status confirms termination, so the sweep has to
+  # be the only thing called here. Found by cross-model review, round 6.
+  export STUB_CODEX_STATUS_SEQUENCE='cancelled'
+  run review_round_sweep
+  [ "$status" -eq 0 ]
+  [ ! -d "$d" ] || {
+    echo "the sweep did not reclaim a resolvable quarantine; it reported:" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+}
+
+@test "the sweep reports, and does not delete, a quarantine whose job is still running" {
+  source "$LIB"
+  codex_stub_env
+  local d root
+  d="$(review_round_dir_create spec 0054 600)"
+  root="$TEST_DIR/root-sweep-busy"
+  make_companion_root "$root"
+  review_round_quarantine "$d" task-busy2 codex-cancel-unconfirmed codex-plugin "$root"
+  printf 'expires_at 1\n' > "$d/lease"
+
+  # The premise for the row above: probing must not have become "delete on any
+  # probe". A live job keeps its dir AND keeps its grep-able report line.
+  export STUB_CODEX_STATUS_SEQUENCE='running'
+  run review_round_sweep
+  [ "$status" -eq 0 ]
+  [ -d "$d" ] || { echo "a live job's round dir must survive the sweep" >&2; return 1; }
+  printf '%s\n' "$output" | grep -qF 'quarantined' || {
+    echo "a retained quarantine must still be reported; got: $output" >&2
+    return 1
+  }
+}
+
+@test "the sweep retains a subagent quarantine, which no probe can resolve" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+  review_round_quarantine "$d" agent-9 subagent-stop-failed subagent
+  printf 'expires_at 1\n' > "$d/lease"
+
+  # No shell-reachable API reports whether a subagent is alive, so the resolver
+  # refuses outright (AC15b) and the sweep must treat that refusal as "still
+  # quarantined" rather than as a probe it may ignore.
+  run review_round_sweep
+  [ "$status" -eq 0 ]
+  [ -d "$d" ] || {
+    echo "a subagent quarantine must never be reclaimed by a probe" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF 'quarantined' || {
+    echo "the retained subagent quarantine must be reported; got: $output" >&2
+    return 1
+  }
+}
+
+@test "the sweep retains a codex-plugin quarantine whose probe cannot run" {
+  source "$LIB"
+  codex_stub_env
+  local d
+  d="$(review_round_dir_create spec 0054 600)"
+  # A record with no companion root: the resolver returns an error, not a
+  # verdict. An implementation that reclaimed on any non-success would delete a
+  # round whose reviewer may still be running — the worst available outcome.
+  printf 'id task-noroot\noutcome codex-cancel-unconfirmed\nmode codex-plugin\n' > "$d/quarantine"
+  printf 'expires_at 1\n' > "$d/lease"
+
+  run review_round_sweep
+  [ "$status" -eq 0 ]
+  [ -d "$d" ] || {
+    echo "an unprobeable quarantine must be retained, never reclaimed" >&2
+    return 1
+  }
 }
 
 @test "a still-running job leaves the quarantine in place" {
@@ -985,6 +1099,11 @@ q_field() {
   source "$LIB"
   codex_stub_env
   local d outcome
+  # The job is still running, so neither quarantine is resolvable. That is the
+  # premise of the whole row: "quarantine beats cleanup" is a claim about a
+  # reviewer that may STILL BE ALIVE. A resolvable quarantine is a different
+  # case, and the sweep is now required to reclaim that one (AC15a).
+  export STUB_CODEX_STATUS_SEQUENCE='running'
   # AC15a. Asserted for BOTH quarantining outcomes: the two rules are mutually
   # exclusive by construction, not by the order a caller happens to use.
   for outcome in codex-cancel-unconfirmed subagent-stop-failed; do

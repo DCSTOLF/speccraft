@@ -145,8 +145,9 @@ rather than re-deriving a per-command variant.
 
    Validate each verdict's reference-read attestation before counting it:
    ```bash
-   if ! review_validate_reference_access "$RESPONSE" "$DIG"; then
-     printf '%s attestation-failed %s\n' "$agent" "$(review_validate_reference_access "$RESPONSE" "$DIG" || true)" >> "$OUTCOMES"
+   TOK="$(review_validate_reference_access "$RESPONSE" "$DIG" "$MODE" "$ART" || true)"
+   if [ "$TOK" != ok ]; then
+     printf '%s %s\n' "$agent" "$(review_attestation_outcome "$TOK")" >> "$OUTCOMES"
    fi
    ```
    A verdict whose digests are absent, incomplete or mismatched counts toward

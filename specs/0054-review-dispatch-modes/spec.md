@@ -1125,12 +1125,26 @@ convention requires.
       in the snapshot. The per-file enumeration is otherwise prose-only, and
       the round-3 collapsed-`??` hole is cheap to re-pin head-on rather than
       leave to an "optimization" to reintroduce.
-    The **volatile set is asserted as a closed list**: a mid-round write to
-    `.claude/settings.local.json`, to `.speccraft/state.json`, to
-    `tests/e2e/.logs/`, and to `.speccraft/.review-rounds/.gitignore` each
-    leave the check passing (all excluded by name), while a write to any
-    *other* ignored path fails it. A test asserts the exclusion list contains
-    exactly those four entries, so widening it silently is not possible.
+    The **volatile set is asserted as a closed list**: a mid-round write
+    anywhere under `.claude/` (`settings.local.json` **and** any other path in
+    that tree), to `.speccraft/state.json`, to `tests/e2e/.logs/`, and to
+    `.speccraft/.review-rounds/.gitignore` each leave the check passing (all
+    excluded by name), while a write to any *other* ignored path fails it. A
+    test asserts the exclusion list contains exactly those four entries, so
+    widening it silently is not possible. A row asserts a path merely
+    *prefixed* by a volatile entry (`.claudex/`) is still counted, so the
+    prefix rule cannot degrade into a substring match.
+
+    > **Scoped wording correction (cross-model review round 6, code review).**
+    > This row originally named only `.claude/settings.local.json`, which
+    > contradicted the contract-level list in §Contracts — that one says
+    > `.claude/` (the whole tree) and gives the reason: the orchestrating
+    > session writes permission allowlists anywhere under it while a round
+    > runs. Implemented narrowly, any other write there recorded
+    > `failed subagent-wrote-files` against a reviewer that did nothing. The
+    > contract wins; this AC row is corrected to match it. No behaviour outside
+    > the volatile set changes, and the "exactly four entries" count is
+    > unaffected.
 17d. **Attribution with two concurrent subagents.** Two `subagent` reviewers
     run concurrently and **one** writes outside the round dir: **both** record
     `failed subagent-wrote-files <unattributed>`, and the round's predicates

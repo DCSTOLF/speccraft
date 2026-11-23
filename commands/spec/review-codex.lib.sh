@@ -103,35 +103,26 @@ review_with_deadline() {
   # non-zero — before `echo $?` could record the status this function exists to
   # return. Without it every failing reviewer invocation looks like a timeout.
   #
-  # Stdin must be restored explicitly. bash redirects a background job's stdin
-  # from /dev/null when job control is off, which it always is here, so the
-  # command would read NOTHING: the codex launch piped through xargs received
-  # no argv and ran `env` bare, and this lib's own stdin transport
-  # (`$cmd < artifact`) would hand a reviewer an empty payload while it still
-  # answered. fd 9, not fd 3 — bats holds fd 3 for its TAP stream and this lib
-  # is sourced into bats. If the duplication fails (stdin already closed), the
-  # command runs without it rather than the whole call failing.
-  local stdin_saved=0
-  if exec 9<&0 2>/dev/null; then
-    stdin_saved=1
-  fi
-
-  if [ "$stdin_saved" -eq 1 ]; then
-    (
-      set +e
-      exec 0<&9 9<&-
-      "$@"
-      echo "$?" > "$rcfile"
-    ) &
-  else
-    (
-      set +e
-      "$@"
-      echo "$?" > "$rcfile"
-    ) &
-  fi
+  # Stdin is passed through EXPLICITLY. A shell may redirect a background job's
+  # stdin from /dev/null, and the command would then read NOTHING: the codex
+  # launch piped through xargs received no argv and ran `env` bare, and this
+  # lib's own stdin transport would hand a reviewer an empty payload while it
+  # still answered.
+  #
+  # The redirect sits on the subshell itself rather than coming from a dup
+  # through a spare fd in THIS shell. This lib is SOURCED, so the earlier
+  # `exec 9<&0` … `exec 9<&-` pair ran in the CALLER and silently closed the
+  # caller's fd 9 — taking an advisory `exec 9>lock; flock 9` lock with it, so
+  # two rounds could enter a section meant to be exclusive (found by
+  # cross-model review, round 6). An explicit `<&0` is a no-op where stdin is
+  # already inherited and forces inheritance where it is not, and it mutates no
+  # caller state at all.
+  (
+    set +e
+    "$@"
+    echo "$?" > "$rcfile"
+  ) <&0 &
   job_pid=$!
-  [ "$stdin_saved" -eq 0 ] || exec 9<&-
 
   # Ticks, not whole seconds. A one-second granularity would charge ~1s to
   # EVERY companion invocation — and the adapter makes several per reviewer

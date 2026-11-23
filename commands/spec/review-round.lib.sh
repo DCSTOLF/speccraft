@@ -158,11 +158,25 @@ review_round_dir_create() {
   local now expiry rand build final
   now="$(date +%s)"
   expiry=$((now + timeout_s + REVIEW_ROUND_LEASE_GRACE_S))
-  rand="$$-${RANDOM:-0}"
 
-  build="$parent/.building-$expiry-$rand"
-  mkdir -m 0700 "$build" || return 1
-  REVIEW_ROUND_BUILD_NAME=".building-$expiry-$rand"
+  # Uniqueness comes from mktemp's atomic creation, not from `$$-$RANDOM`.
+  #
+  # zsh hands a command-substitution subshell the SAME $RANDOM as its parent
+  # unless the parent touches RANDOM in between, and EVERY real caller takes
+  # the path by `dir="$(review_round_dir_create …)"` — so `$$` was the parent's
+  # pid for both calls and `$RANDOM` was identical too. Two rounds from one zsh
+  # shell got the same final name; `mv` then moved the second builder INSIDE
+  # the first round's directory, returned 0, and handed both callers the same
+  # path, so one round's cleanup deleted the other's payload. Found by
+  # cross-model review, round 6.
+  #
+  # The expiry stays encoded in the temp name, which is the property AC14c
+  # depends on: a creator killed mid-build leaves a directory the sweep can
+  # reclaim by reading its own name.
+  build="$(mktemp -d "$parent/.building-$expiry-XXXXXX")" || return 1
+  chmod 0700 "$build" 2>/dev/null || true
+  REVIEW_ROUND_BUILD_NAME="${build##*/}"
+  rand="${REVIEW_ROUND_BUILD_NAME##*-}"
 
   review_round_lease_write "$build" "$expiry" || {
     rm -rf "$build"
@@ -176,7 +190,18 @@ review_round_dir_create() {
     return 1
   }
 
-  final="$parent/$kind-$round_id-$rand"
+  # `<kind>-<id>-<unix-ts>-<rand>`, the shape the contract names.
+  final="$parent/$kind-$round_id-$now-$rand"
+  # Checked before the rename, because `mv src existing-dir/` MOVES src INSIDE
+  # it and reports success — the exact way two rounds came to share one
+  # directory. mktemp's suffix plus the timestamp makes a genuine collision
+  # vanishingly unlikely; this refuses the deterministic case loudly rather
+  # than silently nesting.
+  [ ! -e "$final" ] || {
+    review_error "review_round_dir_create: '$final' already exists; refusing to publish a second round inside an existing round's directory"
+    rm -rf "$build"
+    return 1
+  }
   mv "$build" "$final" || {
     rm -rf "$build"
     return 1
@@ -301,11 +326,29 @@ review_round_sweep() {
         # a reviewer may still be running, and the second outranks the first.
         # One grep-able line per retained dir, so an operator can list them.
         if review_round_quarantined "$entry"; then
-          printf '%s: quarantined %s %s lease-expired %s\n' \
-            "$entry" \
-            "$(_review_quarantine_field "$entry" outcome)" \
-            "$(_review_quarantine_field "$entry" id)" \
-            "$(_review_iso_now)"
+          # First ASK, then report. AC15a says a quarantine is reclaimed "once
+          # the quarantine file is removed (operator action) **or a later
+          # `status` confirms termination** — the same sweep reclaims it". The
+          # sweep never probed, so a codex-plugin quarantine whose job had long
+          # since finished was reported forever and the round dir leaked until
+          # someone deleted it by hand. Found by cross-model review, round 6.
+          #
+          # The resolver is the only thing that decides: it probes the
+          # companion root RECORDED in the quarantine file, refuses a
+          # `subagent` quarantine outright (no shell-reachable API reports
+          # whether a subagent is alive), and clears the file only on a
+          # terminal status. A non-zero return means "still quarantined", which
+          # is also what every error path returns — so an unprobeable record is
+          # retained and reported rather than reclaimed on a failed probe.
+          if review_round_quarantine_resolve "$entry" >/dev/null 2>&1; then
+            review_round_cleanup "$entry" >/dev/null 2>&1 || true
+          else
+            printf '%s: quarantined %s %s lease-expired %s\n' \
+              "$entry" \
+              "$(_review_quarantine_field "$entry" outcome)" \
+              "$(_review_quarantine_field "$entry" id)" \
+              "$(_review_iso_now)"
+          fi
         else
           review_round_cleanup "$entry" >/dev/null 2>&1 || true
         fi
@@ -318,7 +361,7 @@ review_round_sweep() {
     [ -d "$entry" ] || continue
     [ ! -L "$entry" ] || continue
     name="${entry##*/}"
-    # `.building-<expiry>-<pid>-<rand>`, so the expiry is field 2.
+    # `.building-<expiry>-<rand>`, so the expiry is field 2.
     expiry="$(printf '%s\n' "$name" | awk -F- '{print $2}')"
     case "$expiry" in
       '' | *[!0-9]*)
@@ -509,21 +552,44 @@ review_round_quarantine_resolve() {
 # as a reviewer write. A CLOSED list of four (AC17b) — widening it is a visible
 # edit to the test that counts these entries, never a silent addition.
 #
-#   .claude/settings.local.json   the host tool rewrites it as permissions are granted
+#   .claude                       machine-local host-tool state; the orchestrating
+#                                 session writes permission allowlists ANYWHERE
+#                                 under here while the round runs
 #   .speccraft/state.json         session state, written by the hooks themselves
 #   tests/e2e/.logs               e2e run logs
 #   .speccraft/.review-rounds     the round dirs, including the round under way
 #
+# `.claude` is the WHOLE TREE, not just `settings.local.json`. The spec's
+# contract-level list names the tree and gives the reason — the orchestrating
+# session writes permission allowlists here during a round — and a narrower
+# entry made any other write under `.claude/` read as `failed
+# subagent-wrote-files` against a reviewer that did nothing (cross-model review
+# round 6). AC17b's test row names only the settings file, which is a scoped
+# wording correction recorded in the spec rather than a reason to narrow the
+# behaviour.
+#
 # The last entry is what makes AC17c's installed-base first round clean: the
 # round parent and its .gitignore are both created by round setup, and both
 # live under it.
-REVIEW_TREE_VOLATILE=".claude/settings.local.json .speccraft/state.json tests/e2e/.logs .speccraft/.review-rounds"
+REVIEW_TREE_VOLATILE=".claude .speccraft/state.json tests/e2e/.logs .speccraft/.review-rounds"
 
 # _review_tree_is_volatile <repo-relative-path> — zero when the path IS a
 # volatile entry or lies beneath one.
+#
+# The list is chopped with parameter expansion rather than iterated with
+# `for v in $REVIEW_TREE_VOLATILE`: zsh does not word-split an unquoted
+# expansion, so that loop saw the whole list as ONE entry and nothing was ever
+# volatile — every round then blamed the orchestrator's own bookkeeping writes
+# on a reviewer. See _review_list_has in review.lib.sh.
 _review_tree_is_volatile() {
-  local p="$1" v
-  for v in $REVIEW_TREE_VOLATILE; do
+  local p="$1" rest="$REVIEW_TREE_VOLATILE" v
+  while [ -n "$rest" ]; do
+    v="${rest%% *}"
+    case "$rest" in
+      *' '*) rest="${rest#* }" ;;
+      *)     rest="" ;;
+    esac
+    [ -n "$v" ] || continue
     [ "$p" != "$v" ] || return 0
     case "$p" in
       "$v"/*) return 0 ;;
@@ -554,36 +620,57 @@ _review_tree_is_volatile() {
 # NUL-delimited throughout, so a path containing a space or newline is one
 # entry rather than several. `read -r -d ''` is used by both bash and zsh.
 review_tree_snapshot() {
-  local root digest
+  local root listing rc=0
   root="$(speccraft-state find-root 2>/dev/null || pwd)"
-  digest="$(_review_digest_cmd)" || return 1
+  # Resolved here so a missing SHA-256 primitive is a named error BEFORE any
+  # enumeration, rather than an "unreadable" line against every file.
+  _review_digest_cmd >/dev/null || return 1
+
+  # The enumeration's exit status is CHECKED, which it previously was not. The
+  # two `git ls-files` calls sent stderr to /dev/null and the function returned
+  # the status of `sort`, so outside a work tree — or with git failing for any
+  # reason — the snapshot was EMPTY and succeeded. Two empty snapshots compare
+  # equal, so the before/after check silently passed while detecting nothing at
+  # all: a reviewer could write anywhere in the repo and the round would call
+  # it clean. Found by cross-model review, round 6.
+  listing="$(mktemp)" || return 1
+  (
+    cd "$root" 2>/dev/null || exit 2
+    git ls-files -z > "$listing" 2>/dev/null || exit 3
+    git ls-files --others -z >> "$listing" 2>/dev/null || exit 3
+  ) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$listing"
+    case "$rc" in
+      2) review_error "review_tree_snapshot: cannot enter the repo root '$root'" ;;
+      *) review_error "review_tree_snapshot: 'git ls-files' failed in '$root'; refusing to report an empty snapshot that would compare equal to any other and hide every out-of-bounds write" ;;
+    esac
+    return 1
+  fi
 
   (
     cd "$root" 2>/dev/null || exit 1
-    {
-      git ls-files -z 2>/dev/null
-      git ls-files --others -z 2>/dev/null
-    } | {
-      while IFS= read -r -d '' p; do
-        [ -n "$p" ] || continue
-        if _review_tree_is_volatile "$p"; then
-          continue
-        fi
-        if [ -L "$p" ]; then
-          printf 'symlink%57s  %s\n' '' "$p"
-        elif [ -p "$p" ]; then
-          printf 'fifo%60s  %s\n' '' "$p"
-        elif [ -f "$p" ]; then
-          # The digest command is resolved once and executed by its resolved
-          # PATH; a literal GNU checksum invocation is barred on shipped
-          # surfaces and absent from a default macOS userland.
-          $digest "$p" 2>/dev/null || printf 'unreadable%54s  %s\n' '' "$p"
-        elif [ -e "$p" ]; then
-          printf 'special%57s  %s\n' '' "$p"
-        else
-          printf 'absent%58s  %s\n' '' "$p"
-        fi
-      done
-    } | LC_ALL=C sort -u
+    while IFS= read -r -d '' p; do
+      [ -n "$p" ] || continue
+      if _review_tree_is_volatile "$p"; then
+        continue
+      fi
+      if [ -L "$p" ]; then
+        printf 'symlink%57s  %s\n' '' "$p"
+      elif [ -p "$p" ]; then
+        printf 'fifo%60s  %s\n' '' "$p"
+      elif [ -f "$p" ]; then
+        # Through the wrapper, never `$digest "$p"`: the resolved value can be
+        # two words and zsh would treat the whole thing as one command name.
+        _review_digest_exec "$p" 2>/dev/null || printf 'unreadable%54s  %s\n' '' "$p"
+      elif [ -e "$p" ]; then
+        printf 'special%57s  %s\n' '' "$p"
+      else
+        printf 'absent%58s  %s\n' '' "$p"
+      fi
+    done < "$listing" | LC_ALL=C sort -u
   )
+  rc=$?
+  rm -f "$listing"
+  return "$rc"
 }

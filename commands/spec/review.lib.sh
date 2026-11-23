@@ -59,6 +59,66 @@ _review_repo_relative() {
   printf '%s\n' "$p"
 }
 
+# ---------------------------------------------------------------------------
+# Cross-shell list membership and iteration.
+#
+# These libs are `source`d into whatever shell the .md command bodies run,
+# which on macOS is zsh — and **zsh does not word-split an unquoted parameter
+# expansion**. So the natural-looking
+#
+#     for entry in $REVIEW_INLINE_SET; do ...
+#
+# iterates ONCE under zsh, with the whole string as a single element, and every
+# membership test it implements answers "no" for every input. Cross-model
+# review round 6 found this across the tier table, the outcome tokens, the
+# mode enum, the effort and model enums and the volatile set — every one of
+# them on the main path of a review round, and all of them invisible to a suite
+# that only ever ran under bash.
+#
+# The replacement chops the string with POSIX parameter expansion, which does
+# exactly the same thing in both shells and starts no subprocess. A padded
+# `case " $list " in *" $item "*)` was considered and rejected: the item lands
+# on the PATTERN side, so an item containing a glob character would match more
+# than itself.
+#
+# `_review_list_has` is the membership test. Where a caller needs each entry
+# (to prefix-match, say), it chops the list inline the same way — a
+# `while read` loop would put the match in a subshell that cannot return from
+# its caller.
+# ---------------------------------------------------------------------------
+
+# _review_list_has <item> <space-separated-list> — zero iff <item> is an entry.
+_review_list_has() {
+  local needle="${1:-}" rest="${2:-}" head
+  while [ -n "$rest" ]; do
+    head="${rest%% *}"
+    case "$rest" in
+      *' '*) rest="${rest#* }" ;;
+      *)     rest="" ;;
+    esac
+    [ -n "$head" ] || continue
+    [ "$head" != "$needle" ] || return 0
+  done
+  return 1
+}
+
+# _review_list_join <space-separated-list> — echo the entries as "a, b, c", for
+# a diagnostic that reads as a list of choices rather than as one odd string.
+_review_list_join() {
+  local rest="${1:-}" head out=""
+  while [ -n "$rest" ]; do
+    head="${rest%% *}"
+    case "$rest" in
+      *' '*) rest="${rest#* }" ;;
+      *)     rest="" ;;
+    esac
+    [ -n "$head" ] || continue
+    [ -z "$out" ] || out="$out, "
+    out="$out$head"
+  done
+  printf '%s\n' "$out"
+}
+
 # review_context_tier <path> — echo "inline" | "reference", or fail with a
 # named error.
 #
@@ -69,15 +129,15 @@ _review_repo_relative() {
 # the payload, or worse, omitting a real one's body on the assumption the
 # reviewer can find it.
 review_context_tier() {
-  local path="${1:-}" rel entry
+  local path="${1:-}" rel
   [ -n "$path" ] || { review_error "review_context_tier: path required"; return 1; }
   rel="$(_review_repo_relative "$path")"
-  for entry in $REVIEW_INLINE_SET; do
-    [ "$rel" = "$entry" ] && { printf 'inline\n'; return 0; }
-  done
-  for entry in $REVIEW_REFERENCE_SET; do
-    [ "$rel" = "$entry" ] && { printf 'reference\n'; return 0; }
-  done
+  if _review_list_has "$rel" "$REVIEW_INLINE_SET"; then
+    printf 'inline\n'; return 0
+  fi
+  if _review_list_has "$rel" "$REVIEW_REFERENCE_SET"; then
+    printf 'reference\n'; return 0
+  fi
   review_error "review_context_tier: '$path' is not a known context file (tier table: $REVIEW_INLINE_SET $REVIEW_REFERENCE_SET)"
   return 1
 }
@@ -177,16 +237,36 @@ _review_digest_cmd() {
   printf '%s\n' "$_REVIEW_DIGEST_CMD"
 }
 
+# _review_digest_exec <args…> — run the resolved SHA-256 primitive.
+#
+# A WRAPPER, not `$cmd "$@"`. The resolved value may be two words
+# (`shasum -a 256`), and zsh does not word-split an unquoted expansion, so
+# `$cmd "$@"` under zsh tried to execute a command literally named
+# "shasum -a 256" — which made every digest in this lib, and therefore the whole
+# attestation chain and the tree snapshot, fail on macOS. Cross-model review
+# round 6 reproduced it. Dispatching on the resolved value keeps each form a
+# real, separately-worded invocation that both shells read the same way.
+#
+# The GNU branch executes the PATH-resolved absolute path from `command -v`,
+# never a bare literal, which is what portability-guard clause (e) requires.
+_review_digest_exec() {
+  local cmd
+  cmd="$(_review_digest_cmd)" || return 1
+  case "$cmd" in
+    'shasum -a 256') shasum -a 256 "$@" ;;
+    *)               "$cmd" "$@" ;;
+  esac
+}
+
 # review_digest [<file>] — echo the bare lowercase hex SHA-256 of <file>, or of
 # stdin when no file is given. Both primitives emit "<hex>  <name>", so the
 # first field is taken.
 review_digest() {
-  local cmd out
-  cmd="$(_review_digest_cmd)" || return 1
+  local out
   if [ $# -gt 0 ]; then
-    out="$($cmd < "$1")" || return 1
+    out="$(_review_digest_exec < "$1")" || return 1
   else
-    out="$($cmd)" || return 1
+    out="$(_review_digest_exec)" || return 1
   fi
   printf '%s\n' "${out%% *}"
 }
@@ -253,13 +333,13 @@ REVIEW_NON_VERDICTS="refused timeout failed attestation-failed"
 # "non-verdict": a typo would then read as a refusal, quietly making a round
 # inert with no indication why.
 _review_outcome_kind() {
-  local outcome="${1:-}" entry
-  for entry in $REVIEW_VERDICTS; do
-    [ "$outcome" = "$entry" ] && { printf 'verdict\n'; return 0; }
-  done
-  for entry in $REVIEW_NON_VERDICTS; do
-    [ "$outcome" = "$entry" ] && { printf 'non-verdict\n'; return 0; }
-  done
+  local outcome="${1:-}"
+  if _review_list_has "$outcome" "$REVIEW_VERDICTS"; then
+    printf 'verdict\n'; return 0
+  fi
+  if _review_list_has "$outcome" "$REVIEW_NON_VERDICTS"; then
+    printf 'non-verdict\n'; return 0
+  fi
   review_error "review: unknown outcome '$outcome' (verdicts: $REVIEW_VERDICTS; non-verdicts: $REVIEW_NON_VERDICTS)"
   return 2
 }
@@ -305,9 +385,7 @@ review_approval_quorum_met() {
     [ -n "$outcome" ] || { review_error "review_approval_quorum_met: record for '$agent' has no outcome"; return 2; }
     rc=0; kind="$(_review_outcome_kind "$outcome")" || rc=$?
     [ "$rc" -eq 0 ] || return 2
-    for entry in $REVIEW_AGREEING_VERDICTS; do
-      [ "$outcome" = "$entry" ] && count=$((count + 1))
-    done
+    ! _review_list_has "$outcome" "$REVIEW_AGREEING_VERDICTS" || count=$((count + 1))
   done < "$file"
   [ "$count" -ge "$quorum" ]
 }
@@ -639,17 +717,47 @@ review_dispatch_bytes() {
 # `file` mode passes the ROUND'S ARTIFACT itself. Writing a tempfile here would
 # be the second copy AC11 forbids, and it is the most natural place for one to
 # appear.
+#
+# <agent-cmd> is a SPACE-JOINED command string (what review_agent_cmd emits),
+# and it is expanded into a real array here rather than left as a bare `$cmd`.
+# `$cmd < "$art"` relied on the shell word-splitting the expansion, which bash
+# does and **zsh does not** — under zsh the entire string became one command
+# name, so every cli and acp reviewer failed with "command not found" naming
+# the whole command line. Both shells expand `"${cmdv[@]}"` identically, and
+# macOS bash 3.2 has indexed arrays (only the associative kind is missing).
+#
+# The words go into the FUNCTION's positional parameters rather than a named
+# array: `argv` is a zsh-reserved parameter aliased to exactly that, so the
+# positional form is both the portable idiom and the one convention allows.
 review_dispatch_payload() {
-  local cmd="${1:-}" mode="${2:-}" art="${3:-}"
+  local cmd="${1:-}" mode="${2:-}" art="${3:-}" rest w
   [ -n "$cmd" ] || { review_error "review_dispatch_payload: agent command required"; return 1; }
   [ -n "$art" ] && [ -f "$art" ] || {
     review_error "review_dispatch_payload: payload artifact not found: '${art:-}'"; return 1; }
+
+  # Built into the FUNCTION's own positional parameters — one idiom that both
+  # shells expand identically, with no array-indexing differences in play, and
+  # nothing of the caller's touched. `$1`-`$3` are already saved in locals
+  # above, so resetting them here is safe.
+  set --
+  rest="$cmd"
+  while [ -n "$rest" ]; do
+    w="${rest%% *}"
+    case "$rest" in
+      *' '*) rest="${rest#* }" ;;
+      *)     rest="" ;;
+    esac
+    [ -n "$w" ] || continue
+    set -- "$@" "$w"
+  done
+  [ "$#" -gt 0 ] || { review_error "review_dispatch_payload: agent command is empty"; return 1; }
+
   case "$mode" in
-    ''|stdin) $cmd < "$art" ;;
-    file)     $cmd --file "$art" ;;
+    ''|stdin) "$@" < "$art" ;;
+    file)     "$@" --file "$art" ;;
     argv|acp)
       review_dispatch_bytes "$art" || return 1
-      $cmd "$REVIEW_DISPATCH_PAYLOAD"
+      "$@" "$REVIEW_DISPATCH_PAYLOAD"
       ;;
     *) review_error "review_dispatch_payload: unknown input mode '$mode' (known: argv, acp, stdin, file; empty normalizes to stdin)"; return 1 ;;
   esac
@@ -1147,17 +1255,32 @@ review_validate_reference_access() {
   parsed="$(_review_parse_reference_access "$resp")" || return 2
 
   # A refused tool is a DISPATCH failure, checked FIRST and reported on its own
-  # terms. A subagent runs under the orchestrator's permission model and can be
-  # refused mid-review; filing that as an attestation fault would send an
-  # operator to inspect the reviewer's digests when the fix is a tool grant in
-  # allowed-tools. It is also why this arm precedes the HAS-ACCESS check: a
-  # reviewer denied Bash could not compute a digest at all, so its response
-  # legitimately carries no reference_access.
+  # terms. A reviewer runs under a permission model and can be refused
+  # mid-review; filing that as an attestation fault would send an operator to
+  # inspect the reviewer's digests when the fix is a tool grant. It is also why
+  # this arm precedes the HAS-ACCESS check: a reviewer denied Bash could not
+  # compute a digest at all, so its response legitimately carries no
+  # reference_access.
+  #
+  # The TOKEN is per mode, because the remedy is per mode. A subagent is
+  # refused by the ORCHESTRATOR's permission model, so the fix is a grant in
+  # the command's `allowed-tools`. Any other reviewer is refused by its own CLI
+  # invocation, so the fix is in that agent's `cmd` — this repo's registry
+  # carries `--allowedTools … Bash(shasum:*)` on `claude -p` for exactly that
+  # reason. Emitting `subagent-permission-denied` for a cli refusal sent the
+  # operator to edit the wrong file; the arm was not mode-gated at all, and the
+  # AC16 rows only ever exercised `subagent`, so nothing caught it.
+  # Found by cross-model review, round 6.
   local denied
   denied="$(printf '%s\n' "$parsed" | awk '$1 == "PERMISSION-DENIED" { $1 = ""; sub(/^[ \t]+/, ""); print; exit }')"
   if [ -n "$denied" ]; then
-    review_error "review: the reviewer was denied the tool '$denied' mid-review"
-    printf 'failed subagent-permission-denied %s\n' "$denied"
+    if [ "$mode" = subagent ]; then
+      review_error "review: the subagent was denied the tool '$denied' mid-review; grant it in the command's allowed-tools"
+      printf 'failed subagent-permission-denied %s\n' "$denied"
+    else
+      review_error "review: the reviewer was denied the tool '$denied' mid-review; grant it in this agent's cmd in agents.toml"
+      printf 'failed permission-denied %s\n' "$denied"
+    fi
     return 1
   fi
 
@@ -1271,6 +1394,42 @@ EOF
   printf 'ok\n'
 }
 
+# review_attestation_outcome <validator-token> — map what
+# review_validate_reference_access emits to the token a round RECORDS.
+#
+# The validator's own vocabulary is spec 0052's `invalid:<reason>`, and the
+# acceptance criteria name the recorded outcomes `attestation-failed
+# <reason>` — `attestation-failed missing-payload-digest`, not
+# `attestation-failed invalid:missing-payload-digest`. Nothing performed that
+# translation: each command body interpolated the raw token, so every recorded
+# attestation failure carried a spurious `invalid:` prefix.
+#
+# It survived because the AC16 rows asserted the reason as a SUBSTRING
+# (`grep -qF missing-payload-digest`), which the prefixed form satisfies. The
+# rows now assert the exact recorded line through this function, which is the
+# only shape that can tell the two apart. Found by cross-model review, round 6.
+#
+# A `failed …` token is a DISPATCH failure and passes through unchanged: it is
+# already a complete outcome and is deliberately not an attestation fault.
+review_attestation_outcome() {
+  local token="${1:-}"
+  case "$token" in
+    ok)
+      printf 'ok\n'
+      ;;
+    invalid:*)
+      printf 'attestation-failed %s\n' "${token#invalid:}"
+      ;;
+    'failed '*)
+      printf '%s\n' "$token"
+      ;;
+    *)
+      review_error "review_attestation_outcome: unrecognised validator token '${token:-}' (want ok, invalid:<reason> or 'failed <reason>')"
+      return 1
+      ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # Spec 0052 — per-agent registry reads.
 #
@@ -1350,6 +1509,36 @@ review_agent_cmd() {
       }
       if (n == 0) printf "%s", s
       printf "\n"
+    }'
+}
+
+# review_agent_argv <agents.toml> <agent> — emit the command's argv, ONE WORD
+# PER LINE, losslessly.
+#
+# review_agent_cmd joins the same words with a space, which is what every
+# consumer wants and is lossy for exactly one input: an argv element that
+# itself contains a space. That element cannot survive a space-joined string,
+# and `review_dispatch_payload`'s signature is frozen at
+# `<cmd> <input-mode> <artifact>` (spec 0052), so the words cannot be handed to
+# it in a richer form.
+#
+# Rather than mangle such an entry into two arguments and dispatch something
+# nobody wrote, `review_dispatch_agent` uses this to DETECT the case and refuse
+# by name. Every real registry — `["codex", "exec", "--sandbox",
+# "workspace-write"]`, `["claude", "-p", "--allowedTools", …]` — is unaffected.
+review_agent_argv() {
+  local raw
+  raw="$(review_agent_field "$1" "$2" cmd)" || return 1
+  [ -n "$raw" ] || return 0
+  LC_ALL=C awk -v s="$raw" '
+    BEGIN {
+      n = 0
+      while (match(s, /"[^"]*"/)) {
+        print substr(s, RSTART + 1, RLENGTH - 2)
+        n++
+        s = substr(s, RSTART + RLENGTH)
+      }
+      if (n == 0) print s
     }'
 }
 
@@ -1462,8 +1651,16 @@ _review_agent_mode_strict() {
 
   keys="$(review_agent_keys "$toml" "$agent")" || return 1
 
-  for f in $forbidden; do
-    printf '%s\n' "$keys" | grep -qx "$f" || continue
+  local rest_f
+  rest_f="$forbidden"
+  while [ -n "$rest_f" ]; do
+    f="${rest_f%% *}"
+    case "$rest_f" in
+      *' '*) rest_f="${rest_f#* }" ;;
+      *)     rest_f="" ;;
+    esac
+    [ -n "$f" ] || continue
+    printf '%s\n' "$keys" | grep -qxF -- "$f" || continue
     review_error "review_agent_mode: agent '$agent' has mode '$mode', which does not take '$f'"
     return 1
   done
@@ -1471,9 +1668,7 @@ _review_agent_mode_strict() {
   # Unknown keys are strict here and nowhere else.
   while IFS= read -r k; do
     [ -n "$k" ] || continue
-    case " $REVIEW_KNOWN_AGENT_KEYS " in
-      *" $k "*) continue ;;
-    esac
+    ! _review_list_has "$k" "$REVIEW_KNOWN_AGENT_KEYS" || continue
     review_error "review_agent_mode: agent '$agent' (mode '$mode') has unknown key '$k'"
     return 1
   done <<EOF
@@ -1482,36 +1677,26 @@ EOF
 
   # Enum checks belong to the mode that OWNS the field, which is why each is
   # guarded by its mode rather than by the key's mere presence.
+  #
+  # Membership goes through _review_list_has, not a padded `case`. The padded
+  # form matched a CONTIGUOUS SUBSTRING of the enum list, so `model =
+  # "opus sonnet"` was accepted as a valid single model — it is a substring of
+  # the list. Cross-model review round 6 found it; the whole-entry comparison
+  # closes it, and the enum rows below pin it.
   if [ "$mode" = codex-plugin ] && printf '%s\n' "$keys" | grep -qx effort; then
     val="$(review_agent_field "$toml" "$agent" effort)" || return 1
-    case " $REVIEW_VALID_EFFORTS " in
-      *" $val "*) ;;
-      *)
-        list=""
-        for k in $REVIEW_VALID_EFFORTS; do
-          [ -z "$list" ] || list="$list, "
-          list="$list$k"
-        done
-        review_error "review_agent_mode: agent '$agent' has effort '$val'; valid values are $list"
-        return 1
-        ;;
-    esac
+    _review_list_has "$val" "$REVIEW_VALID_EFFORTS" || {
+      review_error "review_agent_mode: agent '$agent' has effort '$val'; valid values are $(_review_list_join "$REVIEW_VALID_EFFORTS")"
+      return 1
+    }
   fi
 
   if [ "$mode" = subagent ] && printf '%s\n' "$keys" | grep -qx model; then
     val="$(review_agent_field "$toml" "$agent" model)" || return 1
-    case " $REVIEW_VALID_SUBAGENT_MODELS " in
-      *" $val "*) ;;
-      *)
-        list=""
-        for k in $REVIEW_VALID_SUBAGENT_MODELS; do
-          [ -z "$list" ] || list="$list, "
-          list="$list$k"
-        done
-        review_error "review_agent_mode: agent '$agent' has model '$val'; valid values are $list"
-        return 1
-        ;;
-    esac
+    _review_list_has "$val" "$REVIEW_VALID_SUBAGENT_MODELS" || {
+      review_error "review_agent_mode: agent '$agent' has model '$val'; valid values are $(_review_list_join "$REVIEW_VALID_SUBAGENT_MODELS")"
+      return 1
+    }
   fi
   return 0
 }
@@ -1543,21 +1728,15 @@ review_agent_mode() {
   printf '%s\n' "$keys" | grep -qx 'mode' || { printf 'cli\n'; return 0; }
 
   mode="$(review_agent_field "$toml" "$agent" mode)" || return 1
-  for m in $REVIEW_VALID_MODES; do
-    [ "$mode" = "$m" ] || continue
+  if _review_list_has "$mode" "$REVIEW_VALID_MODES"; then
     _review_agent_mode_strict "$toml" "$agent" "$mode" || return 1
     printf '%s\n' "$mode"
     return 0
-  done
+  fi
 
-  # Built by loop, not `tr`/`sed`: spec 0049 removed both from this lib and the
-  # portability sweep enforces it.
-  local list=""
-  for m in $REVIEW_VALID_MODES; do
-    [ -z "$list" ] || list="$list, "
-    list="$list$m"
-  done
-  review_error "review_agent_mode: agent '$agent' has mode '$mode'; valid modes are $list"
+  # Joined in shell, not by `tr`/`sed`: spec 0049 removed both from this lib and
+  # the portability sweep enforces it.
+  review_error "review_agent_mode: agent '$agent' has mode '$mode'; valid modes are $(_review_list_join "$REVIEW_VALID_MODES")"
   return 1
 }
 
@@ -1731,11 +1910,37 @@ review_dispatch_agent() {
   case "$mode" in
     cli | acp)
       local cmd transport
-      cmd="$(review_agent_field "$toml" "$agent" cmd)"
+      # review_agent_cmd, NOT review_agent_field: the field accessor returns the
+      # RAW TOML value, and for `cmd` that is array literal text. Every real
+      # registry writes `cmd = ["codex", "exec", …]` — this repo's own does — so
+      # the raw form made the shell try to execute the word `["codex",` and
+      # every cli and acp reviewer failed with exit 127. The existing AC13 rows
+      # passed only because their fixtures used a scalar `cmd`, a shape no real
+      # registry uses. Found by cross-model review, round 6; the parity suite
+      # now pins both the single-word and the multi-word array form.
+      cmd="$(review_agent_cmd "$toml" "$agent")" || {
+        review_error "review_dispatch_agent: agent \"$agent\" (mode $mode) has no usable cmd"
+        return 2
+      }
       [ -n "$cmd" ] || {
         review_error "review_dispatch_agent: agent \"$agent\" (mode $mode) has no cmd"
         return 2
       }
+      # An argv element containing a space cannot survive the space-joined
+      # string review_dispatch_payload takes, so it is refused by name rather
+      # than silently split into two arguments and dispatched as something
+      # nobody wrote.
+      local w
+      while IFS= read -r w; do
+        case "$w" in
+          *' '*)
+            review_error "review_dispatch_agent: agent \"$agent\" has a cmd element containing a space (\"$w\"), which this transport cannot carry; split it into separate array elements"
+            return 2
+            ;;
+        esac
+      done <<EOF
+$(review_agent_argv "$toml" "$agent")
+EOF
       transport="$(review_agent_transport "$toml" "$agent")" || return 2
       review_dispatch_payload "$cmd" "$transport" "$art"
       ;;

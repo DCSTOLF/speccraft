@@ -180,9 +180,27 @@ one that was never dispatched.
 
 ## 6. Validate attestation
 
+Validate ONCE, then map the token to the recorded outcome. Never interpolate
+the validator's token straight into the outcomes file: its vocabulary is
+`ok` / `invalid:<reason>` / `failed <reason>`, and the recorded outcome is
+`attestation-failed <reason>`. `review_attestation_outcome` is the only
+translation, and calling the validator twice risks two different answers for
+one reviewer.
+
 ```bash
-review_validate_reference_access "$ROUND_DIR/<agent>.out" "$ROUND_DIR/digests.txt"
+TOK="$(review_validate_reference_access "$ROUND_DIR/<agent>.out" \
+         "$ROUND_DIR/digests.txt" "$MODE" "$ROUND_DIR/<agent>.payload" || true)"
+if [ "$TOK" != ok ]; then
+  printf '%s %s\n' "<agent>" "$(review_attestation_outcome "$TOK")" >> "$OUTCOMES"
+fi
 ```
+
+Pass `$MODE`. The payload-digest rule and the permission-denial token are both
+mode-dependent: a `subagent` must attest `payload_sha256` because it reads the
+payload from a file, and its refusal is `subagent-permission-denied` (fix: the
+command's `allowed-tools`) where any other reviewer's is `permission-denied`
+(fix: that agent's `cmd` in `agents.toml`). Omitting the mode silently applies
+the pre-0054 contract.
 
 A verdict without a matching digest for every reference path does not count
 toward either round predicate.

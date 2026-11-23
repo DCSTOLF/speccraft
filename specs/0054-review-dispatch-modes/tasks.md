@@ -95,6 +95,18 @@ contract: done-means-v1
   done: $ test -f tests/hooks/spec-review-code.bats && grep -q 'untracked' tests/hooks/spec-review-code.bats
 - [x] T45 — GREEN: review_freeze_diff and the review-code body
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-code.bats && grep -q 'review_freeze_diff()' commands/spec/review*.lib.sh
+- [x] T45.1 — RED: the cross-shell parity harness (AC27)
+  done: $ test -f tests/hooks/spec-review-shell-parity.bats && grep -qxF -- '@test "the parity harness detects a genuine bash/zsh difference" {' tests/hooks/spec-review-shell-parity.bats && grep -qxF -- '@test "no review lib iterates an unquoted scalar with for" {' tests/hooks/spec-review-shell-parity.bats
+- [x] T45.2 — GREEN: the word-splitting class, dispatch argv, fd 9, round-dir identity
+  done: $ o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-shell-parity.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 17 && grep -q '_review_list_has()' commands/spec/review.lib.sh && grep -q '_review_digest_exec()' commands/spec/review.lib.sh && grep -q 'review_agent_argv()' commands/spec/review.lib.sh && test "$(grep -lE '^[[:space:]]*for[[:space:]]+[A-Za-z_][A-Za-z_0-9]*[[:space:]]+in[[:space:]]+\$[A-Za-z_][A-Za-z_0-9]*[[:space:]]*;?[[:space:]]*(do)?[[:space:]]*$' commands/spec/review*.lib.sh | wc -l | tr -d ' ')" -eq 0
+- [x] T45.3 — GREEN: review_dispatch_agent reads cmd through review_agent_cmd
+  done: $ grep -q 'review_agent_cmd "$toml" "$agent"' commands/spec/review.lib.sh && PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-shell-parity.bats -f 'array-form'
+- [x] T45.4 — GREEN: the sweep resolves a codex-plugin quarantine itself (AC15a)
+  done: $ grep -q 'review_round_quarantine_resolve "$entry"' commands/spec/review-round.lib.sh && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-dir.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 53
+- [x] T45.5 — GREEN: the recorded attestation outcome, and the mode-scoped denial token (AC16)
+  done: $ grep -q 'review_attestation_outcome()' commands/spec/review.lib.sh && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-attestation.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 19
+- [x] T45.6 — GREEN: the volatile set is the whole .claude tree, and git failure is loud (AC17b)
+  done: $ grep -qF 'REVIEW_TREE_VOLATILE=".claude .speccraft/state.json' commands/spec/review-round.lib.sh && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-tree-snapshot.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 30
 - [ ] T46 — RED: AC8 for the arch, pm and review-code branches, plus AC17 distinct artifacts
   done: $ grep -q 'arch' tests/hooks/spec-review-payload-boundary.bats && grep -q 'byte-identical' tests/hooks/spec-review-round-runbook.bats
 - [ ] T47 — GREEN: composer --label and review_hash_compare_outputs

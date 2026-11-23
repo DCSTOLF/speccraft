@@ -772,6 +772,82 @@ three P1s were exactly this class of error."
   exclusion on stdout.
 - All step-44 tests pass.
 
+### Phase F.5 — remediation from cross-model code review round 6
+
+Inserted after step 45, not appended after step 71. Every remaining phase
+builds on these libraries, so a defect left here compounds through Phases G–I.
+
+The round reviewed the three shell libs (142 KB diff) against the spec with
+`codex` and `claude -p`; both returned `changes-requested` and both attested.
+Each finding below was REPRODUCED before being accepted — one claim (the sweep
+aborting on an empty round parent under zsh) did not hold and was dropped.
+
+The root cause of most of it: **zsh does not word-split an unquoted parameter
+expansion**, and these libs are `source`d into the caller's shell, which on
+macOS is zsh. `tests/hooks/lib-zsh-safety.bats` proved every lib *sources*
+under zsh; nothing ever *executed* a function body there, and the bodies are
+where the shells disagree.
+
+#### Step T45.1 — the cross-shell parity harness (RED)
+- Add `tests/hooks/spec-review-shell-parity.bats`: a `parity` helper running
+  the same script under both shells, plus two self-check rows proving the
+  harness can detect a real difference and agrees on a stable probe (without
+  them the whole file could pass vacuously).
+- Rows over `review_digest`, `review_context_tier`, `review_agent_mode`,
+  `_review_outcome_kind`, `_review_tree_is_volatile`, `review_tree_snapshot`,
+  the composer, round-dir identity, array-form dispatch and caller fd 9.
+- Two static guards pinning the CLASS, each with a premise check.
+- zsh is required, never silent-skipped (the rule spec 0029/0030 already set).
+- Fails: 13 of 15.
+
+#### Step T45.2 — the word-splitting class (GREEN)
+- `_review_list_has` / `_review_list_join`: POSIX parameter-expansion chopping,
+  identical in both shells, no subprocess. A padded `case " $list " in
+  *" $item "*)` was rejected — the item lands on the pattern side, so a glob
+  character would match more than itself, and it already accepted
+  `model = "opus sonnet"` as one valid model because that is a contiguous
+  substring of the enum list.
+- `_review_digest_exec` wraps the resolved primitive, so a two-word
+  `shasum -a 256` is never one command name.
+- `review_dispatch_payload` expands the command string into the function's own
+  positional parameters (`argv` is zsh-reserved).
+- `review_round_dir_create` takes its uniqueness from `mktemp -d`, adds the
+  unix-ts the contract names, and refuses an existing final dir before `mv`
+  (zsh hands a command-substitution subshell the parent's `$RANDOM`, and every
+  caller uses `$(…)`, so two rounds shared one directory).
+- `review_with_deadline` passes stdin with an explicit `<&0` on the subshell
+  instead of dup-ing through fd 9 in the CALLER, which silently closed a
+  caller's `exec 9>lock; flock 9`.
+
+#### Step T45.3 — array-form registries dispatch at all (GREEN)
+- `review_dispatch_agent` reads `cmd` via `review_agent_cmd`, not
+  `review_agent_field` (which returns raw TOML array text). Every real
+  registry is array-form; the old AC13 rows passed only on scalar fixtures.
+- `review_agent_argv` emits argv one word per line, so an element containing a
+  space is a named refusal rather than silently split into two arguments.
+
+#### Step T45.4 — the sweep resolves its own quarantines (GREEN)
+- `review_round_sweep` calls `review_round_quarantine_resolve` before
+  reporting, which AC15a already required. Four rows make the SWEEP the entry
+  point; the pre-existing row called the resolver itself and passed while the
+  sweep probed nothing.
+
+#### Step T45.5 — the recorded attestation outcome (GREEN)
+- `review_attestation_outcome` maps the validator's `invalid:<reason>` to
+  AC16's `attestation-failed <reason>`. The old rows asserted the reason as a
+  SUBSTRING, which the unmapped token satisfied.
+- The permission-denial token is scoped to the mode that owns the remedy:
+  `subagent-permission-denied` (fix: the command's `allowed-tools`) vs
+  `permission-denied` (fix: that agent's `cmd`).
+
+#### Step T45.6 — the volatile set and loud git failure (GREEN)
+- `REVIEW_TREE_VOLATILE` excludes the whole `.claude` tree, per the spec's
+  contract-level list; AC17b's narrower row is corrected in the spec.
+- `review_tree_snapshot` checks the enumeration's exit status. It previously
+  returned `sort`'s, so outside a work tree the snapshot was empty AND
+  successful — and two empty snapshots compare equal, so the before/after
+  check passed while detecting nothing.
+
 #### Step 46 — AC8 over the new branches, and AC17's distinct artifacts (RED)
 - Extend `tests/hooks/spec-review-payload-boundary.bats`:
   - `@test "the arch payload begins with a non-whitespace byte and ends with one newline"`
