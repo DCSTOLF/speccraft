@@ -91,9 +91,9 @@ contract: done-means-v1
   done: $ test -f tests/hooks/spec-review-attestation.bats && for t in 'every dispatchable template exists' 'every dispatchable template documents payload_sha256 in its attested block' 'the YAML-map shape is rejected, per template' 'the one-line - path: X, sha256: Y shape is rejected' 'a template documenting no reference_access block fails the round trip' 'a subagent response missing payload_sha256 is attestation-failed missing-payload-digest' 'a wrong payload_sha256 is attestation-failed payload-digest-mismatch' 'a correct payload digest plus correct reference digests is valid' 'permission_denied maps to failed subagent-permission-denied' 'permission_denied is not reported as a generic attestation failure' 'a cli response is unaffected by the payload-digest rule'; do grep -qxF -- "@test \"$t\" {" tests/hooks/spec-review-attestation.bats || exit 1; done
 - [x] T43 — GREEN: the validator's subagent arm and the five prompt templates
   done: $ o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-attestation.bats tests/hooks/spec-review-diff.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 31 && for t in review re-review review-code arch-review pm-review; do grep -q 'payload_sha256' "templates/prompts/$t.md" || exit 1; grep -q 'reference_access:' "templates/prompts/$t.md" || exit 1; done && grep -q 'PAYLOAD-SHA' commands/spec/review.lib.sh && grep -q 'PERMISSION-DENIED' commands/spec/review.lib.sh
-- [ ] T44 — RED: review-code freezes ONE diff and states the untracked exclusion
+- [x] T44 — RED: review-code freezes ONE diff and states the untracked exclusion
   done: $ test -f tests/hooks/spec-review-code.bats && grep -q 'untracked' tests/hooks/spec-review-code.bats
-- [ ] T45 — GREEN: review_freeze_diff and the review-code body
+- [x] T45 — GREEN: review_freeze_diff and the review-code body
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-code.bats && grep -q 'review_freeze_diff()' commands/spec/review*.lib.sh
 - [ ] T46 — RED: AC8 for the arch, pm and review-code branches, plus AC17 distinct artifacts
   done: $ grep -q 'arch' tests/hooks/spec-review-payload-boundary.bats && grep -q 'byte-identical' tests/hooks/spec-review-round-runbook.bats

@@ -483,6 +483,112 @@ review_seam_single_creation() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Spec 0054 ACs 22 / 22a — review-code's ONE frozen diff.
+#
+# `spec:review-code` used to tell each agent to collect "the diff" itself. The
+# working tree is live while a round runs, so two reviewers dispatched a second
+# apart could review different bytes — and then a disagreement between them is
+# indistinguishable from a disagreement about the same change. It also makes
+# the payload digest a `subagent` attests (AC16) meaningless, because the thing
+# hashed would be recomputed per agent.
+#
+# So the diff is frozen ONCE into the round dir and every payload composes from
+# that single artifact.
+# ---------------------------------------------------------------------------
+
+# review_freeze_diff <round-dir> [<base>] — compute the reviewed diff exactly
+# once into <round-dir> and echo the artifact's path.
+#
+# `git diff HEAD` by default; `git diff <base>...HEAD` when a base ref is given.
+# `git diff HEAD` is the form the spec names, and the distinction is
+# load-bearing: a staged edit that the working tree reverses nets to nothing
+# against HEAD, while `git diff --cached` would report it and send every
+# reviewer hunting a change that does not exist.
+#
+# Untracked files are OUT, deliberately (AC22a). Both git forms exclude them,
+# and that is the property that makes the frozen diff reproducible from a
+# recorded HEAD — a snapshot that also swept in untracked files would not be.
+# The exclusion is stated in the payload prose and on the round's stdout rather
+# than left implicit, because a reviewer who is not told assumes the diff is
+# everything that changed.
+review_freeze_diff() {
+  local dir="${1:-}" base="${2:-}"
+  [ -n "$dir" ] || {
+    review_error "review_freeze_diff: round directory required"; return 1; }
+  # Options are refused rather than ignored. The obvious future request is a
+  # flag that widens the scope to untracked files; silently dropping an
+  # unrecognized word would freeze the narrow diff while the caller believed
+  # otherwise. The offending word is named at RUNTIME and never spelled out
+  # here, so the out-of-scope flag has no literal mention in the shipped tree.
+  case "$base" in
+    --*)
+      review_error "review_freeze_diff: '$base' is not an option — this takes an optional BASE REF only."
+      review_error "  Widening the reviewed scope beyond the two git diff forms is out of scope (spec 0054)."
+      return 1
+      ;;
+  esac
+  [ -d "$dir" ] || {
+    review_error "review_freeze_diff: round directory not found: '$dir'"; return 1; }
+
+  local art="$dir/branch-under-review.diff"
+  # The 0052 single-creation seam, applied to the diff. A second freeze in one
+  # round is exactly the defect this function exists to remove, so it is a
+  # named refusal rather than an overwrite.
+  [ ! -e "$art" ] || {
+    review_error "review_freeze_diff: refusing to freeze twice — '$art' already exists."
+    review_error "  Every reviewer in a round must receive the SAME diff bytes; compose from the existing artifact."
+    return 1
+  }
+
+  # The ref is verified BEFORE the artifact is created. `git diff` with an
+  # unknown ref writes nothing and fails, which would otherwise leave a
+  # zero-byte artifact that composes into a payload claiming there are no
+  # changes — a false clean bill of health, the worst available outcome.
+  if [ -n "$base" ]; then
+    git rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 || {
+      review_error "review_freeze_diff: unknown base ref '$base' — nothing was frozen."
+      return 1
+    }
+  fi
+
+  ( umask 077; : > "$art" ) || return 1
+  chmod 600 "$art"
+  if [ -n "$base" ]; then
+    git diff "$base"...HEAD > "$art" || {
+      review_error "review_freeze_diff: 'git diff $base...HEAD' failed; '$art' is incomplete"
+      return 1
+    }
+  else
+    git diff HEAD > "$art" || {
+      review_error "review_freeze_diff: 'git diff HEAD' failed; '$art' is incomplete"
+      return 1
+    }
+  fi
+  # An EMPTY artifact is a legitimate outcome, not an error: a clean tree is a
+  # round with a verdict ("nothing to review"), and refusing here would turn
+  # the common no-op case into a crash.
+  printf '%s\n' "$art"
+}
+
+# review_no_active_spec_notice — the stand-in the composer gets when no spec is
+# active, on stdout.
+#
+# review-code reviews a DIFF, so a spec is not required (AC22) — refusing
+# without one would break exactly the ad-hoc change this command exists for.
+# But the composer always emits a "Spec under review" heading, and an EMPTY
+# stand-in would put nothing under it, which reads as a truncated payload
+# rather than as a deliberate absence. So the absence is spelled out.
+review_no_active_spec_notice() {
+  printf 'No active spec.\n\n'
+  printf 'No spec is active for this round, so the diff has no acceptance criteria\n'
+  printf 'to be checked against. Review it on its own merits: correctness, the\n'
+  printf 'guardrails and conventions included below, and anything it deletes or\n'
+  printf 'weakens that looks load-bearing.\n\n'
+  printf 'Do not treat the missing spec as a defect in the change, and do not\n'
+  printf 'invent criteria for it.\n'
+}
+
 # review_payload_representable <artifact> — the stated representability boundary.
 #
 # The payload domain is NUL-free, valid UTF-8. A NUL byte is refused because
