@@ -31,6 +31,10 @@ Steps:
    document under review and `templates/prompts/arch-review.md` as the
    template, then synthesize via the `cross-reviewer` subagent.
 
+   Pass `--label "Design under review (frozen for this round)"` to the composer. The default heading says "Spec
+   under review", which would tell the reviewer to check this document
+   against acceptance criteria a design.md does not have.
+
    It is the same multi-model backend `/speccraft:spec:review` uses, and that
    backend now dispatches by the registry's `mode`: `cli` and `acp` through
    `aux-delegator`, `codex-plugin` through the Codex plugin's companion, and

@@ -868,6 +868,64 @@ where the shells disagree.
   agents on any duplicate digest.
 - All step-46 tests pass; 0052's composer tests pass unedited.
 
+### Phase F.6 — remediation from cross-model code review round 7 (the docs surface)
+
+Round 7 reviewed the four command bodies, the runbook, the five templates,
+`aux-delegator.md` and the Go mode validation — 58 KB — with the same two
+reviewers. Both returned `changes-requested`; both attested. The findings split
+into defects in LANDED work (below) and acceptance criteria whose tasks are not
+yet due (AC18 `agents/reviewer.md`, AC23b, AC24, AC25, and the arch/pm gate
+that step 48 is about), which the reviewers flagged as unmet because they were
+reading a mid-implementation diff.
+
+The theme: **the runbook is executed by a model, so its text IS the
+implementation — and nothing had ever checked its calls against the functions
+they name.** It was green because markdown has no compiler.
+
+#### Step T45.7 — the runbook's literal calls actually work (GREEN)
+- §2 passed a PATH to `review_budget_check`, which takes a byte count and
+  refuses anything else — so the shared round's FIRST gate errored for every
+  reviewer, in all four commands. Now composed through
+  `review_materialize_payload`, whose echoed count is the measured bytes.
+- §2 composed ONE `payload.md` with one `digests.txt` and §3 dispatched it to
+  every reviewer, while §6 validated `<agent>.payload` — a path the runbook
+  never wrote. A subagent could return the right digest for the bytes it was
+  given and still fail attestation. Now per-agent throughout, which is also
+  what the distinct-artifact convention and AC17's duplicate check require.
+- §2 now passes `--label`, and the parameter table gives each command's.
+- New rows compare the runbook's fenced calls against the real functions,
+  including a premise row proving `review_budget_check` does reject a path.
+
+#### Step T45.8 — spec:review stops conflating transport with dispatch mode (GREEN)
+- `MODE` was `review_agent_field … input` (the transport) and was then passed
+  as the validator's dispatch-mode argument, so the subagent-only
+  `payload_sha256` check never ran and a permission denial got the wrong token.
+  `MODE` and `TRANSPORT` are now separate reads, from
+  `review_agent_mode` and `review_agent_transport`.
+- The body dispatched with `review_dispatch_payload` directly, never reaching
+  the mode router, so a `codex-plugin` or `subagent` entry got an empty command
+  and was dropped with no named outcome. Now `review_dispatch_agent`.
+- It used `review_round_tmpdir` with an `EXIT` trap. A subagent is dispatched
+  in a LATER tool call and would find its payload deleted, so spec:review was
+  structurally unable to run one. Now the persistent round dir.
+
+#### Step T45.9 — the scoped round's evidence, and the subagent_type default (GREEN)
+- Step 2b promised to attach the prior review to a scoped `--diff` round; the
+  composer call omitted it, so the reviewer got no previous findings and could
+  not judge whether a change resolved them. A full-round recipe omits it
+  silently — no error, just a worse review. (Exactly the failure recorded after
+  spec 0035; it came back.)
+- The runbook defaulted `subagent_type` to `reviewer` while the Go loader and
+  the spec default to `speccraft:reviewer`. A row now derives the expected
+  value FROM `toml.go` so the two readers cannot drift again.
+
+**Deferred to their owning tasks, not fixed here:** the runbook's §4 timeout
+protocol diverges from the spec's seven steps (missing recorded agent id and
+absolute deadline, `late-completion`, `<agent-id>` in the stop failure) — that
+is step 54/55; and §7's tree-check attribution says "both record it" rather
+than AC17d's rule conditioned on how many subagents are active — step 56/57.
+Both are landed TEXT that is known-wrong and must not be read as done.
+
 #### Step 48 — arch/pm write `review.md` only on a complete round (RED)
 - Extend `tests/hooks/spec-review-round-runbook.bats`:
   - `@test "arch:review writes design/<id>/review.md on a complete round"`

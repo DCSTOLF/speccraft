@@ -107,10 +107,16 @@ contract: done-means-v1
   done: $ grep -q 'review_attestation_outcome()' commands/spec/review.lib.sh && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-attestation.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 19
 - [x] T45.6 — GREEN: the volatile set is the whole .claude tree, and git failure is loud (AC17b)
   done: $ grep -qF 'REVIEW_TREE_VOLATILE=".claude .speccraft/state.json' commands/spec/review-round.lib.sh && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-tree-snapshot.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 30
-- [ ] T46 — RED: AC8 for the arch, pm and review-code branches, plus AC17 distinct artifacts
+- [x] T46 — RED: AC8 for the arch, pm and review-code branches, plus AC17 distinct artifacts
   done: $ grep -q 'arch' tests/hooks/spec-review-payload-boundary.bats && grep -q 'byte-identical' tests/hooks/spec-review-round-runbook.bats
-- [ ] T47 — GREEN: composer --label and review_hash_compare_outputs
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-payload-boundary.bats tests/hooks/spec-review-payload.bats && grep -q 'review_hash_compare_outputs()' commands/spec/review.lib.sh
+- [x] T47 — GREEN: composer --label and review_hash_compare_outputs
+  done: $ o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-payload-boundary.bats tests/hooks/spec-review-round-runbook.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 60 && grep -q 'review_hash_compare_outputs()' commands/spec/review.lib.sh && grep -q 'review_hash_collision_outcomes()' commands/spec/review.lib.sh && grep -q -- '--label)' commands/spec/review.lib.sh
+- [x] T45.7 — GREEN: the runbook's literal calls work (budget bytes, per-agent artifacts)
+  done: $ grep -qE 'review_budget_check[[:space:]]+"\$BYTES"' skills/review-round/SKILL.md && test "$(grep -cE '\$ROUND_DIR/payload\.md' skills/review-round/SKILL.md)" -eq 0 && grep -qF '$ROUND_DIR/$agent.payload' skills/review-round/SKILL.md && grep -q -- '--label' skills/review-round/SKILL.md
+- [x] T45.8 — GREEN: spec:review stops conflating transport with dispatch mode
+  done: $ grep -qE 'MODE="\$\(review_agent_mode' commands/spec/review.md && test "$(grep -cE 'MODE="\$\(review_agent_field[^)]*input' commands/spec/review.md)" -eq 0 && grep -qF review_dispatch_agent commands/spec/review.md && test "$(grep -cE 'REVIEW_ROUND_TMPDIR|review_round_tmpdir' commands/spec/review.md)" -eq 0
+- [x] T45.9 — GREEN: the scoped round carries the prior review; subagent_type defaults agree
+  done: $ grep -qE -- '--inline[^|]*PRIOR' commands/spec/review.md && grep -qF 'speccraft:reviewer' skills/review-round/SKILL.md && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-runbook.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 43
 - [ ] T48 — RED: arch and pm write review.md only on a complete round
   done: $ grep -q 'byte-unchanged' tests/hooks/spec-review-round-runbook.bats
 - [ ] T49 — GREEN: review_finalize_round gains an optional kind parameter

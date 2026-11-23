@@ -66,28 +66,50 @@ rather than re-deriving a per-command variant.
    `review-snapshot.md` because AC24 no longer promotes it here). Without
    `--diff`, proceed with the full review at step 3.
 
-3. **Compose → budget-check → dispatch, in that order.** Do the whole round in
-   **one shell**: the temp directory must be live for all of it, and its cleanup
-   trap can only fire in the shell that installed it.
+3. **Compose → budget-check → dispatch, in that order**, following the shared
+   runbook. The order is the point: a budget check *after* dispatch prevents
+   nothing — the payload has already gone to the reviewer, and the 600 s
+   timeout this whole command exists to replace still happens.
 
-   The order is the point. A budget check *after* dispatch prevents nothing — the
-   payload has already gone to the CLI, and the 600 s timeout this whole command
-   exists to replace still happens.
+   The round lives in the **persistent round dir**, not a shell temp dir with
+   an `EXIT` trap. A `subagent` reviewer is dispatched by this session in a
+   later tool call, and a trap-cleaned temp dir would be gone by then — the
+   reviewer would find no payload. Cleanup is the runbook's §8 gate instead.
 
    ```bash
    source "$PLUGIN_ROOT/commands/spec/review.lib.sh"
-   review_round_tmpdir                       # 0700, trap on EXIT HUP INT TERM
-   ROUND_SPEC="$REVIEW_ROUND_TMPDIR/spec-frozen.md"
-   OUTCOMES="$REVIEW_ROUND_TMPDIR/outcomes.txt"; : > "$OUTCOMES"
+   # From agents.toml `defaults.review_timeout_s`; 600 s when unset, the same
+   # default review_dispatch_agent applies.
+   TIMEOUT_S="${REVIEW_TIMEOUT_S:-600}"
+   ROUND_DIR="$(review_round_dir_create spec "$ACTIVE" "$TIMEOUT_S")"
+   review_tree_snapshot > "$ROUND_DIR/tree.before"
+   ROUND_SPEC="$ROUND_DIR/spec-frozen.md"
+   OUTCOMES="$ROUND_DIR/outcomes.txt"; : > "$OUTCOMES"
    cp "$SPEC_DIR/spec.md" "$ROUND_SPEC"      # the ONE read of spec.md this round
 
    TEMPLATE="$PLUGIN_ROOT/templates/prompts/review.md"       # full round
-   # scoped --diff round: re-review brief + the prior review as evidence
-   [ "$branch" != "scoped" ] || TEMPLATE="$PLUGIN_ROOT/templates/prompts/re-review.md"
+   PRIOR=""
+   if [ "$branch" = scoped ]; then
+     # The re-review brief AND the prior review as inline evidence. Step 2b
+     # promises to attach it; omitting it here composes a scoped round with no
+     # previous findings in it, so the reviewer cannot tell whether a change
+     # resolved anything.
+     TEMPLATE="$PLUGIN_ROOT/templates/prompts/re-review.md"
+     cp "$SPEC_DIR/review.md" "$ROUND_DIR/prior-review.md"
+     PRIOR="$ROUND_DIR/prior-review.md"
+   fi
 
    for agent in $AGENTS; do
-     MODE="$(review_agent_field .speccraft/agents.toml "$agent" input)"
-     CMD="$(review_agent_cmd .speccraft/agents.toml "$agent")"
+     # TWO DIFFERENT THINGS, deliberately not one variable:
+     #   MODE      — the dispatch mode (cli | acp | codex-plugin | subagent)
+     #   TRANSPORT — the registry's `input` field, which is what the byte
+     #               budget measures against
+     # Passing the transport where the dispatch mode belongs silently applies
+     # the pre-0054 contract: the subagent-only payload_sha256 check never
+     # runs, and a permission denial is filed under the wrong token.
+     MODE="$(review_agent_mode .speccraft/agents.toml "$agent")" || {
+       printf '%s failed unknown-mode\n' "$agent" >> "$OUTCOMES"; continue; }
+     TRANSPORT="$(review_agent_transport .speccraft/agents.toml "$agent")"
 
      # Reviewers that cannot open files must not be handed paths (AC26).
      if [ "$(review_agent_reference_read .speccraft/agents.toml "$agent")" = "false" ]; then
@@ -96,33 +118,50 @@ rather than re-deriving a per-command variant.
        continue
      fi
 
-     ART="$REVIEW_ROUND_TMPDIR/$agent.payload"       # DISTINCT per agent
-     DIG="$REVIEW_ROUND_TMPDIR/$agent.digests"
+     ART="$ROUND_DIR/$agent.payload"       # DISTINCT per agent
+     DIG="$ROUND_DIR/$agent.digests"
      BYTES="$(review_materialize_payload "$ART" \
        review_compose_payload "$TEMPLATE" "$ROUND_SPEC" \
-         --inline .speccraft/guardrails.md .speccraft/index.md \
+         --inline .speccraft/guardrails.md .speccraft/index.md ${PRIOR:+"$PRIOR"} \
          --reference .speccraft/architecture.md .speccraft/conventions.md \
          --digest-out "$DIG" \
          ${diff:+--diff "$diff"} ${sections:+--changed "$sections"})"
 
      review_payload_representable "$ART" || { printf '%s failed unrepresentable-payload\n' "$agent" >> "$OUTCOMES"; continue; }
 
-     VERDICT="$(review_budget_check "$BYTES" "$MODE")"
+     VERDICT="$(review_budget_check "$BYTES" "$TRANSPORT")"
      if [ "$VERDICT" != "ok" ]; then
-       review_refusal_message "$agent" "$MODE" "$BYTES" "$VERDICT" \
+       review_refusal_message "$agent" "$TRANSPORT" "$BYTES" "$VERDICT" \
          "$(review_rank_files .speccraft/guardrails.md .speccraft/index.md "$ROUND_SPEC")"
        printf '%s refused %s\n' "$agent" "$VERDICT" >> "$OUTCOMES"
        continue                                # PER AGENT: others still run
      fi
 
-     # aux-delegator is a pure dispatcher here: it sends these bytes unmodified.
-     review_dispatch_payload "$CMD" "$MODE" "$ART"
+     # ONE router for every mode. `cli`/`acp` go out through the transport,
+     # `codex-plugin` drives the companion, and `subagent` returns 3 — which is
+     # this session's cue to dispatch it with the Agent tool per the runbook,
+     # NOT an error. A direct review_dispatch_payload call here would hand a
+     # codex-plugin or subagent entry an empty command and drop it silently.
+     #
+     # The command itself is resolved INSIDE the router, via review_agent_cmd,
+     # which decodes the registry's TOML array form. That is why this body does
+     # not read `cmd` at all: reading it here with review_agent_field would
+     # yield the raw array text and dispatch the literal word `["codex",`.
+     if [ "$MODE" = subagent ]; then
+       printf '%s pending-subagent %s\n' "$agent" "$ART" >> "$OUTCOMES"
+       continue                                # dispatched by this session
+     fi
+     review_dispatch_agent .speccraft/agents.toml "$agent" "$ART" \
+       > "$ROUND_DIR/$agent.out"
    done
    ```
 
    Refusal is **per agent**. One over-budget reviewer must not sink a round the
    other reviewers can still complete — and a refused agent is recorded as a
    non-verdict, so it cannot be mistaken for an agent that simply agreed.
+
+   Then dispatch every `pending-subagent` entry via the Agent tool, following
+   the runbook's timeout protocol, and replace its record with the outcome.
 
    Invoke the `aux-delegator` subagent once per selected agent, passing
    `payload_file`, `input_mode` and `cwd` (the root `speccraft-state find-root`
@@ -135,7 +174,7 @@ rather than re-deriving a per-command variant.
    sees; in particular `history.md` is not sent.
 
 4. Collect outcomes — one record per **required** reviewer, appended to
-   `$OUTCOMES` (`$REVIEW_ROUND_TMPDIR/outcomes.txt`) as
+   `$OUTCOMES` (`$ROUND_DIR/outcomes.txt`) as
    `<agent> <outcome> [detail…]`:
    - a verdict: `approve` | `approve-with-comments` | `changes-requested` |
      `reject`, with `concerns[]`, `suggestions[]`, `guardrail_violations[]`,
@@ -145,6 +184,9 @@ rather than re-deriving a per-command variant.
 
    Validate each verdict's reference-read attestation before counting it:
    ```bash
+   # $MODE is the DISPATCH mode, never the transport: it selects the
+   # subagent-only payload_sha256 rule and the permission-denial token.
+   RESPONSE="$ROUND_DIR/$agent.out"
    TOK="$(review_validate_reference_access "$RESPONSE" "$DIG" "$MODE" "$ART" || true)"
    if [ "$TOK" != ok ]; then
      printf '%s %s\n' "$agent" "$(review_attestation_outcome "$TOK")" >> "$OUTCOMES"

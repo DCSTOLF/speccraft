@@ -6,11 +6,20 @@
 review_quorum = 1     # how many aux agents must agree for /spec:review
 review_timeout_s = 600
 
-# `input` is "stdin" for every shipped agent, deliberately. A review payload is
-# large, and `argv` passes the WHOLE prompt as a single command-line argument:
-# `claude -p` on argv has a working limit around 70 KB, and a 622 KB payload
-# reported from the field timed out at 600 s with no verdict and no diagnostic.
-# stdin has no such limit. Only set `argv` for a CLI that genuinely requires it.
+# `input` is "stdin" for every shipped agent, deliberately (spec 0052). A review
+# payload is large, and `argv` passes the WHOLE prompt as a single command-line
+# argument: `claude -p` on argv has a working limit around 70 KB, and a 622 KB
+# payload reported from the field timed out at 600 s with no verdict and no
+# diagnostic. stdin has no such limit. Only set `argv` for a CLI that genuinely
+# requires it.
+#
+# OPEN QUESTION, recorded rather than guessed at: `opencode run <message>` is
+# documented as taking its prompt POSITIONALLY, so stdin may hand it an empty
+# prompt. It could not be verified in the dev container, where `opencode` on
+# PATH is this repo's own e2e mock rather than the real CLI. If it turns out
+# stdin is not accepted, this entry needs `argv` and the byte budget then
+# refuses an oversized payload by name — which is the right failure, where an
+# empty prompt returning a confident verdict is the worst one.
 #
 # `reference_read = true` says the agent can open files at the dispatched cwd,
 # which is what lets it receive reference-tier context as a path plus a heading

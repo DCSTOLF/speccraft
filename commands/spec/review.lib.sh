@@ -979,6 +979,10 @@ _review_compose_payload_stream() {
   shift 2
 
   local mode="" digest_out="" diff="" changed=""
+  # The default is byte-identical to the literal this composer carried before
+  # `--label` existed, because spec 0052's payload rows assert those bytes.
+  local label="Spec under review (frozen for this round)"
+  local label_seen=0
   local inline_set="" reference_set="" nl=$'\n'
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -987,6 +991,7 @@ _review_compose_payload_stream() {
       --digest-out) digest_out="${2:-}"; shift; mode="" ;;
       --diff)       diff="${2:-}"; shift; mode="" ;;
       --changed)    changed="${2:-}"; shift; mode="" ;;
+      --label)      label="${2:-}"; label_seen=1; shift; mode="" ;;
       --*) review_error "review_compose_payload: unknown option '$1'"; return 1 ;;
       *)
         case "$mode" in
@@ -1000,6 +1005,13 @@ _review_compose_payload_stream() {
   done
   [ -n "$digest_out" ] || {
     review_error "review_compose_payload: --digest-out <path> is required (the digests must travel OUTSIDE the payload)"
+    return 1
+  }
+  # An explicitly EMPTY label is refused rather than composed. `## ` with
+  # nothing after it reads to the reviewer as a composer bug, and it is exactly
+  # what an unset shell variable at the call site produces.
+  [ "$label_seen" -eq 0 ] || [ -n "$label" ] || {
+    review_error "review_compose_payload: --label requires a non-empty value (an empty label composes a bare '## ' heading)"
     return 1
   }
 
@@ -1035,9 +1047,15 @@ _review_compose_payload_stream() {
     esac
   done < "$template"
 
-  # 2. the spec under review, from the round's frozen image. The composer never
-  #    names spec.md — it reads only the path it is given (AC16).
-  printf '\n## Spec under review (frozen for this round)\n\n'
+  # 2. the document under review, from the round's frozen image. The composer
+  #    never names spec.md — it reads only the path it is given (AC16).
+  #
+  #    The heading is the caller's `--label`, because two of AC8's five branches
+  #    do not review a spec at all: arch holds a `design.md` and pm a
+  #    `brief.md`. Calling those "Spec under review" tells the reviewer to go
+  #    looking for acceptance criteria a product brief does not have, and sends
+  #    it hunting a document that is not in the payload.
+  printf '\n## %s\n\n' "$label"
   cat -- "$spec_src"
 
   # 3. each inline file, in full, under its repo-relative path.
@@ -1392,6 +1410,115 @@ EOF
 $got
 EOF
   printf 'ok\n'
+}
+
+# ---------------------------------------------------------------------------
+# AC17 — two byte-identical artifacts are a dispatch failure, not two verdicts.
+#
+# This is the false-quorum bug the whole programme started from. If two
+# reviewers' `.out` files are byte-identical, the round did not consult two
+# models: something dispatched one reviewer twice, or wrote one response to
+# both paths. Counting them as agreement reports a quorum of N for a round that
+# asked one model once — the most misleading output this system can produce,
+# because it is indistinguishable from genuine consensus.
+#
+# Spec 0052 left this as runbook PROSE ("hash-compare the outputs before
+# counting them"), which nothing enforced.
+# ---------------------------------------------------------------------------
+
+# review_hash_compare_outputs <round-dir> — zero when every `<agent>.out` in
+# the round is distinct; non-zero naming each colliding PAIR otherwise.
+#
+# Compared by digest over the FILES, not over captured strings: the codex
+# adapter and the dispatcher both pass rawOutput through `$(...)`, which strips
+# every trailing newline, and then print one back. Two responses differing only
+# in trailing whitespace therefore arrive byte-identical, and a comparison on
+# captured values would see a difference the reviewers' real bytes do not have.
+#
+# Pairwise, not "all equal": a round of three where two collide is still a
+# dispatch bug, and the pair has to be named rather than the odd one out.
+review_hash_compare_outputs() {
+  local dir="${1:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_hash_compare_outputs: round dir not found: '${dir:-}'"
+    return 2
+  }
+
+  local f agent digest table="" line other_agent other_digest found=0
+  for f in "$dir"/*.out; do
+    [ -f "$f" ] || continue
+    agent="${f##*/}"; agent="${agent%.out}"
+    digest="$(review_digest "$f")" || return 2
+    # Walk what we have so far, so the FIRST member of a colliding pair is
+    # named alongside the one that collided with it.
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      other_digest="${line%% *}"
+      other_agent="${line#* }"
+      [ "$other_digest" = "$digest" ] || continue
+      review_error "review: '$other_agent' and '$agent' returned BYTE-IDENTICAL output ($digest)."
+      review_error "  That is a dispatch fault, not agreement: one model was asked once and recorded twice."
+      printf '%s %s\n' "$other_agent" "$agent"
+      found=1
+    done <<EOF
+$table
+EOF
+    table="${table}${digest} ${agent}
+"
+  done
+  [ "$found" -eq 0 ] || return 1
+  return 0
+}
+
+# review_hash_collision_outcomes <round-dir> <outcomes-file> — rewrite every
+# colliding reviewer's record to `failed duplicate-output`.
+#
+# Reporting a collision is not enough. Unless the records are actually changed,
+# the round still counts both as approvals and still reports consensus — with
+# the diagnostic printed harmlessly beside it. Both members of a pair are
+# failed, because the digest cannot say which one is the duplicate.
+review_hash_collision_outcomes() {
+  local dir="${1:-}" outcomes="${2:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_hash_collision_outcomes: round dir not found: '${dir:-}'"
+    return 2
+  }
+  [ -n "$outcomes" ] && [ -f "$outcomes" ] || {
+    review_error "review_hash_collision_outcomes: outcomes file not found: '${outcomes:-}'"
+    return 2
+  }
+
+  local pairs rc=0
+  pairs="$(review_hash_compare_outputs "$dir" 2>/dev/null)" || rc=$?
+  [ "$rc" -ne 2 ] || return 2
+  [ -n "$pairs" ] || return 0
+
+  # The set of implicated agents, one per line.
+  local bad="" a b line
+  while IFS=' ' read -r a b; do
+    [ -n "$a" ] || continue
+    bad="${bad}${a}
+${b}
+"
+  done <<EOF
+$pairs
+EOF
+
+  local tmp agent rest
+  tmp="$(mktemp)" || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    agent="${line%% *}"
+    rest="${line#* }"
+    if printf '%s\n' "$bad" | grep -qxF -- "$agent"; then
+      printf '%s failed duplicate-output\n' "$agent" >> "$tmp"
+    else
+      printf '%s\n' "$line" >> "$tmp"
+    fi
+  done < "$outcomes"
+  cat -- "$tmp" > "$outcomes"
+  rm -f "$tmp"
+  return 1
 }
 
 # review_attestation_outcome <validator-token> — map what

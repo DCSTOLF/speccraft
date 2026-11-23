@@ -309,3 +309,381 @@ allowed_tools() {
   run grep -qE 'backend[^.]*unchanged|uses, unchanged' "$probe"
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AC17 — two byte-identical artifacts are a dispatch failure, not two verdicts
+#
+# This is the false-quorum bug that started the whole programme. If two
+# reviewers' `.out` files are byte-identical, the round did not consult two
+# models: something dispatched one reviewer twice, or wrote one response to
+# both paths. Counting them as agreement reports "quorum of 2" for a round that
+# asked one model once — the single most misleading output this system can
+# produce, because it looks exactly like consensus.
+#
+# Spec 0052 left this as runbook PROSE ("hash-compare the outputs before
+# counting them"), which nothing enforces. These rows pin a real helper.
+# ---------------------------------------------------------------------------
+
+LIBSH() { printf '%s\n' "$PLUGIN_DIR/commands/spec/review.lib.sh"; }
+
+@test "two byte-identical agent.out artifacts in one round are reported as a dispatch failure" {
+  source "$(LIBSH)"
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  printf 'verdict: approve\n' > "$d/codex.out"
+  printf 'verdict: approve\n' > "$d/claude-p.out"
+
+  run review_hash_compare_outputs "$d"
+  [ "$status" -ne 0 ] || {
+    echo "identical outputs must NOT be accepted as two verdicts" >&2
+    return 1
+  }
+  # Both agents named, so an operator can tell WHICH pair collided rather than
+  # being told only that something did.
+  printf '%s\n' "$output" | grep -qF 'codex' || {
+    echo "the failure must name the first agent; got: $output" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF 'claude-p' || {
+    echo "the failure must name the second agent; got: $output" >&2
+    return 1
+  }
+}
+
+@test "two byte-identical subagent artifacts are reported the same way" {
+  source "$(LIBSH)"
+  # AC17 says "including two subagents". A subagent's artifact is written by
+  # the orchestrating session rather than by a CLI, so the duplicate-write path
+  # is MORE likely there, not less — and the helper must not care about mode.
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  printf 'verdict: changes-requested\nconcerns: []\n' > "$d/sub-a.out"
+  printf 'verdict: changes-requested\nconcerns: []\n' > "$d/sub-b.out"
+
+  run review_hash_compare_outputs "$d"
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -qF 'sub-a' && printf '%s\n' "$output" | grep -qF 'sub-b' || {
+    echo "both subagents must be named; got: $output" >&2
+    return 1
+  }
+}
+
+@test "distinct outputs in one round are accepted" {
+  source "$(LIBSH)"
+  # The premise check. Without it, a helper that rejected every round would
+  # satisfy both rows above.
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  printf 'verdict: approve\n' > "$d/codex.out"
+  printf 'verdict: changes-requested\n' > "$d/claude-p.out"
+
+  run review_hash_compare_outputs "$d"
+  [ "$status" -eq 0 ] || {
+    echo "two genuinely different verdicts must be accepted; got: $output" >&2
+    return 1
+  }
+}
+
+@test "outputs differing only in trailing newlines are NOT a collision" {
+  source "$(LIBSH)"
+  # The comparison must be over the FILES, and this is the row that proves it.
+  # A capture-based implementation (`a=$(cat f1); b=$(cat f2)`) strips every
+  # trailing newline, so it would call these two equal and fail an honest round
+  # as a dispatch fault — refusing two genuinely different verdicts. AC17 says
+  # BYTE-identical, and these are not byte-identical.
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  printf 'verdict: approve\n'     > "$d/codex.out"
+  printf 'verdict: approve\n\n\n' > "$d/claude-p.out"
+
+  run review_hash_compare_outputs "$d"
+  [ "$status" -eq 0 ] || {
+    echo "files differing in trailing newlines are distinct and must be accepted; got: $output" >&2
+    return 1
+  }
+}
+
+@test "byte-identical outputs collide even when both end in several newlines" {
+  source "$(LIBSH)"
+  # The other half: the file-based comparison must still catch a real duplicate
+  # whose bytes happen to include trailing blank lines, so the row above cannot
+  # have been satisfied by ignoring trailing whitespace altogether.
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  printf 'verdict: approve\n\n\n' > "$d/codex.out"
+  printf 'verdict: approve\n\n\n' > "$d/claude-p.out"
+
+  run review_hash_compare_outputs "$d"
+  [ "$status" -ne 0 ] || {
+    echo "identical bytes must collide regardless of trailing newlines; got: $output" >&2
+    return 1
+  }
+}
+
+@test "a single reviewer's round is not a collision with itself" {
+  source "$(LIBSH)"
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  printf 'verdict: approve\n' > "$d/codex.out"
+  run review_hash_compare_outputs "$d"
+  [ "$status" -eq 0 ] || {
+    echo "one reviewer must not collide with itself; got: $output" >&2
+    return 1
+  }
+}
+
+@test "a round with no artifacts at all is not reported as a collision" {
+  source "$(LIBSH)"
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  run review_hash_compare_outputs "$d"
+  [ "$status" -eq 0 ] || {
+    echo "an empty round is inert, not a dispatch bug; got: $output" >&2
+    return 1
+  }
+}
+
+@test "three artifacts with one duplicated pair are reported" {
+  source "$(LIBSH)"
+  # So the comparison is pairwise rather than "all equal".
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  printf 'A\n' > "$d/one.out"
+  printf 'B\n' > "$d/two.out"
+  printf 'A\n' > "$d/three.out"
+  run review_hash_compare_outputs "$d"
+  [ "$status" -ne 0 ] || {
+    echo "a duplicated pair among three must be caught; got: $output" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF 'one' && printf '%s\n' "$output" | grep -qF 'three' || {
+    echo "the colliding PAIR must be named, not the odd one out; got: $output" >&2
+    return 1
+  }
+}
+
+@test "the runbook says to hash-compare before counting verdicts" {
+  # The helper is useless if the runbook never calls it: this is the step that
+  # 0052 left as prose and nothing enforced.
+  grep -qE 'review_hash_(compare_outputs|collision_outcomes)' "$RUNBOOK" || {
+    echo "the runbook does not call the hash-compare step at all" >&2
+    return 1
+  }
+  # And it must say the step comes BEFORE counting, which is the whole point:
+  # a collision discovered after the quorum is computed changes nothing.
+  grep -qiE 'before counting|not count' "$RUNBOOK" || {
+    echo "the runbook does not say the comparison precedes counting" >&2
+    return 1
+  }
+}
+
+@test "neither verdict is counted when the hashes match" {
+  source "$(LIBSH)"
+  # The consequence that matters. A collision must not merely be REPORTED
+  # somewhere — it must keep both records out of the quorum count, or a round
+  # still reports consensus while naming the bug beside it.
+  local d="$TEST_DIR/round"; mkdir -p "$d"
+  printf '%s\n' 'codex approve' 'claude-p approve' > "$d/outcomes.txt"
+  printf 'verdict: approve\n' > "$d/codex.out"
+  printf 'verdict: approve\n' > "$d/claude-p.out"
+
+  # Premise: at quorum 1 these two records WOULD meet quorum on their own.
+  review_approval_quorum_met 1 "$d/outcomes.txt" || {
+    echo "premise failed: two approvals must meet quorum 1 before the rewrite" >&2
+    return 1
+  }
+
+  # After the collision is folded in, both become non-verdicts.
+  review_hash_collision_outcomes "$d" "$d/outcomes.txt" || true
+  run review_approval_quorum_met 1 "$d/outcomes.txt"
+  [ "$status" -ne 0 ] || {
+    echo "a collision must leave quorum unmet; outcomes now:" >&2
+    cat "$d/outcomes.txt" >&2
+    return 1
+  }
+  grep -qF 'failed duplicate-output' "$d/outcomes.txt" || {
+    echo "each colliding reviewer must be recorded by name; got:" >&2
+    cat "$d/outcomes.txt" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# The runbook's literal calls are checked against the real functions.
+#
+# Cross-model review round 2 found that §2 passed a PATH to
+# review_budget_check, which takes a byte count and refuses anything else —
+# so the shared runbook's very first gate errored for every reviewer. No test
+# existed because the runbook is markdown, and nothing had ever compared its
+# fenced calls against the functions they name. These rows close that.
+# ---------------------------------------------------------------------------
+
+@test "the runbook never passes a path where review_budget_check wants bytes" {
+  # The exact defect: `review_budget_check "$ROUND_DIR/payload.md" …`.
+  grep -nE 'review_budget_check[[:space:]]+"?\$[A-Za-z_{]*(ROUND_DIR|ART|PAYLOAD)' "$RUNBOOK" && {
+    echo "review_budget_check is being passed a path; it takes a BYTE COUNT:" >&2
+    grep -nE 'review_budget_check' "$RUNBOOK" >&2
+    return 1
+  }
+  # And it must be called with something byte-shaped at all.
+  grep -qE 'review_budget_check[[:space:]]+"\$BYTES"' "$RUNBOOK" || {
+    echo "the runbook does not pass a measured byte count to review_budget_check:" >&2
+    grep -nE 'review_budget_check' "$RUNBOOK" >&2
+    return 1
+  }
+}
+
+@test "review_budget_check really does refuse a path, so the row above is not theoretical" {
+  source "$(LIBSH)"
+  printf 'payload\n' > "$TEST_DIR/payload.md"
+  run review_budget_check "$TEST_DIR/payload.md" stdin
+  [ "$status" -ne 0 ] || {
+    echo "premise failed: review_budget_check accepted a path" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF 'base-10 integer' || {
+    echo "expected the integer diagnostic; got: $output" >&2
+    return 1
+  }
+}
+
+@test "the runbook composes one payload PER AGENT, never one shared file" {
+  # A single shared payload.md defeats two separate contracts at once: the
+  # per-agent digest the subagent attests (AC16) and the duplicate-output check
+  # (AC17), which is meaningless when every reviewer was handed the same file.
+  grep -nE '\$ROUND_DIR/payload\.md' "$RUNBOOK" && {
+    echo "the runbook still dispatches one shared payload.md:" >&2
+    grep -nE 'payload\.md' "$RUNBOOK" >&2
+    return 1
+  }
+  grep -qF '$ROUND_DIR/$agent.payload' "$RUNBOOK" || {
+    echo "the runbook does not name a per-agent payload artifact" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "the runbook's compose, dispatch and attest steps name the SAME artifact" {
+  # They disagreed: §2 wrote payload.md, §3 dispatched payload.md, §6 validated
+  # <agent>.payload — a path the runbook never created. A subagent could return
+  # the right digest for the bytes it was given and still fail validation.
+  local n_payload n_digest
+  n_payload="$(grep -cE '(\$agent|<agent>)\.payload' "$RUNBOOK")"
+  n_digest="$(grep -cE '(\$agent|<agent>)\.digests' "$RUNBOOK")"
+  [ "$n_payload" -ge 3 ] || {
+    echo "expected the per-agent payload named in compose, dispatch and attest; found $n_payload" >&2
+    grep -nE 'payload' "$RUNBOOK" >&2
+    return 1
+  }
+  [ "$n_digest" -ge 2 ] || {
+    echo "expected a per-agent digest sidecar in compose and attest; found $n_digest" >&2
+    grep -nE 'digests' "$RUNBOOK" >&2
+    return 1
+  }
+}
+
+@test "the runbook tells the caller to pass --label" {
+  # Two of the five branches do not review a spec. Without --label an arch or
+  # pm reviewer is told it holds a "Spec under review" and goes looking for
+  # acceptance criteria a design or brief does not have.
+  grep -qF -- '--label' "$RUNBOOK" || {
+    echo "the runbook never mentions --label" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# The same class, in commands/spec/review.md.
+# ---------------------------------------------------------------------------
+
+@test "spec:review never passes the transport where the dispatch mode belongs" {
+  # `MODE="$(review_agent_field … input)"` then
+  # `review_validate_reference_access … "$MODE"` conflates two different
+  # things. The validator's third argument selects the subagent-only
+  # payload_sha256 rule and the permission-denial token, so a subagent round
+  # silently ran the pre-0054 contract.
+  grep -nE 'MODE="\$\(review_agent_field[^)]*input' "$SPEC_CMD" && {
+    echo "MODE is being read from the registry's input field:" >&2
+    grep -nE 'MODE=' "$SPEC_CMD" >&2
+    return 1
+  }
+  grep -qE 'MODE="\$\(review_agent_mode' "$SPEC_CMD" || {
+    echo "spec:review does not read MODE from review_agent_mode:" >&2
+    grep -nE 'MODE=' "$SPEC_CMD" >&2
+    return 1
+  }
+  # And the transport is read separately, since the budget still needs it.
+  grep -qE 'review_agent_transport' "$SPEC_CMD" || {
+    echo "spec:review no longer reads the transport for the budget check" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "spec:review dispatches through the shared mode router" {
+  # A direct review_dispatch_payload call hands a codex-plugin or subagent
+  # entry an empty command and drops it with no named outcome — exactly the
+  # "a bash path never silently drops one" rule (AC13).
+  grep -qF 'review_dispatch_agent' "$SPEC_CMD" || {
+    echo "spec:review does not call review_dispatch_agent" >&2
+    return 1
+  }
+  grep -nE '^\s*review_dispatch_payload ' "$SPEC_CMD" && {
+    echo "spec:review still dispatches directly, bypassing the mode router:" >&2
+    grep -nE 'review_dispatch_payload' "$SPEC_CMD" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "spec:review uses the persistent round dir, not a trap-cleaned temp dir" {
+  # A subagent is dispatched by the orchestrating session in a LATER tool call.
+  # A temp dir cleaned by an EXIT trap is gone by then, so the reviewer finds
+  # no payload — which makes spec:review structurally unable to run a subagent.
+  grep -nE 'review_round_tmpdir|REVIEW_ROUND_TMPDIR' "$SPEC_CMD" && {
+    echo "spec:review still uses the shell-scoped temp dir:" >&2
+    grep -nE 'tmpdir|TMPDIR' "$SPEC_CMD" >&2
+    return 1
+  }
+  grep -qF 'review_round_dir_create' "$SPEC_CMD" || {
+    echo "spec:review does not create a persistent round dir" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "the scoped --diff round passes the prior review to the composer" {
+  # Step 2b promises to attach the prior review as evidence; the composer call
+  # dropped it, so a scoped reviewer got no previous findings and could not
+  # tell whether a change resolved anything. A full-round recipe omits it
+  # silently — there is no error, just a worse review.
+  grep -qE 'prior-review\.md|\$\{PRIOR' "$SPEC_CMD" || {
+    echo "the scoped branch does not pass the prior review inline:" >&2
+    grep -nE 'review_compose_payload' -A4 "$SPEC_CMD" >&2
+    return 1
+  }
+  # It must travel as --inline: a --reference hand-off sends only a path and a
+  # heading index, and the prior review is not a reference-tier file.
+  grep -qE -- '--inline[^|]*PRIOR' "$SPEC_CMD" || {
+    echo "the prior review must ride as --inline evidence" >&2
+    grep -nE -- '--inline' "$SPEC_CMD" >&2
+    return 1
+  }
+}
+
+@test "the runbook and the Go loader agree on the default subagent_type" {
+  # Two readers of one registry must resolve an omitted subagent_type to the
+  # SAME agent. The runbook said `reviewer`; the loader and the spec say
+  # `speccraft:reviewer`. A bare `reviewer` is a different, probably
+  # nonexistent agent, so the shell path would dispatch to nothing.
+  local go_default
+  go_default="$(grep -oE 'a\.SubagentType = "[^"]+"' "$PLUGIN_DIR/tools/internal/delegate/toml.go" \
+    | head -1 | sed 's/.*"\(.*\)"/\1/')"
+  [ -n "$go_default" ] || {
+    echo "could not find the Go default; this row would pass vacuously" >&2
+    return 1
+  }
+  grep -qF "$go_default" "$RUNBOOK" || {
+    echo "the runbook does not name the Go loader's default ('$go_default'):" >&2
+    grep -nF 'subagent_type' "$RUNBOOK" >&2
+    return 1
+  }
+  # And it must not state the BARE name as the default.
+  grep -qE 'defaulting to .?reviewer.?[^:]' "$RUNBOOK" && {
+    echo "the runbook still gives a bare 'reviewer' as the default" >&2
+    return 1
+  }
+  return 0
+}

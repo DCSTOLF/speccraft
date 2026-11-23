@@ -57,38 +57,63 @@ review_tree_snapshot > "$ROUND_DIR/tree.before"
 Taking it after creation is deliberate: round setup writes the round parent and
 its `.gitignore`, and neither may be mistaken for a reviewer write.
 
-## 2. Compose exactly one payload
+## 2. Compose one payload PER AGENT, then budget-check it
+
+Each reviewer gets its **own** artifact path and its own digest sidecar. Never
+one shared `payload.md` dispatched to everyone: §6 attests
+`$ROUND_DIR/<agent>.payload` by digest, and the round's duplicate-output check
+(§6) is meaningless if every reviewer was handed the same file.
+
+`--label` names what the reviewer is holding. The default says "Spec under
+review", which is wrong for `arch:review` and `pm:review` — see the parameter
+table above for the label each command passes.
 
 ```bash
-review_compose_payload "<template>" "<document under review>" \
-  --inline .speccraft/guardrails.md .speccraft/index.md \
-  --reference .speccraft/architecture.md .speccraft/conventions.md \
-  --digest-out "$ROUND_DIR/digests.txt" > "$ROUND_DIR/payload.md"
+for agent in $AGENTS; do
+  ART="$ROUND_DIR/$agent.payload"
+  DIG="$ROUND_DIR/$agent.digests"
+  BYTES="$(review_materialize_payload "$ART" \
+    review_compose_payload "<template>" "<document under review>" \
+      --label "<label for this command>" \
+      --inline .speccraft/guardrails.md .speccraft/index.md \
+      --reference .speccraft/architecture.md .speccraft/conventions.md \
+      --digest-out "$DIG")"
+
+  VERDICT="$(review_budget_check "$BYTES" \
+    "$(review_agent_transport .speccraft/agents.toml "$agent")")"
+  if [ "$VERDICT" != ok ]; then
+    printf '%s refused %s\n' "$agent" "$VERDICT" >> "$OUTCOMES"
+    continue        # PER AGENT: the other reviewers still run
+  fi
+done
 ```
+
+`review_budget_check` takes a **byte count**, not a path — it refuses anything
+that is not a base-10 integer. `review_materialize_payload` echoes exactly that
+count, measured on the file it just wrote, which is why composition goes through
+it rather than through a plain redirect.
 
 The digest sidecar goes **outside** the payload: a reviewer that could read the
 expected digests could return them without opening the files, and attestation
 would prove nothing.
 
-Check the budget before dispatching:
-
-```bash
-review_budget_check "$ROUND_DIR/payload.md" "$(review_agent_transport .speccraft/agents.toml "<agent>")"
-```
+Check the budget **before** dispatching. A budget check afterwards prevents
+nothing — the payload has already gone to the reviewer, and the ten-minute
+timeout this whole command exists to replace still happens.
 
 ## 3. Dispatch each enabled reviewer by its mode
 
 Read the mode from the registry — never assume it:
 
 ```bash
-MODE="$(review_agent_mode .speccraft/agents.toml "<agent>")"
+MODE="$(review_agent_mode .speccraft/agents.toml "$agent")"
 ```
 
 ### `cli` and `acp`
 
 ```bash
-review_dispatch_agent .speccraft/agents.toml "<agent>" "$ROUND_DIR/payload.md" \
-  > "$ROUND_DIR/<agent>.out"
+review_dispatch_agent .speccraft/agents.toml "$agent" "$ROUND_DIR/$agent.payload" \
+  > "$ROUND_DIR/$agent.out"
 ```
 
 The transport comes from the registry's `input`; `acp` always goes by `acp`.
@@ -99,8 +124,8 @@ Same call — the router resolves the plugin root, preflights it, launches a
 background job, polls it, collects the result and classifies it:
 
 ```bash
-review_dispatch_agent .speccraft/agents.toml "<agent>" "$ROUND_DIR/payload.md" \
-  > "$ROUND_DIR/<agent>.out"
+review_dispatch_agent .speccraft/agents.toml "$agent" "$ROUND_DIR/$agent.payload" \
+  > "$ROUND_DIR/$agent.out"
 ```
 
 An unavailable plugin records `failed codex-plugin-unavailable <reason>` and
@@ -116,8 +141,12 @@ a shell.
 
 Use the **Agent** tool directly:
 
-- `subagent_type`: the registry's `subagent_type`, defaulting to `reviewer`.
-- `prompt`: instruct the agent to read `$ROUND_DIR/payload.md` and write its
+- `subagent_type`: the registry's `subagent_type`, defaulting to
+  **`speccraft:reviewer`** — the fully qualified name, matching the Go loader
+  (`toml.go:238`) and the spec. A bare `reviewer` is a different, probably
+  nonexistent agent, and the two readers must not disagree about which agent a
+  registry means.
+- `prompt`: instruct the agent to read `$ROUND_DIR/<agent>.payload` and write its
   response to `$ROUND_DIR/<agent>.out`.
 - `model`: **only when the registry sets one**, and only for a concrete model.
 
@@ -188,8 +217,8 @@ translation, and calling the validator twice risks two different answers for
 one reviewer.
 
 ```bash
-TOK="$(review_validate_reference_access "$ROUND_DIR/<agent>.out" \
-         "$ROUND_DIR/digests.txt" "$MODE" "$ROUND_DIR/<agent>.payload" || true)"
+TOK="$(review_validate_reference_access "$ROUND_DIR/$agent.out" \
+         "$ROUND_DIR/<agent>.digests" "$MODE" "$ROUND_DIR/<agent>.payload" || true)"
 if [ "$TOK" != ok ]; then
   printf '%s %s\n' "<agent>" "$(review_attestation_outcome "$TOK")" >> "$OUTCOMES"
 fi
@@ -204,6 +233,21 @@ the pre-0054 contract.
 
 A verdict without a matching digest for every reference path does not count
 toward either round predicate.
+
+**Then hash-compare, before counting anything.**
+
+```bash
+review_hash_collision_outcomes "$ROUND_DIR" "$OUTCOMES" || true
+```
+
+Two byte-identical `<agent>.out` files mean the round did not consult two
+models — one was asked once and recorded twice. That is a dispatch fault, and
+counting it as agreement reports a quorum of N for a round that consulted one
+reviewer, which is indistinguishable from real consensus. Both members of a
+colliding pair are rewritten to `failed duplicate-output`, because the digest
+cannot say which one is the duplicate. Reporting the collision without
+rewriting the records would leave the round still reporting consensus with the
+diagnostic printed harmlessly beside it.
 
 ## 7. Check the tree, then finalize
 

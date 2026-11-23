@@ -445,3 +445,55 @@ func assertNamesAgentAndModes(t *testing.T, msg, agent string) {
 		}
 	}
 }
+
+// Test_LoadConfig_InlineArrayForm_StillSeesPerAgentKeys pins a library
+// property that agentKeySets silently depends on.
+//
+// agentKeySets walks md.Keys() and starts a new key set on every BARE `agents`
+// key, attaching `agents.<field>` keys to the most recent one. That is correct
+// for `[[agents]]`, and a cross-model review of this code asked whether the
+// INLINE array form (`agents = [{…}]`) emits the same shape — if it did not,
+// every field would collapse into one set or be dropped, `keys["mode"]` would
+// be false, and a `mode = "Subagent"` typo would normalize silently to cli
+// instead of being rejected.
+//
+// It does emit the same shape — `agents` (len 1) then `agents.name` /
+// `agents.mode` — for both forms, so the reviewer's concern does not hold. The
+// row stays because nothing in the TOML library's documented API promises it,
+// and a future version that changed it would break mode validation with no
+// other test noticing.
+//
+// Note the registry layout: the inline array must precede `[defaults]`. After
+// a table header, `agents = [...]` is `defaults.agents` and decodes to no
+// agents at all — which is a property of TOML, not of this loader.
+func Test_LoadConfig_InlineArrayForm_StillSeesPerAgentKeys(t *testing.T) {
+	// The inline array must come BEFORE [defaults]: after a table header,
+	// `agents = [...]` is `defaults.agents`, not a top-level key.
+	root := writeRegistry(t, "agents = [{name = \"needle\", mode = \"Subagent\"}]\n\n"+
+		"[defaults]\nreview_quorum = 1\n")
+	_, err := delegate.LoadConfig(root)
+	if err == nil {
+		t.Fatal("a case-variant mode in the inline-array form must be rejected, got nil error")
+	}
+	assertNamesAgentAndModes(t, err.Error(), "needle")
+}
+
+// And the same registry in the inline form must LOAD when it is valid, so the
+// row above cannot be passing because the inline form is rejected wholesale.
+func Test_LoadConfig_InlineArrayForm_ValidEntryLoads(t *testing.T) {
+	root := writeRegistry(t, "agents = [{name = \"needle\", mode = \"subagent\", model = \"opus\"}]\n\n"+
+		"[defaults]\nreview_quorum = 1\n")
+	cfg, err := delegate.LoadConfig(root)
+	if err != nil {
+		t.Fatalf("a valid inline-array entry must load: %v", err)
+	}
+	if len(cfg.Agents) != 1 {
+		t.Fatalf("want 1 agent, got %d", len(cfg.Agents))
+	}
+	if cfg.Agents[0].Mode != "subagent" {
+		t.Fatalf("want mode subagent, got %q", cfg.Agents[0].Mode)
+	}
+	if cfg.Agents[0].SubagentType != "speccraft:reviewer" {
+		t.Fatalf("want the default subagent_type, got %q", cfg.Agents[0].SubagentType)
+	}
+}

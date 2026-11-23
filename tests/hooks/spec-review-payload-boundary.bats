@@ -216,3 +216,131 @@ compose_scoped() {
   [ -s "$TEST_DIR/full.md" ]
   [ "$(wc -c < "$TEST_DIR/full.md")" -gt 100 ]
 }
+
+# ---------------------------------------------------------------------------
+# AC8 over the remaining composer branches: arch, pm and review-code.
+#
+# AC8 names FIVE branches, and the three below were untested. They are not the
+# same bytes as a full spec round: arch and pm review a `design.md` / `brief.md`
+# rather than a spec, and review-code carries a frozen diff as inline evidence.
+# Each hands the composer a different combination, and the two ends have to
+# hold for all of them — a branch whose payload begins with a newline differs
+# from what the budget measured the moment the Codex companion trims it.
+# ---------------------------------------------------------------------------
+
+# compose_labelled <out> <label> <doc> — a round over a document that is not a
+# spec. `--label` is what lets arch and pm say what the reviewer is holding;
+# without it every payload claims to carry a "Spec under review", which is
+# wrong in two of the five branches and tells a reviewer to look for acceptance
+# criteria a product brief does not have.
+compose_labelled() {
+  review_compose_payload "$TEST_DIR/template.md" "$3" \
+    --label "$2" \
+    --inline .speccraft/guardrails.md .speccraft/index.md \
+    --reference .speccraft/architecture.md .speccraft/conventions.md \
+    --digest-out "$TEST_DIR/digests.txt" > "$1"
+}
+
+@test "the arch payload begins with a non-whitespace byte and ends with one newline" {
+  source "$LIB"
+  make_corpus
+  printf '# Design 0001\n\nDESIGN-BODY\n' > "$TEST_DIR/round/design-frozen.md"
+  compose_labelled "$TEST_DIR/arch.payload" 'Design under review (frozen for this round)' \
+    "$TEST_DIR/round/design-frozen.md"
+  assert_begins_nonblank "$TEST_DIR/arch.payload"
+  assert_one_trailing_newline "$TEST_DIR/arch.payload"
+}
+
+@test "the pm payload begins with a non-whitespace byte and ends with one newline" {
+  source "$LIB"
+  make_corpus
+  printf '# Brief 0001\n\nBRIEF-BODY\n' > "$TEST_DIR/round/brief-frozen.md"
+  compose_labelled "$TEST_DIR/pm.payload" 'Product brief under review (frozen for this round)' \
+    "$TEST_DIR/round/brief-frozen.md"
+  assert_begins_nonblank "$TEST_DIR/pm.payload"
+  assert_one_trailing_newline "$TEST_DIR/pm.payload"
+}
+
+@test "the review-code payload begins with a non-whitespace byte and ends with one newline" {
+  source "$LIB"
+  make_corpus
+  # review-code's shape: the frozen diff rides as inline evidence beside the
+  # memory files, which is one more inline entry than any other branch.
+  printf 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n' > "$TEST_DIR/round/frozen.diff"
+  review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+    --inline .speccraft/guardrails.md .speccraft/index.md "$TEST_DIR/round/frozen.diff" \
+    --reference .speccraft/architecture.md .speccraft/conventions.md \
+    --digest-out "$TEST_DIR/digests.txt" > "$TEST_DIR/code.payload"
+  assert_begins_nonblank "$TEST_DIR/code.payload"
+  assert_one_trailing_newline "$TEST_DIR/code.payload"
+}
+
+@test "an arch document with NO trailing newline still yields one trailing newline" {
+  source "$LIB"
+  make_corpus
+  # AC8 names "inputs that end with no newline and with several" explicitly.
+  # The document is the LAST thing some branches emit, so its missing newline
+  # is the one most likely to reach the payload's end untouched.
+  printf '# Design\n\nNO-TRAILING-NEWLINE' > "$TEST_DIR/round/design-frozen.md"
+  compose_labelled "$TEST_DIR/arch.payload" 'Design under review (frozen for this round)' \
+    "$TEST_DIR/round/design-frozen.md"
+  assert_one_trailing_newline "$TEST_DIR/arch.payload"
+}
+
+@test "an arch document ending with SEVERAL newlines still yields exactly one" {
+  source "$LIB"
+  make_corpus
+  printf '# Design\n\nBODY\n\n\n\n' > "$TEST_DIR/round/design-frozen.md"
+  compose_labelled "$TEST_DIR/arch.payload" 'Design under review (frozen for this round)' \
+    "$TEST_DIR/round/design-frozen.md"
+  assert_one_trailing_newline "$TEST_DIR/arch.payload"
+}
+
+@test "--label changes the heading the reviewer reads" {
+  source "$LIB"
+  make_corpus
+  printf '# Brief\n\nBRIEF-BODY\n' > "$TEST_DIR/round/brief-frozen.md"
+  compose_labelled "$TEST_DIR/pm.payload" 'Product brief under review (frozen for this round)' \
+    "$TEST_DIR/round/brief-frozen.md"
+  grep -qF '## Product brief under review (frozen for this round)' "$TEST_DIR/pm.payload" || {
+    echo "the label did not reach the payload heading:" >&2
+    grep -n '^## ' "$TEST_DIR/pm.payload" >&2
+    return 1
+  }
+  # And the spec wording must be GONE, or a pm reviewer is still told it holds
+  # a spec and goes looking for acceptance criteria.
+  grep -qF '## Spec under review' "$TEST_DIR/pm.payload" && {
+    echo "a labelled payload must not also claim to carry a spec" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "omitting --label leaves the spec heading byte-identical to today's" {
+  source "$LIB"
+  make_corpus
+  # The compatibility half. Spec 0052's composer rows assert the full-round
+  # bytes, so the default must be exactly what it was before --label existed.
+  compose_full "$TEST_DIR/full.payload"
+  grep -qxF '## Spec under review (frozen for this round)' "$TEST_DIR/full.payload" || {
+    echo "the default heading changed; 0052's payload rows depend on it:" >&2
+    grep -n '^## ' "$TEST_DIR/full.payload" >&2
+    return 1
+  }
+}
+
+@test "an empty --label is a named error rather than a bare heading" {
+  source "$LIB"
+  make_corpus
+  # `## ` with nothing after it reads as a composer bug to the reviewer, and it
+  # is the shape an unset shell variable produces at the call site.
+  run review_compose_payload "$TEST_DIR/template.md" round/spec-frozen.md \
+    --label '' \
+    --inline .speccraft/guardrails.md \
+    --reference .speccraft/architecture.md \
+    --digest-out "$TEST_DIR/digests.txt"
+  [ "$status" -ne 0 ] || {
+    echo "an empty label must not compose a bare heading" >&2
+    return 1
+  }
+}
