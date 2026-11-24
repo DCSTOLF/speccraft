@@ -487,8 +487,17 @@ review_finalize_round() {
   # promoted and reviewed_sha256 stamped, and THEN returned 2 — a partially
   # committed round that looks like a failed one. An unresolvable vendor must
   # leave review.md exactly as it was.
-  local flag=""
-  if [ -n "$toml" ]; then
+  # GATED ON A MET QUORUM (operator ruling, 2026-11-24). Code-review rounds 8
+  # and 9 both argued the flag should require one, and the ruling went with
+  # them: `single_vendor_approval` describes an APPROVAL the round acted on, so
+  # reporting it for a round that did not reach quorum invites it to be read as
+  # "approved, by one vendor" when the round was not approved at all.
+  #
+  # Resolution is therefore skipped too when quorum was not met — computing a
+  # value nobody will read, and failing the round over it, would be gratuitous.
+  local flag="" flag_reported=false
+  if [ -n "$toml" ] && [ "$quorum_met" = true ]; then
+    flag_reported=true
     flag="$(review_single_vendor_approval "$toml" "$file" "$authors")" || {
       review_error "review_finalize_round: vendor resolution failed; nothing was written and the round's single_vendor_approval cannot be determined"
       return 2
@@ -525,7 +534,7 @@ review_finalize_round() {
   # code, so an approving agent missing from the registry — which makes
   # review_agent_vendor fail by name — printed `single_vendor_approval: ` with
   # an EMPTY value and still returned 0. A failure reported as success.
-  [ -z "$toml" ] || printf 'single_vendor_approval: %s\n' "$flag"
+  [ "$flag_reported" = true ] && printf 'single_vendor_approval: %s\n' "$flag"
 
   # Every refusal AND every verdict obtained. A report naming only the failures
   # hides a real verdict from the developer; one naming only the verdicts hides

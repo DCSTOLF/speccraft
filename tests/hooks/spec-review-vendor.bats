@@ -617,3 +617,105 @@ make_spec_dir() {
   grep -qE '^reviewed_sha256: [0-9a-f]{64}$' "$SPEC_DIR/review.md"
   grep -qF 'SPEC' "$SPEC_DIR/review-snapshot.md"
 }
+
+# ---------------------------------------------------------------------------
+# The flag is GATED ON A MET QUORUM — operator ruling, 2026-11-24.
+#
+# Code-review rounds 8 and 9 both argued for this and the ruling went with
+# them. The reasoning that won: `single_vendor_approval` describes an APPROVAL
+# the round acted on, so reporting it for a round that never reached quorum
+# invites "approved, by one vendor" where the round was not approved at all.
+#
+# I had argued the other way — that the near-miss round is exactly when an
+# operator wants the record. Recorded here so the next reader sees it was a
+# decision, not an oversight.
+# ---------------------------------------------------------------------------
+
+@test "a round that did not meet quorum reports no flag at all" {
+  source "$LIB"
+  make_spec_dir
+  : > "$TOML"
+  entry sub subagent
+  # One anthropic approval, quorum 2: complete, but not approved.
+  run review_finalize_round "$SPEC_DIR" 2 "$(outcomes 'sub approve')" spec "$TOML" claude
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF 'approval_quorum_met: false'
+  printf '%s\n' "$output" | grep -qF 'single_vendor_approval' && {
+    echo "the flag was reported for a round that did not meet quorum:" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "a round that met quorum still reports the flag" {
+  source "$LIB"
+  make_spec_dir
+  : > "$TOML"
+  entry sub subagent
+  # The converse, so the gate cannot have simply disabled the flag.
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'sub approve')" spec "$TOML" claude
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF 'approval_quorum_met: true'
+  printf '%s\n' "$output" | grep -qxF 'single_vendor_approval: true'
+}
+
+@test "an inert round reports no flag, because it cannot have met quorum" {
+  source "$LIB"
+  make_spec_dir
+  : > "$TOML"
+  entry sub subagent
+  run review_finalize_round "$SPEC_DIR" 1 "$(outcomes 'sub timeout')" spec "$TOML" claude
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF 'responses_complete: false'
+  printf '%s\n' "$output" | grep -qF 'single_vendor_approval' && {
+    echo "an inert round reported the flag" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "per-verdict mode, model and vendor are NOT gated on quorum" {
+  source "$LIB"
+  make_spec_dir
+  : > "$TOML"
+  entry sub subagent
+  entry codex cli '["codex", "exec"]'
+  # AC23 asks for each verdict's mode, requested model and vendor
+  # unconditionally — they describe the verdicts OBTAINED, not the approval.
+  # Only the round-level flag is a claim about an approval.
+  run review_finalize_round "$SPEC_DIR" 2 \
+    "$(outcomes 'sub approve' 'codex changes-requested')" spec "$TOML" claude
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF 'approval_quorum_met: false'
+  printf '%s\n' "$output" | grep -qE '^verdict: sub approve .*vendor=anthropic' || {
+    echo "the per-verdict vendor was suppressed with the flag:" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qE '^verdict: codex changes-requested .*vendor=openai'
+}
+
+@test "an unresolvable vendor is not fatal when quorum was not met" {
+  source "$LIB"
+  make_spec_dir
+  : > "$TOML"
+  entry known cli '["codex", "exec"]'
+  # Resolution is skipped along with the reporting, so a round nobody will read
+  # the flag for is not failed over a value nobody asked for. The fatal arm is
+  # pinned by the quorum-met row below it.
+  printf 'gone approve\n' > "$TEST_DIR/outcomes.txt"
+  run review_finalize_round "$SPEC_DIR" 2 "$TEST_DIR/outcomes.txt" spec "$TOML" claude
+  [ "$status" -eq 0 ] || {
+    echo "a below-quorum round was failed over a flag it does not report:" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+  # …and WITH quorum met the same registry error is still fatal, and still
+  # leaves the spec dir untouched.
+  local before
+  before="$(cat "$SPEC_DIR/review-snapshot.md")"
+  run review_finalize_round "$SPEC_DIR" 1 "$TEST_DIR/outcomes.txt" spec "$TOML" claude
+  [ "$status" -eq 2 ]
+  [ "$(cat "$SPEC_DIR/review-snapshot.md")" = "$before" ]
+}

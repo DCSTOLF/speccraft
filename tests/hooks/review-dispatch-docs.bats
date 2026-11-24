@@ -372,3 +372,119 @@ EOF
   done
   return 0
 }
+
+@test "the cross-reviewer template says the flag is omitted below quorum" {
+  # The round reports no `single_vendor_approval:` line when quorum was not
+  # met (operator ruling, 2026-11-24). A synthesizer that did not know this
+  # would guess a value for the frontmatter field — inventing a claim about an
+  # approval that never happened.
+  local cross="$PLUGIN_DIR/agents/cross-reviewer.md"
+  grep -qiE 'only when quorum was met|omit unless quorum' "$cross" || {
+    echo "cross-reviewer.md does not say the flag is quorum-gated:" >&2
+    grep -nF 'single_vendor_approval' "$cross" >&2
+    return 1
+  }
+  grep -qiE 'omit the field|rather than guessing' "$cross" || {
+    echo "cross-reviewer.md does not say what to do when the line is absent" >&2
+    return 1
+  }
+}
+
+@test "the runbook says the per-verdict vendor fields are not quorum-gated" {
+  # Only the round-level flag is a claim about an approval; the per-verdict
+  # fields describe the verdicts obtained and exist either way (AC23).
+  local runbook="$PLUGIN_DIR/skills/review-round/SKILL.md"
+  grep -qiE 'NOT gated|not gated' "$runbook" || {
+    echo "the runbook does not distinguish the gated flag from the per-verdict fields:" >&2
+    grep -nF 'single_vendor_approval' "$runbook" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# The shipped default a fresh /speccraft:init can actually run.
+#
+# Operator ruling, 2026-11-24. The template enabled four reviewers: the three
+# `cli` entries by omission (they predate this spec) plus the new `subagent`.
+# On a host without those binaries all three dispatches fail,
+# `responses_complete` goes false, and NO review.md is written — even though
+# the subagent approved. An enabled reviewer whose binary is missing does not
+# degrade gracefully; it makes the whole round inert.
+#
+# So exactly one reviewer ships enabled: the one that needs nothing installed.
+# This is also what spec 0054 §6 already described ("with only the `subagent`
+# entry enabled, quorum can be met by a Claude reviewer…"), so the template now
+# matches its own documentation.
+# ---------------------------------------------------------------------------
+
+@test "the template ships exactly one enabled reviewer" {
+  local name blk enabled=""
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    blk="$(entry_block "$name")"
+    printf '%s\n' "$blk" | grep -qE '^[ \t]*enabled[ \t]*=[ \t]*false' && continue
+    enabled="$enabled $name"
+  done <<EOF
+$(entry_names)
+EOF
+  [ "$(printf '%s\n' $enabled | grep -c .)" -eq 1 ] || {
+    echo "expected exactly 1 enabled reviewer, got:$enabled" >&2
+    echo "an enabled reviewer whose binary is absent makes every round inert" >&2
+    return 1
+  }
+}
+
+@test "the one enabled reviewer is the one that needs no binary" {
+  local name blk
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    blk="$(entry_block "$name")"
+    printf '%s\n' "$blk" | grep -qE '^[ \t]*enabled[ \t]*=[ \t]*false' && continue
+    # The enabled one must be the subagent: no cmd, nothing to install.
+    printf '%s\n' "$blk" | grep -qE '^[ \t]*mode[ \t]*=[ \t]*"subagent"' || {
+      echo "the enabled reviewer '$name' is not the install-free one:" >&2
+      printf '%s\n' "$blk" >&2
+      return 1
+    }
+    printf '%s\n' "$blk" | grep -qE '^[ \t]*cmd[ \t]*=' && {
+      echo "the enabled reviewer '$name' carries a cmd" >&2
+      return 1
+    }
+  done <<EOF
+$(entry_names)
+EOF
+  return 0
+}
+
+@test "each cli entry ships explicitly disabled, not merely absent" {
+  # `enabled` is opt-OUT (an absent key means true), so "not enabled" has to be
+  # written down. That is exactly how the three cli entries came to be enabled
+  # in the first place — nobody ever wrote it.
+  local name blk missing=""
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    blk="$(entry_block "$name")"
+    printf '%s\n' "$blk" | grep -qE '^[ \t]*mode[ \t]*=[ \t]*"(subagent)"' && continue
+    printf '%s\n' "$blk" | grep -qE '^[ \t]*enabled[ \t]*=[ \t]*false' || missing="$missing $name"
+  done <<EOF
+$(entry_names)
+EOF
+  [ -z "$missing" ] || {
+    echo "entries enabled by omission:$missing" >&2
+    return 1
+  }
+}
+
+@test "the template explains why the cli entries ship disabled" {
+  # Without the reason, the next reader re-enables them to be helpful and
+  # reintroduces the inert round on every bare host.
+  grep -qiE 'ship(s)? DISABLED|ship disabled' "$TEMPLATE" || {
+    echo "the template does not say the cli entries ship disabled" >&2
+    return 1
+  }
+  grep -qiE 'no review\.md is written|round is incomplete' "$TEMPLATE" || {
+    echo "the template does not say what an absent binary costs:" >&2
+    grep -niE 'disabled' "$TEMPLATE" >&2
+    return 1
+  }
+}

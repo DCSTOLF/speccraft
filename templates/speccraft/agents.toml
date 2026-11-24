@@ -44,6 +44,7 @@ cmd = ["codex", "exec", "--full-auto"]
 input = "stdin"       # "stdin" | "argv" | "file"
 reference_read = true
 strengths = ["refactoring", "review"]
+enabled = false
 
 [[agents]]
 name = "opencode"
@@ -52,6 +53,7 @@ cmd = ["opencode", "run"]
 input = "stdin"
 reference_read = true
 strengths = ["analysis", "planning"]
+enabled = false
 
 [[agents]]
 name = "claude-p"
@@ -60,6 +62,7 @@ cmd = ["claude", "-p"]
 input = "stdin"
 reference_read = true
 strengths = ["general"]
+enabled = false
 
 # The reviewer that needs nothing installed. It runs inside the orchestrating
 # session via the Agent tool, reading its payload from the round directory and
@@ -80,10 +83,18 @@ strengths = ["general", "review"]
 # ---------------------------------------------------------------------------
 # A note on the SAME-VENDOR DEFAULT.
 #
-# The `cli` entries above need their binaries on PATH. The `subagent` entry
-# does not — it runs inside the Claude Code session you are already in. So on a
-# machine with no aux CLI installed, the only reviewer that actually answers is
-# the subagent, and quorum (1, below) can be met by a Claude reviewer on a
+# As shipped, exactly ONE reviewer is enabled: the `subagent`. It is the only
+# one that needs nothing installed — it runs inside the Claude Code session you
+# are already in — so a fresh repo can run a real review round immediately.
+#
+# The three `cli` entries above ship DISABLED because they need their binaries
+# on PATH, and an enabled reviewer whose binary is missing does not degrade
+# gracefully: its dispatch fails, the round is INCOMPLETE, and no `review.md`
+# is written at all — even if another reviewer approved. Enable the ones you
+# actually have.
+#
+# The consequence of the default is worth saying out loud: with only the
+# subagent enabled, quorum (1, below) can be met by a Claude reviewer on a
 # Claude-authored document. A round like that records
 # `single_vendor_approval: true` in its report and in `review.md`.
 #

@@ -136,6 +136,22 @@ func Test_ShippedTemplate_HasAnEnabledReviewerNeedingNoBinary(t *testing.T) {
 		}
 		found++
 	}
+	// And exactly one reviewer is enabled IN TOTAL. An enabled reviewer whose
+	// binary is absent does not degrade gracefully: its dispatch fails,
+	// responses_complete goes false, and no review.md is written even if
+	// another reviewer approved. So a fresh repo ships only the one that needs
+	// nothing installed (operator ruling, 2026-11-24).
+	enabled := 0
+	for _, a := range cfg.Agents {
+		if a.Enabled == nil || *a.Enabled {
+			enabled++
+		}
+	}
+	if enabled != 1 {
+		t.Errorf("want exactly 1 ENABLED reviewer in the shipped template, got %d: "+
+			"any enabled entry whose binary is missing makes every round inert", enabled)
+	}
+
 	if found != 1 {
 		t.Errorf("want exactly 1 ENABLED install-free reviewer, got %d: a fresh "+
 			"repo with none has no reviewer that answers at all, and more than "+

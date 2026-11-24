@@ -430,6 +430,12 @@ per-verdict `mode=`/`model=`/`vendor=` — so ACs 23 and 23a are simply absent
 from every real round, which is exactly how they shipped dead until round 8
 noticed that no caller passed them.
 
+The flag itself is reported **only when quorum was met** — it describes an
+approval the round acted on, so a line on a round that was never approved
+invites "approved, by one vendor" where there was no approval. The per-verdict
+`mode=`/`model=`/`vendor=` fields are NOT gated: those describe the verdicts
+obtained, which exist either way.
+
 `<KIND>` is not decoration. It selects which durable writes finalize performs:
 `spec` promotes `review-snapshot.md` and stamps the fingerprint; `design` and
 `brief` do neither, because those documents have neither; `code` writes nothing

@@ -1561,7 +1561,35 @@ shown). We cannot read another plugin's definitions, so the options are a named
 refusal or a check of the wrong file. A custom `subagent_type` within speccraft
 is unaffected.
 
-#### Two findings deliberately NOT changed
+#### Both of those findings were then RULED ON by the operator (2026-11-24)
+
+Presented as a questionnaire; both rulings are implemented in T70.5/T70.6.
+
+**1. The vendor flag IS gated on a met quorum — my recommendation was
+overruled.** I argued for keeping it ungated (below), and the ruling went with
+the two reviewers instead. Their reasoning, which I now think is the better
+one: `single_vendor_approval` describes an approval the round ACTED ON, so a
+line on a round that never reached quorum invites "approved, by one vendor"
+where the round was not approved at all. Resolution is skipped along with the
+reporting, so a below-quorum round is not failed over a value nobody reads —
+but with quorum met an unresolvable vendor is still fatal and still leaves the
+spec dir untouched. The per-verdict `mode=`/`model=`/`vendor=` fields are NOT
+gated: AC23 asks for them unconditionally, and they describe the verdicts
+obtained rather than the approval.
+
+**2. The shipped template now enables exactly ONE reviewer**, and the operator
+confirmed that changing `/speccraft:init` behaviour for the future is fine. The
+three `cli` entries ship `enabled = false`; the `subagent` — the only reviewer
+that needs nothing installed — ships enabled. This is what §6 already
+described, so the template now matches its own documentation.
+
+`enabled` is opt-OUT, which is exactly how those three came to be enabled: an
+absent key means true and nobody ever wrote one. A row now asserts each is
+disabled EXPLICITLY, and the template says why — without the reason the next
+reader re-enables them to be helpful and reintroduces an inert round on every
+bare host.
+
+#### The original framing, kept for the record
 
 - **The vendor flag is reported below quorum.** Raised in rounds 8 and 9; codex
   argues it should require a met quorum. AC23a's example has quorum met but the

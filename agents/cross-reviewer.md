@@ -43,7 +43,7 @@ and stop, rather than "agreeing with yourself" and reporting a quorum of one.
    reviewers: [<agent1>, <agent2>]
    quorum: <N>
    verdict: <overall verdict>
-   single_vendor_approval: <true | false>
+   single_vendor_approval: <true | false>    # omit unless quorum was met
    generated: <ISO 8601 timestamp>
    ---
 
@@ -76,6 +76,11 @@ and stop, rather than "agreeing with yourself" and reporting a quorum of one.
 
    **Action:** <concrete next step for the spec author>
    ```
+
+   **The round reports `single_vendor_approval` only when quorum was met.** If
+   the report has no such line, omit the field from the frontmatter rather than
+   guessing a value — its absence means the round was not approved, so there is
+   no approval to describe the vendor of.
 
    **When `single_vendor_approval` is `true`, say so in the Synthesis.** It
    means every approval came from one vendor's models — often the same vendor
