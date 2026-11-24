@@ -124,8 +124,16 @@ executing_files() {
   #     where shasum is absent, so both grants must be listed or attestation
   #     breaks on whichever host lacks the preferred primitive. Rewording is not
   #     available here — the string IS the permission.
+  #   review-subagent-agent — added by spec 0054 AC18, for the same reason one
+  #     step further in. It pins `agents/reviewer.md`'s `tools:` list EXACTLY,
+  #     including `Bash(sha256sum:*)`, because that list is the subagent's only
+  #     confinement: it shares the orchestrating session rather than running in
+  #     a sandbox, so a widened entry must red. An exact-match assertion cannot
+  #     spell the grant any other way, and a membership check would defeat the
+  #     purpose of pinning it.
   expected="$(printf '%s\n' \
     fixtures/spec-review-payload/responses/historical/r4-claudep.out \
+    review-subagent-agent.bats \
     spec-review-round-runbook.bats \
     frontmatter-writer-guard.bats \
     spec-review-payload.bats \

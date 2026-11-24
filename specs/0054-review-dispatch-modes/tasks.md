@@ -121,9 +121,9 @@ contract: done-means-v1
   done: $ grep -q 'byte-unchanged' tests/hooks/spec-review-round-runbook.bats
 - [x] T49 — GREEN: review_finalize_round gains an optional kind parameter
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-runbook.bats tests/hooks/spec-review-payload.bats
-- [ ] T50 — RED: agents/reviewer.md shape and the reviewer-vs-synthesizer contrast (markdown)
-  done: $ test -f tests/hooks/review-subagent-agent.bats && ! test -f agents/reviewer.md
-- [ ] T51 — GREEN: agents/reviewer.md plus the cross-reviewer and SKILL.md amendments
+- [x] T50 — RED: agents/reviewer.md shape and the reviewer-vs-synthesizer contrast (markdown)
+  done: $ test -f tests/hooks/review-subagent-agent.bats && grep -q 'no bare Bash' tests/hooks/review-subagent-agent.bats && grep -q "the other's role" tests/hooks/review-subagent-agent.bats
+- [x] T51 — GREEN: agents/reviewer.md plus the cross-reviewer and SKILL.md amendments
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-subagent-agent.bats && grep -q 'model: inherit' agents/reviewer.md
 - [ ] T52 — RED: custom subagent_type lacking Write, declaring Edit, or unknown
   done: $ test -f tests/hooks/spec-review-subagent.bats && grep -q 'missing-write-tool' tests/hooks/spec-review-subagent.bats

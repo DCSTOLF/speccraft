@@ -989,6 +989,16 @@ Both are landed TEXT that is known-wrong and must not be read as done.
   - `@test "skills/aux-agents/SKILL.md documents both names"` (AC18a)
 - Fails: `agents/reviewer.md` does not exist.
 
+> **Predicate corrected.** T50's `done:` was
+> `test -f tests/hooks/review-subagent-agent.bats && ! test -f agents/reviewer.md`
+> — a RED-STATE predicate, which step 51 is required to falsify. `tasks-verify
+> --run` re-runs the predicates of every task already marked done, so the pair
+> could never both be green and the suite would red the moment T51 landed.
+> Replaced with a durable check that the two negative-assertion rows exist in
+> the test file. The lesson generalises: a `done:` predicate must describe
+> something the NEXT step preserves, so a RED step's predicate belongs on the
+> test's content, never on the absence of the code it tests.
+
 #### Step 51 — Write `agents/reviewer.md`, amend the siblings (GREEN) — **pure markdown**
 - New `agents/reviewer.md`; edit `agents/cross-reviewer.md`'s opening lines;
   extend `skills/aux-agents/SKILL.md` with both names.
