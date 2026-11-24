@@ -1,6 +1,16 @@
 # speccraft aux-agent registry
-# Each agent has a `mode`: "cli" or "acp".
-# CLI mode shells out directly. ACP mode goes through `acpx`.
+#
+# Each agent has a `mode` — how that reviewer is REACHED:
+#
+#   cli           shell out to `cmd` directly
+#   acp           shell out through `acpx`
+#   codex-plugin  hand the job to the Codex plugin's companion, which runs its
+#                 own agent loop and reports the files it touched per job
+#   subagent      dispatched by the orchestrating Claude Code session itself
+#
+# The last two are REVIEW-ONLY. `/speccraft:spec:delegate` and the
+# `aux-delegator` subagent refuse them by name: there is no command to shell out
+# to, so a delegation would compose a prompt and dispatch nothing.
 
 [defaults]
 review_quorum = 1     # how many aux agents must agree for /spec:review
@@ -50,6 +60,55 @@ cmd = ["claude", "-p"]
 input = "stdin"
 reference_read = true
 strengths = ["general"]
+
+# The reviewer that needs nothing installed. It runs inside the orchestrating
+# session via the Agent tool, reading its payload from the round directory and
+# writing its verdict to `<round-dir>/<agent>.out`. Its tools come from
+# `agents/reviewer.md`, which grants Read, Grep, Glob, Write and two scoped
+# digest commands — no Edit, no unscoped shell.
+#
+# `model = "opus"` is set explicitly. Omit it and the reviewer inherits the
+# orchestrator's model, which means the round cannot report which model
+# answered.
+[[agents]]
+name = "subagent"
+mode = "subagent"
+model = "opus"
+reference_read = true
+strengths = ["general", "review"]
+
+# ---------------------------------------------------------------------------
+# A note on vendors, because the default here is a choice and not an accident.
+#
+# As shipped, the enabled reviewers are `codex` (openai) and `subagent`
+# (anthropic): a round that consults two vendors. If you disable one of them —
+# or add `claude-p` and drop `codex` — the round still reports a quorum, but
+# every approval now comes from one vendor's models, often the same vendor that
+# wrote the document under review. A round like that records
+# `single_vendor_approval: true` in its report and in `review.md`.
+#
+# That is a record, not a gate: the round still meets quorum and nothing is
+# refused. It is written down so a reader weeks later can see it, because "two
+# reviewers agreed" reads differently once you know both were the same vendor.
+#
+# Keeping a second vendor in the enabled set is what makes the flag stay false.
+# ---------------------------------------------------------------------------
+
+# Opt-in, and disabled until you have the Codex plugin. `/codex:setup` checks
+# whether the local Codex CLI and companion are ready; run it before setting
+# `enabled = true`, or the round records
+# `failed codex-plugin-unavailable <reason>` for this reviewer every time.
+#
+# The companion takes the job in the background and reports a status and the
+# files it touched, per job — which is why a `codex-plugin` reviewer is never
+# swept into the round's unattributed-write accounting the way concurrent
+# subagents are.
+[[agents]]
+name = "codex-plugin"
+mode = "codex-plugin"
+reference_read = true
+strengths = ["refactoring", "review"]
+enabled = false
 
 # Opt-in ACP. Requires `acpx` installed. Note that ACP is invoked as
 # `acpx <agent> <prompt>` — argv transport, so it is subject to the argv byte

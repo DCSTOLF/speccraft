@@ -1671,7 +1671,15 @@ TOML
   # dispatch line is broken for it on a fresh /speccraft:init.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    [ "$(review_agent_field "$t" "$name" mode)" = "acp" ] && continue
+    # Only `cli` entries dispatch BY COMMAND. Spec 0052 wrote this exception as
+    # `= "acp"`, which was the complete set of command-less modes at the time;
+    # spec 0054 adds `codex-plugin` (the companion takes the job) and
+    # `subagent` (the orchestrating session launches it), and the loader
+    # REFUSES a `cmd` on either. Narrowed to `!= "cli"` so the row states its
+    # own intent instead of enumerating the exceptions of the day — strictly
+    # more precise, and it keeps biting for every entry that does dispatch by
+    # command. See the note at spec 0054's plan step 63.
+    [ "$(review_agent_mode "$t" "$name")" = "cli" ] || continue
     cmd="$(review_agent_cmd "$t" "$name")"
     [ -n "$cmd" ] || { echo "agent '$name' yields no command"; return 1; }
     case "$cmd" in *'['*|*'"'*) echo "agent '$name' cmd is unparsed TOML: $cmd"; return 1 ;; esac

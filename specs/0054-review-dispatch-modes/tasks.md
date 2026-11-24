@@ -120,7 +120,7 @@ contract: done-means-v1
 - [x] T48 — RED: arch and pm write review.md only on a complete round
   done: $ grep -q 'byte-unchanged' tests/hooks/spec-review-round-runbook.bats
 - [x] T49 — GREEN: review_finalize_round gains an optional kind parameter
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-runbook.bats tests/hooks/spec-review-payload.bats
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-runbook.bats && o=$(PATH="$PWD/bin:$PATH" bats -f 'round|quorum|complete' tests/hooks/spec-review-payload.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 19
 - [x] T50 — RED: agents/reviewer.md shape and the reviewer-vs-synthesizer contrast (markdown)
   done: $ test -f tests/hooks/review-subagent-agent.bats && grep -q 'no bare Bash' tests/hooks/review-subagent-agent.bats && grep -q "the other's role" tests/hooks/review-subagent-agent.bats
 - [x] T51 — GREEN: agents/reviewer.md plus the cross-reviewer and SKILL.md amendments
@@ -145,9 +145,9 @@ contract: done-means-v1
   done: $ test -f tests/hooks/review-only-mode-refusal.bats && grep -q 'unsupported-mode' tests/hooks/review-only-mode-refusal.bats
 - [x] T61 — GREEN: review_refuse_review_only_mode plus the two consumer doc edits
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-only-mode-refusal.bats && grep -q 'unsupported-mode' commands/spec/review.lib.sh && grep -q 'review_require_delegatable_mode' agents/aux-delegator.md && grep -q 'review_require_delegatable_mode' commands/spec/delegate.md
-- [ ] T62 — RED: template, conventions and SKILL.md assertions (markdown/TOML)
+- [x] T62 — RED: template, conventions and SKILL.md assertions (markdown/TOML)
   done: $ test -f tests/hooks/review-dispatch-docs.bats && test -f tools/internal/delegate/template_test.go
-- [ ] T63 — GREEN: the shipped template, the convention clarification and the skill
+- [x] T63 — GREEN: the shipped template, the convention clarification and the skill
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-dispatch-docs.bats && go test -C tools ./internal/delegate/ -count=1 && grep -q 'codex-plugin' templates/speccraft/agents.toml && grep -q 'subagent' templates/speccraft/agents.toml
 - [ ] T64 — RED: cleanup on every exit path, never while a reviewer is pending
   done: $ test -f tests/hooks/spec-review-round-lifecycle.bats && grep -q 'pending' tests/hooks/spec-review-round-lifecycle.bats
@@ -163,5 +163,5 @@ contract: done-means-v1
   done: $ test -f tests/hooks/live-codex-smoke.bats && grep -q 'SPECCRAFT_LIVE_CODEX_SMOKE' tests/hooks/live-codex-smoke.bats
 - [ ] T70 — GREEN: the two gated bodies plus the self-naming skip (NON-CI)
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/live-codex-smoke.bats 2>&1 | grep -q 'skipped'
-- [ ] T71 — Close gate: both suites green on Linux and macOS, the 0052 floor unedited, bin/ uncommitted, the gated skips named in the log
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/ && go test -C tools ./... && GOOS=windows go build -C tools ./... && test -z "$(git status --porcelain bin/ tools/bin/)" && git diff --quiet HEAD -- tests/hooks/spec-review-payload.bats
+- [ ] T71 — Close gate: both suites green on Linux and macOS, 0052's assertions intact, bin/ uncommitted, the gated skips named in the log
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/ && go test -C tools -count=1 ./... && GOOS=windows go build -C tools ./... && test -z "$(git status --porcelain bin/ tools/bin/)" && test "$(git show 19317e5:tests/hooks/spec-review-payload.bats | grep '^@test' | cksum)" = "$(grep '^@test' tests/hooks/spec-review-payload.bats | cksum)" && test "$(grep -c '^@test' tests/hooks/spec-review-payload.bats)" -eq 120

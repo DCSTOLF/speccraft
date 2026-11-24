@@ -1359,6 +1359,16 @@ Concretely:
 
 Rationale: the alternative is silent drift. The external tool's own guidance evolves on its own release cadence; speccraft's stale copy then conflicts with the live rule, and the model wastes attention resolving the conflict. The 2026-06-09 cgc + global CLAUDE.md collision that triggered spec 0011 is the concrete instance.
 
+### A user-configured review adapter is not routing (spec 0054)
+
+Spec 0054 adds two reviewer dispatch modes that reach external installs: `codex-plugin` (the Codex plugin's companion) and `subagent` (the orchestrating session's own Agent tool). Documenting them is **not** a violation of the rule above, and the distinction is worth stating because the next reader will otherwise apply the rule and delete the documentation.
+
+- **The entry is the user's.** A `mode` in `.speccraft/agents.toml` is a line the user wrote, or accepted from the shipped template and left in place. Honouring it is speccraft executing a configured choice, not speccraft deciding which tool the model should reach for. The rule above governs *unconditional routing prose*; a registry lookup is the opposite — it has no opinion until the user supplies one.
+- **Mechanism, not preference.** `skills/aux-agents/SKILL.md` and `templates/speccraft/agents.toml` may document what each adapter invokes, what it guarantees, and what to run when it is unavailable (`/codex:setup`). They may not say which to pick. The phrase rule above applies unchanged and is enforced mechanically: `tests/hooks/review-dispatch-docs.bats` greps both files for recommending phrasing and fails on it, with a premise row proving the pattern bites.
+- **Every reviewer is refusable.** Each adapter reports a named failure the round records — `failed codex-plugin-unavailable <reason>`, `failed subagent-launch <reason>` — and the round finalizes around it. So an adapter whose tool is absent costs a named non-verdict, never a wrong answer. That is what makes documenting the mechanism safe: the documentation cannot create a dependency the round does not already handle.
+
+What is still forbidden: telling the model to use one reviewer over another, ordering them, or describing either adapter as the better choice. The shipped template enables one of each vendor and explains the vendor trade-off; it does not rank them.
+
 ### Review snapshot + diff-focused re-review (spec 0035)
 
 `/speccraft:spec:review --diff` runs a read-before-overwrite transaction: a single

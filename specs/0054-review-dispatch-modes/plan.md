@@ -1202,6 +1202,39 @@ Both are landed TEXT that is known-wrong and must not be read as done.
 - All step-62 tests pass, and step 6's `Test_LoadConfig_RealRegistries_
   LoadUnchanged` still passes against the amended template.
 
+> **The 0052 floor had to move by one line, and T71's gate changed shape.**
+>
+> `spec-review-payload.bats` has a row asserting every entry in the shipped
+> template resolves to a runnable command, with `mode = "acp"` skipped —
+> `acp` being the complete set of command-less modes when 0052 wrote it. AC25
+> mandates an **enabled** `subagent` entry, and the loader REFUSES a `cmd` on
+> `subagent` or `codex-plugin`, so that row and AC25 are in direct conflict:
+> the row cannot pass with the template AC25 requires.
+>
+> Resolved by narrowing the skip to `!= "cli"`, which is what the row's own
+> comment already says it means ("every shipped entry must yield something
+> dispatchable" → only `cli` dispatches by command). That is strictly MORE
+> precise than enumerating the exceptions of the day, and it keeps biting for
+> every entry that does dispatch by command. One line removed, nine added, all
+> comment; all 120 rows still pass.
+>
+> T71's gate said `git diff --quiet` on that file. Byte-equality cannot express
+> "0052's assertions are intact" once the mode set grows, so the clause is now
+> the stronger, more honest thing it was standing in for: **every `@test` name
+> byte-identical to 0052's final state** (`19317e5`, verified by `cksum`) and
+> the row count still exactly 120. A deleted, renamed or weakened-away
+> assertion still reds; a precision fix inside a body does not.
+>
+> Also: T71 now runs `go test -count=1`. Both tests in `template_test.go` read
+> a file that is NOT a Go source input, so `go test` serves a cached pass when
+> the template changes — verified by shipping the subagent entry disabled and
+> watching `go test ./internal/delegate/` stay green until `-count=1` was
+> added. The same applies to `Test_LoadConfig_RealRegistries_LoadUnchanged`.
+>
+> **Open, for T71 itself:** that predicate runs the whole bats suite, which
+> takes minutes and will exceed `tasks-verify`'s 30s per-predicate budget. It
+> has to be split or the gate run by hand when T71 lands.
+
 ### Phase H — Lifecycle integration (ACs 14d, 15, 27)
 
 #### Step 64 — Cleanup on every exit path (RED)
