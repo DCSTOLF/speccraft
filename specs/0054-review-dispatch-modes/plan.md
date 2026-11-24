@@ -1610,3 +1610,54 @@ bare host.
   no install. **Changing the shipped default affects every future
   `/speccraft:init` and is not a call to make inside a remediation phase** —
   recorded for the user, and a candidate for its own spec.
+
+
+### AC27 — the close gate, satisfied 2026-11-24
+
+**CI evidence: run `45481446627` on PR #4, conclusion `success`.** All five
+executing jobs green:
+
+| job | runner | result |
+|---|---|---|
+| Go unit tests (Linux) | ubuntu-latest | success |
+| Go unit tests (macOS) | macos-latest | success |
+| Hook tests (bats) | ubuntu-latest | success |
+| Hook tests (bats, macOS) | macos-latest | success |
+| E2E language-only (devcontainer, no API) | ubuntu-latest | success |
+
+`Auto-tag on version bump` and `E2E (devcontainer)` are `skipped` by their own
+`if:` — both are gated on `push` to `main`, which a draft PR is not.
+
+The two gated ACs appear in the macOS log **by name**, which is the half of
+AC27 that stops a green suite from implying the live smoke ran:
+
+```
+AC26  … # skip AC26 skipped: SPECCRAFT_LIVE_CODEX_SMOKE is not 1 …
+AC26a … # skip AC26a skipped: SPECCRAFT_LIVE_CODEX_SMOKE is not 1 …
+```
+
+**Getting there took four CI runs, and the first three were all infrastructure
+or test defects rather than product bugs:**
+
+1. run 1 — Linux bats failed on two of my own tests (an awk range with an
+   interval end pattern; a nested-bats helper clearing `BATS_ROOT`). Both
+   CI-only: see the Phase H.5 notes.
+2. runs 1 and 2 — both macOS jobs cancelled in **under a second** with no
+   runner and zero steps. `ci.yml` pinned `runs-on: macos-14`, which GitHub had
+   retired; the only visible diagnosis was a check-run annotation reading
+   `The configuration 'macos-14-arm64-us-default' is not supported`. The jobs
+   had last run green on 2026-09-30, and nothing surfaced the breakage for
+   ~8 weeks because CI fires only on push/PR to `main`. Unpinned to
+   `macos-latest`.
+3. run 3 — macOS allocated for the first time and the bats suite failed on
+   **exactly one** test, which was a REAL product defect: a local-scope Codex
+   plugin entry could never match on macOS, because the repo root was
+   canonicalized and `.projectPath` was compared raw inside jq, which cannot
+   resolve a symlink. Fixed and pinned on Linux via a symlinked fixture repo.
+4. run 4 — green.
+
+**Still outstanding, and NOT part of AC27:** ACs 26/26a, the manual live smoke.
+The spec frames AC27 as explicitly excluding them, and the harness
+(`tests/hooks/live-codex-smoke.bats`) is done at T69/T70. They need a host with
+the Codex plugin authenticated and they spend real credits, so they are the
+operator's call and are recorded in `changelog.md` when run.
