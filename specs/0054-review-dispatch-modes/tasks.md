@@ -141,10 +141,10 @@ contract: done-means-v1
   done: $ test -f tests/hooks/spec-review-vendor.bats && grep -q 'single_vendor_approval' tests/hooks/spec-review-vendor.bats
 - [x] T59 — GREEN: review_agent_vendor, review_single_vendor_approval, the recorded fields
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-vendor.bats && grep -q 'review_agent_vendor()' commands/spec/review.lib.sh && grep -q 'single_vendor_approval' agents/cross-reviewer.md
-- [ ] T60 — RED: spec:delegate and aux-delegator refuse the review-only modes
+- [x] T60 — RED: spec:delegate and aux-delegator refuse the review-only modes
   done: $ test -f tests/hooks/review-only-mode-refusal.bats && grep -q 'unsupported-mode' tests/hooks/review-only-mode-refusal.bats
-- [ ] T61 — GREEN: review_refuse_review_only_mode plus the two consumer doc edits
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-only-mode-refusal.bats && grep -q 'review-only dispatch mode' commands/spec/review.lib.sh && grep -q 'unsupported-mode' agents/aux-delegator.md && grep -q 'unsupported-mode' commands/spec/delegate.md
+- [x] T61 — GREEN: review_refuse_review_only_mode plus the two consumer doc edits
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-only-mode-refusal.bats && grep -q 'unsupported-mode' commands/spec/review.lib.sh && grep -q 'review_require_delegatable_mode' agents/aux-delegator.md && grep -q 'review_require_delegatable_mode' commands/spec/delegate.md
 - [ ] T62 — RED: template, conventions and SKILL.md assertions (markdown/TOML)
   done: $ test -f tests/hooks/review-dispatch-docs.bats && test -f tools/internal/delegate/template_test.go
 - [ ] T63 — GREEN: the shipped template, the convention clarification and the skill

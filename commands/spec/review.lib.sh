@@ -2380,3 +2380,62 @@ EOF
     printf 'false\n'
   fi
 }
+
+# ---------------------------------------------------------------------------
+# AC23b — `codex-plugin` and `subagent` are REVIEW-ONLY modes.
+#
+# `/speccraft:spec:delegate` and the `aux-delegator` subagent hand a task to an
+# external CLI and integrate the result. Neither can do that through either new
+# mode: `codex-plugin` reaches a companion that runs its own agent loop and
+# reports touched files, and `subagent` can only be started by the
+# orchestrating session's own tooling.
+#
+# A consumer that tried would not fail cleanly. `aux-delegator` composes a
+# prompt and shells out, so a `subagent` entry — which carries no `cmd` at all
+# — would produce an empty command line and a confident-looking empty result.
+# Hence a PRECONDITION, checked before any dispatch.
+#
+# ONE text, here, used by both consumers. Two copies drift, and the second copy
+# is the one nobody updates.
+# ---------------------------------------------------------------------------
+
+REVIEW_ONLY_MODES="codex-plugin subagent"
+REVIEW_DELEGATABLE_MODES="cli acp"
+
+# review_refuse_review_only_mode <mode>
+#   exit 1 with the refusal on stderr — the caller must not dispatch
+#   exit 2 if <mode> is delegatable, which means the CALLER's gate is inverted
+#
+# The message names where the mode DOES work. The operator configured that
+# entry on purpose, so a refusal that only says "no" leaves them to guess.
+#
+# It promises no future support, deliberately: this is a guardrail, not a
+# roadmap. "Not yet" would read as a scheduling accident, and the restriction
+# is structural — a subagent cannot be started from a shell at all.
+review_refuse_review_only_mode() {
+  local mode="${1:-}"
+  [ -n "$mode" ] || { review_error "review_refuse_review_only_mode: mode required"; return 2; }
+  if _review_list_has "$mode" "$REVIEW_DELEGATABLE_MODES"; then
+    review_error "review_refuse_review_only_mode: '$mode' IS delegatable; this helper refuses only $(_review_list_join "$REVIEW_ONLY_MODES") — the calling gate is inverted"
+    return 2
+  fi
+  _review_list_has "$mode" "$REVIEW_ONLY_MODES" || {
+    review_error "review_refuse_review_only_mode: unknown mode '$mode'"
+    return 2
+  }
+  review_error "unsupported-mode: '$mode' is a review-only mode and cannot be used for delegation. Delegation supports $(_review_list_join "$REVIEW_DELEGATABLE_MODES") only. Use this agent through /speccraft:spec:review, /speccraft:arch:review, /speccraft:pm:review or /speccraft:spec:review-code, or point the delegation at a cli or acp entry instead."
+  return 1
+}
+
+# review_require_delegatable_mode <agents.toml> <agent>
+# — the precondition both consumers call. Silent on success: it is a gate, not
+# a step that reports. Launches nothing, by construction — it only reads the
+# registry.
+review_require_delegatable_mode() {
+  local toml="${1:-}" agent="${2:-}" mode
+  # An unknown agent propagates by NAME from review_agent_mode rather than
+  # passing silently: a typo'd registry key must not look like a clean gate.
+  mode="$(review_agent_mode "$toml" "$agent")" || return 2
+  _review_list_has "$mode" "$REVIEW_ONLY_MODES" || return 0
+  review_refuse_review_only_mode "$mode"
+}

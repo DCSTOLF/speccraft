@@ -8,7 +8,17 @@ Delegate "$2..." to aux agent "$1".
 
 Steps:
 
-1. Validate agent "$1" exists in `.speccraft/agents.toml`.
+1. Validate agent "$1" exists in `.speccraft/agents.toml`, **and that its mode
+   can be delegated to at all**:
+   ```bash
+   source "$CLAUDE_PLUGIN_ROOT/commands/spec/review.lib.sh"
+   review_require_delegatable_mode .speccraft/agents.toml "$1" || exit 1
+   ```
+   `codex-plugin` and `subagent` are **review-only** modes: the first reaches a
+   companion that runs its own agent loop, and the second can only be started
+   by the orchestrating session. Neither can be shelled out to with a task, so
+   this gate runs BEFORE any context is composed — the helper prints the one
+   refusal message, naming the four review commands where that agent does work.
 
 2. Invoke the `aux-delegator` subagent with the task and a curated context
    slice:

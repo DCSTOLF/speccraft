@@ -1149,6 +1149,23 @@ Both are landed TEXT that is known-wrong and must not be read as done.
   a precondition.
 - All step-60 tests pass; the existing delegate tests pass unedited.
 
+> **Predicate corrected, and one fixture updated.** T61's `done:` required
+> `grep -q 'unsupported-mode'` in BOTH consumer files — which contradicts this
+> step's own "one text, not two copies": the refusal message lives in the lib,
+> and a row asserts neither consumer inlines it. The predicate now checks the
+> lib for the message and each consumer for the GATE CALL.
+>
+> Renaming `aux-delegator`'s own input parameter `mode` → `task_mode` moved one
+> line of `tests/hooks/fixtures/spec-review-payload/golden/
+> aux-delegator-nonreview.golden`. That golden is spec 0052's, and its purpose
+> is to catch non-review instructions drifting *as a side effect of* a review
+> rewrite. This is not a side effect — it is the point: that file reads both an
+> `agents.toml` `mode` (`cli`/`acp`/`codex-plugin`/`subagent`) and its own
+> `mode` (`review`/`implement`/`analyze`), and that conflation already produced
+> a live defect in this spec. No caller passes the parameter by name, so the
+> rename is safe. Provenance recorded in a new `PROVENANCE.md` beside the
+> golden; `spec-review-payload.bats` itself is byte-unchanged, as T71 requires.
+
 #### Step 62 — Template, convention, skill (RED) — **pure markdown/TOML**
 - Add `tests/hooks/review-dispatch-docs.bats`:
   - `@test "conventions.md External-tool boundaries contains the
