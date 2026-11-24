@@ -328,6 +328,35 @@ REVIEW_AGREEING_VERDICTS="approve approve-with-comments"
 # pre-dispatch budget refusal or a reference read that could not be attested.
 REVIEW_NON_VERDICTS="refused timeout failed attestation-failed"
 
+# The reasons a `failed` outcome can carry — the token immediately after
+# `failed` in a recorded line. Sub-reasons ride in the rest of the line
+# (`failed subagent-launch missing-write-tool`).
+#
+# ONE table, and `spec-review-round-lifecycle.bats` scans the libs to keep it
+# so, in both directions: every reason the libs emit must be registered here,
+# and every reason registered here must be emitted somewhere.
+#
+# Why it matters: these twelve accreted across phases C, E and G, each
+# introduced where it was needed, and nothing listed them. So nothing could
+# tell a NEW reason from a TYPO of an existing one — and a typo'd reason is
+# recorded, classified as a non-verdict, and reported to the operator as if it
+# meant something. The round looks like it explained itself and did not.
+REVIEW_FAILURE_REASONS="codex-cancel-unconfirmed codex-output-unparseable codex-plugin-unavailable codex-task-error codex-wrote-files duplicate-output permission-denied subagent-launch subagent-no-output subagent-permission-denied subagent-stop-failed subagent-wrote-files"
+
+# review_failure_reason_known <reason> — 0 when registered, 1 and a named error
+# otherwise. The error lists the table, so a near-miss is diagnosable from the
+# message alone.
+review_failure_reason_known() {
+  local reason="${1:-}"
+  [ -n "$reason" ] || {
+    review_error "review_failure_reason_known: reason required"
+    return 1
+  }
+  _review_list_has "$reason" "$REVIEW_FAILURE_REASONS" && return 0
+  review_error "review_failure_reason_known: unknown failure reason '$reason' (known: $REVIEW_FAILURE_REASONS)"
+  return 1
+}
+
 # _review_outcome_kind <outcome> — echo "verdict" | "non-verdict"; return 2 and
 # name the token otherwise. An unrecognised outcome must NOT fall through to
 # "non-verdict": a typo would then read as a refusal, quietly making a round

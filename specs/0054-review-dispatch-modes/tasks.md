@@ -165,12 +165,12 @@ contract: done-means-v1
   done: $ test -f tests/hooks/spec-review-round-lifecycle.bats && grep -q 'pending' tests/hooks/spec-review-round-lifecycle.bats
 - [x] T65 — GREEN: review_round_all_terminal plus the runbook cleanup gate
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-lifecycle.bats && grep -q 'review_round_all_terminal()' commands/spec/review-round.lib.sh
-- [ ] T66 — RED: the lease expiry is byte-identical across a round, and four bounded paths survive a concurrent sweep
+- [x] T66 — RED: the lease expiry is byte-identical across a round, and four bounded paths survive a concurrent sweep
   done: $ grep -q 'byte-identical' tests/hooks/spec-review-round-lifecycle.bats && grep -q 'review_round_lease_renew' tests/hooks/spec-review-round-lifecycle.bats
-- [ ] T67 — GREEN: lease margin arithmetic, no re-stamp on any path
+- [x] T67 — GREEN: lease margin arithmetic, no re-stamp on any path
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-lifecycle.bats && ! grep -q 'review_round_lease_renew()' commands/spec/review-round.lib.sh
-- [ ] T68 — REFACTOR: one outcome-token table, pinned by a source-scan assertion
-  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/ && grep -c '_REVIEW_OUTCOME_TOKENS' commands/spec/review.lib.sh
+- [x] T68 — REFACTOR: one outcome-token table, pinned by a source-scan assertion
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-lifecycle.bats && test "$(grep -c '^REVIEW_FAILURE_REASONS=' commands/spec/review*.lib.sh | awk -F: '{s+=$2} END {print s}')" -eq 1 && grep -q 'review_failure_reason_known()' commands/spec/review.lib.sh
 - [ ] T69 — RED: the gated live-smoke harness that skips by name (NON-CI)
   done: $ test -f tests/hooks/live-codex-smoke.bats && grep -q 'SPECCRAFT_LIVE_CODEX_SMOKE' tests/hooks/live-codex-smoke.bats
 - [ ] T70 — GREEN: the two gated bodies plus the self-naming skip (NON-CI)

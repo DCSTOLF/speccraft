@@ -34,6 +34,17 @@ setup() {
   REPO="$TEST_DIR/repo"
   mkdir -p "$REPO/.speccraft"
   cd "$REPO"
+  # A REAL git repo: review_tree_snapshot enumerates through `git ls-files` and
+  # refuses to report an empty snapshot outside a work tree (spec 0054 AC17b).
+  # Without `git init` the lease row below failed on THAT, not on a re-stamp —
+  # which is the guard doing its job, and a reminder to read the message rather
+  # than the exit code.
+  git init -q .
+  git config user.email t@example.com
+  git config user.name  Test
+  printf 'x\n' > .speccraft/index.md
+  git add -A
+  git commit -q -m init
   ROUND_DIR="$(review_round_dir_create spec 0001 600)"
 }
 
@@ -338,6 +349,326 @@ teardown() {
   printf '%s\n' "$sec" | grep -qiE 'deadline[^.]*(not|never) (proof|proven|terminal)|an expired deadline is not' || {
     echo "§7 does not warn that an expired deadline is not proof:" >&2
     printf '%s\n' "$sec" | grep -niE 'terminal|deadline' >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC15 — the lease is written ONCE and never renewed.
+#
+# "Never renewed" is a claim about every code path, so the load-bearing
+# assertion is byte-equality of the lease file across a whole round. That
+# catches a re-stamp under ANY name — `_touch`, `_bump`, an inlined
+# `date`-plus-arithmetic, a well-meaning `review_round_lease_write` call from a
+# later phase — where a grep for `lease_renew` only catches the obvious one.
+#
+# The margin that makes it safe is `+300 s` on top of `review_timeout_s`. Every
+# path a round can take is bounded INSIDE that, or is covered by quarantine
+# instead of by the lease; the survival rows below walk each one.
+# ---------------------------------------------------------------------------
+
+lease_bytes() {
+  cksum < "$1/lease"
+}
+
+@test "the lease expiry is review_timeout_s plus the 300s margin" {
+  source "$LIB"
+  local dir expiry now
+  now="$(date +%s)"
+  dir="$(review_round_dir_create spec 0002 600)"
+  expiry="$(awk '$1 == "expires_at" { print $2; exit }' "$dir/lease")"
+  [ -n "$expiry" ] || { echo "no expiry in the lease" >&2; return 1; }
+  # now + 600 + 300, allowing a couple of seconds of clock drift between the
+  # two `date` calls.
+  [ "$expiry" -ge "$((now + 900))" ] && [ "$expiry" -le "$((now + 903))" ] || {
+    echo "expiry $expiry is not now+900 (now was $now)" >&2
+    return 1
+  }
+}
+
+@test "the lease file is byte-identical before and after a full round sequence" {
+  source "$LIB"
+  local before after
+  before="$(lease_bytes "$ROUND_DIR")"
+
+  # A whole round, through the helpers a real round calls, in order.
+  review_tree_snapshot > "$ROUND_DIR/tree.before"
+  printf 'payload\n' > "$ROUND_DIR/sub.payload"
+  review_subagent_record "$ROUND_DIR" sub agent_s 600
+  printf 'verdict: approve\n' > "$ROUND_DIR/sub.out"
+  review_subagent_completed "$ROUND_DIR" sub > /dev/null
+  printf 'sub %s\n' "$(review_subagent_collect "$ROUND_DIR" sub)" > /dev/null
+  printf 'sub approve\n' > "$ROUND_DIR/outcomes"
+  review_hash_compare_outputs "$ROUND_DIR" > /dev/null 2>&1 || true
+  review_tree_snapshot > "$ROUND_DIR/tree.after"
+  review_attribute_tree_outcomes "$ROUND_DIR" "$ROUND_DIR/outcomes" || true
+  review_round_all_terminal "$ROUND_DIR"
+
+  after="$(lease_bytes "$ROUND_DIR")"
+  [ "$before" = "$after" ] || {
+    echo "the lease was re-stamped during the round" >&2
+    echo "  before: $before" >&2
+    echo "  after:  $after" >&2
+    return 1
+  }
+}
+
+@test "the byte-equality row would notice a re-stamp" {
+  source "$LIB"
+  # Premise. Without it the row above passes on any round that happens not to
+  # touch the lease for unrelated reasons, and a future re-stamp under a new
+  # name would land silently.
+  local before after
+  before="$(lease_bytes "$ROUND_DIR")"
+  review_round_lease_write "$ROUND_DIR" "$(( $(date +%s) + 9999 ))"
+  after="$(lease_bytes "$ROUND_DIR")"
+  [ "$before" != "$after" ] || {
+    echo "rewriting the lease did not change its bytes, so the row is vacuous" >&2
+    return 1
+  }
+}
+
+# sweep_now — run the sweep from the fixture repo, swallowing its report.
+sweep_now() {
+  review_round_sweep > /dev/null 2>&1 || true
+}
+
+@test "a codex-plugin round polling to its review_timeout_s deadline survives a sweep" {
+  source "$LIB"
+  # The poll stops at review_timeout_s; the lease runs 300s past it. So a
+  # round that used its ENTIRE budget still has five minutes of lease left.
+  local dir expiry
+  dir="$(review_round_dir_create spec 0003 600)"
+  expiry="$(awk '$1 == "expires_at" { print $2; exit }' "$dir/lease")"
+  # Simulate the poll having consumed the whole timeout by moving the lease's
+  # clock reference, not by sleeping: rewrite the expiry to what it would be
+  # 600s from now, i.e. the margin alone.
+  review_round_lease_write "$dir" "$(( $(date +%s) + 300 ))"
+  printf 'job-1\n' > "$dir/codexp.job"
+  sweep_now
+  [ -d "$dir" ] || {
+    echo "a round inside its lease margin was swept" >&2
+    return 1
+  }
+}
+
+@test "a cancel plus one confirming status survives a sweep" {
+  source "$LIB"
+  local dir
+  dir="$(review_round_dir_create spec 0004 600)"
+  # One cancel and one status, each under review_with_deadline — tens of
+  # seconds. Represented here by the lease still being far from expiry.
+  review_with_deadline 5 true > /dev/null 2>&1 || true
+  sweep_now
+  [ -d "$dir" ]
+}
+
+@test "a subagent round to its deadline and TaskStop survives a sweep" {
+  source "$LIB"
+  local dir
+  dir="$(review_round_dir_create spec 0005 600)"
+  review_subagent_record "$dir" sub agent_s 600
+  # The deadline passes and the reviewer is stopped — still inside the margin.
+  review_round_lease_write "$dir" "$(( $(date +%s) + 300 ))"
+  review_subagent_terminal "$dir" sub timeout
+  sweep_now
+  [ -d "$dir" ] || {
+    echo "a stopped-reviewer round inside its margin was swept" >&2
+    return 1
+  }
+}
+
+@test "a cli-only round under review_with_deadline survives a sweep" {
+  source "$LIB"
+  local dir
+  dir="$(review_round_dir_create spec 0006 600)"
+  printf 'payload\n' > "$dir/codex.payload"
+  review_with_deadline 5 true > /dev/null 2>&1 || true
+  sweep_now
+  [ -d "$dir" ]
+}
+
+@test "the survival rows are not vacuous: an EXPIRED lease really is swept" {
+  source "$LIB"
+  # Premise for all four. If the sweep never deleted anything, every row above
+  # would pass with no mechanism at all.
+  local dir
+  dir="$(review_round_dir_create spec 0007 600)"
+  review_round_lease_write "$dir" "$(( $(date +%s) - 10 ))"
+  sweep_now
+  [ ! -d "$dir" ] || {
+    echo "the sweep did not reclaim a dir whose lease had expired" >&2
+    return 1
+  }
+}
+
+@test "a quarantined dir outlives its own expired lease, and is REPORTED" {
+  source "$LIB"
+  # Quarantine beats the lease, which is what lets an unbounded phase be safe
+  # without renewal.
+  local dir out
+  dir="$(review_round_dir_create spec 0008 600)"
+  review_subagent_record "$dir" stuck agent_q 600
+  review_subagent_stop_failed "$dir" stuck > /dev/null
+  review_round_lease_write "$dir" "$(( $(date +%s) - 10 ))"
+  out="$(review_round_sweep 2>&1 || true)"
+  [ -d "$dir" ] || {
+    echo "a quarantined dir was reclaimed once its lease expired" >&2
+    return 1
+  }
+  # The REPORT is the load-bearing half, and survival alone cannot test it.
+  # Retention is DOUBLY protected: disabling the sweep's own quarantine check
+  # fails no survival row, because review_round_cleanup independently refuses a
+  # quarantined dir. Verified by mutation — `if false` on that check left every
+  # `[ -d "$dir" ]` row green. The report line is what actually bites.
+  printf '%s\n' "$out" | grep -qF 'quarantined' || {
+    echo "the sweep did not report the retained dir:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  printf '%s\n' "$out" | grep -qF 'agent_q' || {
+    echo "the report does not name the unresolved agent:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  printf '%s\n' "$out" | grep -qF 'lease-expired' || {
+    echo "the report does not say the lease had expired:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+}
+
+@test "no review lib defines a lease-renewal helper" {
+  # A CONVENTION NUDGE, not the guard. The guard is the byte-equality row
+  # above, which catches a re-stamp whatever it is called; this row only keeps
+  # the obvious spelling from reappearing and reads as documentation of the
+  # decision.
+  local hits
+  hits="$(grep -nE '^[[:space:]]*(review_round_lease_(renew|touch|bump|extend))\(\)' \
+    "$PLUGIN_DIR"/commands/spec/review*.lib.sh 2>/dev/null || true)"
+  [ -z "$hits" ] || {
+    echo "a lease-renewal helper appeared:" >&2
+    printf '%s\n' "$hits" >&2
+    echo "Every round path is bounded inside the expiry, or quarantines." >&2
+    return 1
+  }
+  # Premise: the pattern matches the shape it forbids.
+  printf 'review_round_lease_renew() {\n  :\n}\n' > "$TEST_DIR/canary.lib.sh"
+  grep -qE '^[[:space:]]*(review_round_lease_(renew|touch|bump|extend))\(\)' \
+    "$TEST_DIR/canary.lib.sh" || {
+    echo "the nudge pattern cannot match the shape it forbids" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC25 / the token vocabulary — one table, pinned by a source scan.
+#
+# Twelve `failed <reason>` outcomes accreted across phases C, E and G, each
+# introduced where it was needed. Nothing listed them, so nothing could tell a
+# new reason from a TYPO of an existing one — and a typo'd reason is recorded,
+# classified as a non-verdict, and reported to the operator as if it meant
+# something.
+#
+# The table is the sole definition, and the scan below is what keeps it so.
+# Same shape as the one-shared-parser-entrypoint pattern in conventions.md.
+# ---------------------------------------------------------------------------
+
+@test "REVIEW_FAILURE_REASONS lists every failure reason the libs emit" {
+  source "$LIB"
+  [ -n "${REVIEW_FAILURE_REASONS:-}" ] || {
+    echo "no REVIEW_FAILURE_REASONS table" >&2
+    return 1
+  }
+  # Every `failed <reason>` in a printf that writes an outcome. The reason is
+  # the FIRST token after `failed`; sub-reasons (subagent-launch's
+  # missing-write-tool, say) ride in the rest of the line.
+  local emitted r missing=""
+  emitted="$(grep -rhoE "printf '[^']*failed [a-z][a-z0-9-]+" \
+    "$PLUGIN_DIR"/commands/spec/review*.lib.sh 2>/dev/null \
+    | grep -oE 'failed [a-z][a-z0-9-]+' | awk '{print $2}' | sort -u)"
+  [ -n "$emitted" ] || {
+    echo "the scan found no emitted reasons; this row would be vacuous" >&2
+    return 1
+  }
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    _review_list_has "$r" "$REVIEW_FAILURE_REASONS" || missing="$missing $r"
+  done <<EOF
+$emitted
+EOF
+  [ -z "$missing" ] || {
+    echo "emitted but not registered in REVIEW_FAILURE_REASONS:$missing" >&2
+    echo "Add it to the table, or it cannot be told from a typo." >&2
+    return 1
+  }
+}
+
+@test "the scan really sees the reasons the libs emit" {
+  source "$LIB"
+  # Premise. If the extraction pattern missed everything, the row above would
+  # pass with an empty table.
+  local emitted
+  emitted="$(grep -rhoE "printf '[^']*failed [a-z][a-z0-9-]+" \
+    "$PLUGIN_DIR"/commands/spec/review*.lib.sh 2>/dev/null \
+    | grep -oE 'failed [a-z][a-z0-9-]+' | awk '{print $2}' | sort -u)"
+  # A few known ones, each introduced by a different phase, so the scan cannot
+  # be passing by covering only one file.
+  local r
+  for r in subagent-no-output subagent-stop-failed duplicate-output; do
+    printf '%s\n' "$emitted" | grep -qxF "$r" || {
+      echo "the scan missed '$r', which the libs demonstrably emit" >&2
+      printf '%s\n' "$emitted" >&2
+      return 1
+    }
+  done
+  [ "$(printf '%s\n' "$emitted" | grep -c .)" -ge 8 ] || {
+    echo "the scan found suspiciously few reasons:" >&2
+    printf '%s\n' "$emitted" >&2
+    return 1
+  }
+}
+
+@test "review_failure_reason_known accepts a registered reason and refuses a typo" {
+  source "$LIB"
+  run review_failure_reason_known subagent-no-output
+  [ "$status" -eq 0 ]
+  run review_failure_reason_known subagent-stop-failed
+  [ "$status" -eq 0 ]
+  # The whole point: a near-miss must be distinguishable from a real reason.
+  run review_failure_reason_known subagent-no-ouput
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -qF 'subagent-no-ouput'
+  run review_failure_reason_known ''
+  [ "$status" -ne 0 ]
+}
+
+@test "the table is defined exactly once across the review libs" {
+  # One definition, or the two copies drift and the scan above passes against
+  # whichever happens to be sourced last.
+  local n
+  n="$(grep -c '^REVIEW_FAILURE_REASONS=' "$PLUGIN_DIR"/commands/spec/review*.lib.sh \
+    | awk -F: '{ sum += $2 } END { print sum }')"
+  [ "$n" -eq 1 ] || {
+    echo "expected exactly 1 definition of REVIEW_FAILURE_REASONS, found $n" >&2
+    grep -n '^REVIEW_FAILURE_REASONS=' "$PLUGIN_DIR"/commands/spec/review*.lib.sh >&2
+    return 1
+  }
+}
+
+@test "every registered reason is actually emitted somewhere" {
+  source "$LIB"
+  # The converse scan: a reason in the table that nothing emits is either dead
+  # vocabulary or a sign that the emitting path was lost in a refactor. Either
+  # way an operator could never see it, so it should not be documented as
+  # possible.
+  local r unused=""
+  for r in $(printf '%s\n' "$REVIEW_FAILURE_REASONS" | tr ' ' '\n'); do
+    [ -n "$r" ] || continue
+    grep -rqF "failed $r" "$PLUGIN_DIR"/commands/spec/review*.lib.sh || unused="$unused $r"
+  done
+  [ -z "$unused" ] || {
+    echo "registered but never emitted:$unused" >&2
     return 1
   }
 }

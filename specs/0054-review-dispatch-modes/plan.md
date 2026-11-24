@@ -1321,6 +1321,27 @@ Both are landed TEXT that is known-wrong and must not be read as done.
   §"One shared parser entrypoint, pinned by a source-scan assertion" pattern).
 - All tests still pass.
 
+> **Named for what was actually uncontrolled.** The step says "one
+> outcome-token table". The OUTCOME column already had one — `REVIEW_VERDICTS`
+> and `REVIEW_NON_VERDICTS`, read by `_review_outcome_kind` since spec 0035 —
+> so consolidating it would have changed nothing. What had accreted
+> unregistered was the REASON column: twelve `failed <reason>` tokens
+> introduced across phases C, E and G, each where it was needed, with nothing
+> listing them. So nothing could tell a new reason from a TYPO of an existing
+> one, and a typo'd reason is recorded, classified as a non-verdict, and
+> reported to the operator as if it meant something.
+>
+> Hence `REVIEW_FAILURE_REASONS` plus `review_failure_reason_known`, and a
+> source scan that runs in BOTH directions: every reason the libs emit must be
+> registered, and every registered reason must be emitted somewhere. The second
+> half matters as much as the first — a registered reason nothing emits is
+> either dead vocabulary or a sign the emitting path was lost in a refactor,
+> and either way an operator could never see it.
+>
+> `_review_outcome_kind` is left alone deliberately: its contract is pinned by
+> a lot of spec-0035 and spec-0052 rows, and widening it was not needed to fix
+> the thing that was broken.
+
 ### Phase I — The gated live smoke, and the CI gate (ACs 26, 26a, 27)
 
 #### Step 69 — The gated skip harness (RED) — **NON-CI**
