@@ -687,3 +687,380 @@ LIBSH() { printf '%s\n' "$PLUGIN_DIR/commands/spec/review.lib.sh"; }
   }
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# AC21 — arch:review and pm:review write review.md only on a COMPLETE round
+#
+# The spec lane has had this gate since 0035: an inert round must leave the
+# prior review.md byte-unchanged, because the NEXT --diff round classifies
+# against it and a wiped review.md silently collapses the provenance chain.
+# The design and brief lanes never got the gate — their step 4 is an
+# unconditional Write — and `review_finalize_round` is spec-only: it promotes
+# a review-snapshot.md and stamps a reviewed_sha256 that neither lane has.
+#
+# So two halves are tested here: the SHELL seam (finalize learns <kind>) and
+# the MARKDOWN (the two commands actually gate on it).
+# ---------------------------------------------------------------------------
+
+# A doc dir shaped like a design/ or product/ entry: a prior review.md whose
+# bytes we watch, and NO snapshot — if finalize promotes one anyway we see it
+# appear rather than merely change.
+make_doc_dir() {
+  DOC_DIR="$TEST_DIR/design/0001-x"
+  mkdir -p "$DOC_DIR"
+  printf '# Design\n\nCURRENT-DESIGN-MARKER\n' > "$DOC_DIR/design.md"
+  printf '# Review\n\nPRIOR-DESIGN-REVIEW-MARKER\n' > "$DOC_DIR/review.md"
+}
+
+# A real spec dir, for the regression floor: the 3-arg call must still do
+# everything 0052 made it do.
+make_spec_dir_local() {
+  SPEC_DIR="$TEST_DIR/specs/0001-x"
+  mkdir -p "$SPEC_DIR"
+  printf '# Spec\n\nCURRENT-SPEC-MARKER\n' > "$SPEC_DIR/spec.md"
+  printf '# Spec\n\nBASELINE-SNAPSHOT-MARKER\n' > "$SPEC_DIR/review-snapshot.md"
+  printf '# Review\n\nPRIOR-REVIEW-MARKER\n' > "$SPEC_DIR/review.md"
+}
+
+# Logs every speccraft-state invocation, so "no snapshot, no fingerprint" is
+# proven at the SEAM and not merely by the absence of a file a real binary
+# might have declined to write for an unrelated reason.
+install_state_seam() {
+  mkdir -p "$TEST_DIR/stub"
+  cat > "$TEST_DIR/stub/speccraft-state" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SEAM_LOG"
+case "$1" in
+  find-root)       printf '%s\n' "$STUB_ROOT" ;;
+  review-snapshot) printf '%s\n' "2222222222222222222222222222222222222222222222222222222222222222" ;;
+esac
+exit 0
+STUB
+  chmod +x "$TEST_DIR/stub/speccraft-state"
+  export SEAM_LOG="$TEST_DIR/seam.log"
+  export STUB_ROOT="$TEST_DIR"
+  : > "$SEAM_LOG"
+  export PATH="$TEST_DIR/stub:$PATH"
+}
+
+round_outcomes() {
+  local f="$TEST_DIR/outcomes.txt"
+  printf '%s\n' "$@" > "$f"
+  printf '%s\n' "$f"
+}
+
+@test "a complete design round promotes no snapshot and stamps no fingerprint" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  install_state_seam
+  make_doc_dir
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex approve' 'claude-p approve')" design
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "responses_complete: true"
+  printf '%s\n' "$output" | grep -qxF "approval_quorum_met: true"
+  # The two spec-only durable writes never happen for a design.
+  run grep -c 'review-snapshot' "$SEAM_LOG"
+  [ "$output" = "0" ]
+  run grep -c 'review-commit' "$SEAM_LOG"
+  [ "$output" = "0" ]
+  [ ! -e "$DOC_DIR/review-snapshot.md" ]
+}
+
+@test "a complete brief round promotes no snapshot and stamps no fingerprint" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  install_state_seam
+  DOC_DIR="$TEST_DIR/product/0001-x"
+  mkdir -p "$DOC_DIR"
+  printf '# Review\n\nPRIOR-BRIEF-REVIEW-MARKER\n' > "$DOC_DIR/review.md"
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex approve')" brief
+  [ "$status" -eq 0 ]
+  run grep -c 'review-snapshot' "$SEAM_LOG"
+  [ "$output" = "0" ]
+  run grep -c 'review-commit' "$SEAM_LOG"
+  [ "$output" = "0" ]
+}
+
+@test "a design round leaves an existing review.md byte-unchanged either way" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  make_doc_dir   # REAL speccraft-state on PATH: a stray call would move bytes
+  cp "$DOC_DIR/review.md" "$TEST_DIR/review.before"
+  # Complete round…
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex approve')" design
+  [ "$status" -eq 0 ]
+  cmp -s "$TEST_DIR/review.before" "$DOC_DIR/review.md"
+  # …and inert round. Neither is finalize's to write: the synthesized verdict
+  # is the command's Write, and finalize must not stamp anything into it.
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex timeout')" design
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "responses_complete: false"
+  cmp -s "$TEST_DIR/review.before" "$DOC_DIR/review.md"
+}
+
+@test "a design round creates no review.md where none existed" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  DOC_DIR="$TEST_DIR/design/0002-y"
+  mkdir -p "$DOC_DIR"
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex timeout')" design
+  [ "$status" -eq 0 ]
+  [ ! -e "$DOC_DIR/review.md" ]
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex approve')" design
+  [ "$status" -eq 0 ]
+  [ ! -e "$DOC_DIR/review.md" ]
+}
+
+@test "the code kind writes nothing durable at all" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  install_state_seam
+  DOC_DIR="$TEST_DIR/code-round"
+  mkdir -p "$DOC_DIR"
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex approve')" code
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "responses_complete: true"
+  # A code round has no document and no lane, so no lifecycle state either.
+  # Reporting `draft` would invite a caller to "promote" something.
+  printf '%s\n' "$output" | grep -qxF "status: n/a"
+  [ ! -e "$DOC_DIR/review.md" ]
+  [ ! -e "$DOC_DIR/review-snapshot.md" ]
+  run grep -c 'review-snapshot' "$SEAM_LOG"
+  [ "$output" = "0" ]
+  run grep -c 'review-commit' "$SEAM_LOG"
+  [ "$output" = "0" ]
+}
+
+@test "the design and brief kinds never report status reviewed" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  install_state_seam
+  make_doc_dir
+  # A design is promoted by /speccraft:arch:decide and a brief by
+  # /speccraft:pm:prioritize — never by a review round. Reporting `reviewed`
+  # here would name a state neither lane's machine has.
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex approve')" design
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "approval_quorum_met: true"
+  # NOT `grep -qvF`: that succeeds whenever ANY line differs, which is every
+  # multi-line report. The assertion has to be a positive match inverted by
+  # hand, or it never bites.
+  printf '%s\n' "$output" | grep -qxF "status: reviewed" && {
+    echo "a design round reported the spec lane's reviewed state" >&2
+    return 1
+  }
+  run review_finalize_round "$DOC_DIR" 1 "$(round_outcomes 'codex approve')" brief
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "status: reviewed" && {
+    echo "a brief round reported the spec lane's reviewed state" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "the three-argument call still behaves exactly as spec 0052 left it" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  make_spec_dir_local
+  # The regression floor: <kind> is OPTIONAL and defaults to spec, so every
+  # existing caller keeps the snapshot promote and the fingerprint stamp.
+  run review_finalize_round "$SPEC_DIR" 1 "$(round_outcomes 'codex changes-requested' 'claude-p changes-requested')"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "status: draft"
+  grep -qE '^reviewed_sha256: [0-9a-f]{64}$' "$SPEC_DIR/review.md"
+  grep -qF 'CURRENT-SPEC-MARKER' "$SPEC_DIR/review-snapshot.md"
+}
+
+@test "an explicit spec kind is identical to omitting it" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  make_spec_dir_local
+  run review_finalize_round "$SPEC_DIR" 1 "$(round_outcomes 'codex approve')" spec
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "status: reviewed"
+  grep -qE '^reviewed_sha256: [0-9a-f]{64}$' "$SPEC_DIR/review.md"
+  grep -qF 'CURRENT-SPEC-MARKER' "$SPEC_DIR/review-snapshot.md"
+}
+
+@test "an unknown kind is a named error, not a silent fall-through to spec" {
+  source "$PLUGIN_DIR/commands/spec/review.lib.sh"
+  make_spec_dir_local
+  before="$(cat "$SPEC_DIR/review-snapshot.md")"
+  run review_finalize_round "$SPEC_DIR" 1 "$(round_outcomes 'codex approve')" desgin
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qF "desgin"
+  # A typo'd kind must not get the spec lane's durable writes by accident.
+  [ "$(cat "$SPEC_DIR/review-snapshot.md")" = "$before" ]
+}
+
+@test "arch:review gates the review.md write on response completeness" {
+  # Step 4 was an unconditional '**Write** design/$ACTIVE/review.md'. An inert
+  # round would overwrite a real prior review with a synthesis of refusals.
+  grep -qF 'review_responses_complete' "$ARCH_CMD" || {
+    echo "arch:review has no completeness gate before its Write:" >&2
+    grep -nF 'review.md' "$ARCH_CMD" >&2
+    return 1
+  }
+  grep -qE 'review_finalize_round[^\n]*design' "$ARCH_CMD" || {
+    echo "arch:review does not finalize with KIND=design:" >&2
+    grep -nF 'review_finalize_round' "$ARCH_CMD" >&2
+    return 1
+  }
+  grep -qF 'byte-unchanged' "$ARCH_CMD" || {
+    echo "arch:review never states that an inert round leaves review.md alone" >&2
+    return 1
+  }
+}
+
+@test "pm:review gates the review.md write on response completeness" {
+  grep -qF 'review_responses_complete' "$PM_CMD" || {
+    echo "pm:review has no completeness gate before its Write:" >&2
+    grep -nF 'review.md' "$PM_CMD" >&2
+    return 1
+  }
+  grep -qE 'review_finalize_round[^\n]*brief' "$PM_CMD" || {
+    echo "pm:review does not finalize with KIND=brief:" >&2
+    grep -nF 'review_finalize_round' "$PM_CMD" >&2
+    return 1
+  }
+  grep -qF 'byte-unchanged' "$PM_CMD" || {
+    echo "pm:review never states that an inert round leaves review.md alone" >&2
+    return 1
+  }
+}
+
+# The exact pre-gate sentence as it actually shipped, backticks included. An
+# earlier draft of this pattern omitted them and matched nothing — the guard
+# passed while the line it guards against was still in the tree.
+UNGATED_WRITE_RE='^4\. \*\*Write\*\* `?(design|product)/\$ACTIVE/review\.md`? with the synthesized verdict\.$'
+
+@test "neither arch:review nor pm:review still carries the ungated Write" {
+  local cmd
+  for cmd in "$ARCH_CMD" "$PM_CMD"; do
+    grep -qE "$UNGATED_WRITE_RE" "$cmd" && {
+      echo "$cmd still writes review.md unconditionally:" >&2
+      grep -nE "$UNGATED_WRITE_RE" "$cmd" >&2
+      return 1
+    }
+  done
+  return 0
+}
+
+@test "the ungated-Write guard bites on the sentence it is meant to catch" {
+  # Prove the row above is not vacuous: reproduce the historical line VERBATIM
+  # and require the pattern to match it. A typo in that regex, or a missing
+  # backtick, would otherwise make the guard pass forever.
+  cat > "$TEST_DIR/old-step4.txt" <<'OLD'
+4. **Write** `design/$ACTIVE/review.md` with the synthesized verdict.
+4. **Write** `product/$ACTIVE/review.md` with the synthesized verdict.
+OLD
+  [ "$(grep -cE "$UNGATED_WRITE_RE" "$TEST_DIR/old-step4.txt")" = "2" ] || {
+    echo "the guard pattern does not match the historical lines" >&2
+    cat "$TEST_DIR/old-step4.txt" >&2
+    return 1
+  }
+}
+
+# Every variable the runbook's shell blocks READ must be assigned by one of
+# those blocks, or be a declared caller/environment parameter. The runbook is
+# executed by a model, so an undefined variable is not a shell error — it
+# expands to empty and the step quietly does the wrong thing. That is how §7
+# came to pass a `$ROUND_DIR/outcomes` path while every other step appended to
+# an `$OUTCOMES` nothing had ever set.
+RUNBOOK_EXTERNAL_VARS="AGENTS DOC_DIR QUORUM REVIEW_TIMEOUT_S CLAUDE_PLUGIN_ROOT"
+
+# runbook_shell_blocks — the contents of every ```bash fence, concatenated.
+runbook_shell_blocks() {
+  awk '/^```bash$/ { inb = 1; next } /^```$/ { inb = 0 } inb' "$RUNBOOK"
+}
+
+@test "every variable the runbook's shell blocks read is assigned or declared" {
+  local blocks var missing=""
+  blocks="$(runbook_shell_blocks)"
+  [ -n "$blocks" ] || {
+    echo "no bash fences found — this row would pass vacuously" >&2
+    return 1
+  }
+  for var in $(printf '%s\n' "$blocks" \
+      | grep -oE '\$\{?[A-Z][A-Z0-9_]*' | sed 's/^[$]{*//' | sort -u); do
+    # Declared as the caller's or the environment's?
+    case " $RUNBOOK_EXTERNAL_VARS " in *" $var "*) continue ;; esac
+    # Assigned by some shell block in this runbook?
+    printf '%s\n' "$blocks" | grep -qE "^[[:space:]]*(local )?$var=" && continue
+    missing="$missing $var"
+  done
+  [ -z "$missing" ] || {
+    echo "runbook reads but never sets:$missing" >&2
+    echo "add the assignment, or declare it in RUNBOOK_EXTERNAL_VARS and the" >&2
+    echo "parameter table if it really is the caller's to supply" >&2
+    return 1
+  }
+}
+
+@test "the undefined-variable guard bites on a variable nothing sets" {
+  # Prove the row above is not vacuous by running its logic over a fence that
+  # reads a variable no block assigns.
+  local blocks var missing=""
+  blocks='FOO="$BAR"
+echo "$NOWHERE_SET"'
+  for var in $(printf '%s\n' "$blocks" \
+      | grep -oE '\$\{?[A-Z][A-Z0-9_]*' | sed 's/^[$]{*//' | sort -u); do
+    case " $RUNBOOK_EXTERNAL_VARS " in *" $var "*) continue ;; esac
+    printf '%s\n' "$blocks" | grep -qE "^[[:space:]]*(local )?$var=" && continue
+    missing="$missing $var"
+  done
+  # BAR and NOWHERE_SET are unset; FOO is assigned, so it must NOT be reported.
+  case "$missing" in
+    *BAR*)            : ;;
+    *) echo "guard missed an unset variable; got '$missing'" >&2; return 1 ;;
+  esac
+  case "$missing" in
+    *NOWHERE_SET*)    : ;;
+    *) echo "guard missed NOWHERE_SET; got '$missing'" >&2; return 1 ;;
+  esac
+  case "$missing" in
+    *FOO*) echo "guard wrongly reported an ASSIGNED variable" >&2; return 1 ;;
+  esac
+  return 0
+}
+
+@test "the runbook declares each caller-supplied variable in its parameter table" {
+  # RUNBOOK_EXTERNAL_VARS is an escape hatch; it must not become a place to
+  # hide a variable from the reader of the runbook.
+  local var
+  for var in AGENTS DOC_DIR QUORUM; do
+    grep -qF "\`$var\`" "$RUNBOOK" || {
+      echo "$var is exempted by the guard but never documented as the caller's" >&2
+      return 1
+    }
+  done
+}
+
+@test "the runbook creates the outcomes file before the first dispatch" {
+  # An absent outcomes file and a round nobody answered are indistinguishable
+  # to review_responses_complete, so it must exist and be empty up front.
+  local init_line dispatch_line
+  init_line="$(grep -nE '^: > "\$OUTCOMES"$' "$RUNBOOK" | head -1 | cut -d: -f1)"
+  dispatch_line="$(grep -nF '>> "$OUTCOMES"' "$RUNBOOK" | head -1 | cut -d: -f1)"
+  [ -n "$init_line" ] || {
+    echo "the runbook never truncates \$OUTCOMES to create it" >&2
+    return 1
+  }
+  [ -n "$dispatch_line" ] || {
+    echo "no append to \$OUTCOMES found; this row would pass vacuously" >&2
+    return 1
+  }
+  [ "$init_line" -lt "$dispatch_line" ] || {
+    echo "the outcomes file is created at line $init_line, after the first" >&2
+    echo "append at line $dispatch_line" >&2
+    return 1
+  }
+}
+
+@test "the runbook names the kind-aware finalize call" {
+  # §7 said only 'Then finalize for this KIND' with no call — the one step the
+  # round cannot infer. Four commands reading that text would each invent one.
+  grep -qE 'review_finalize_round[^\n]*KIND' "$RUNBOOK" || {
+    echo "the runbook does not show a kind-aware finalize call:" >&2
+    grep -nF 'finalize' "$RUNBOOK" >&2
+    return 1
+  }
+  # And it must state that the verdict document is written only on a complete
+  # round, since that is the gate arch/pm were missing.
+  grep -qF 'byte-unchanged' "$RUNBOOK" || {
+    echo "the runbook does not state the inert-round guarantee" >&2
+    return 1
+  }
+}

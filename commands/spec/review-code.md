@@ -88,8 +88,19 @@ rather than re-deriving a per-command variant.
    others can still complete, and a refused agent is recorded as a non-verdict
    so it cannot be mistaken for one that agreed.
 
-5. Synthesize via the `cross-reviewer` subagent and **report on stdout only** —
-   this is per-iteration, not per-spec, so nothing is written to the spec dir.
+5. Finalize the round for its kind, then synthesize via the `cross-reviewer`
+   subagent and **report on stdout only** — this is per-iteration, not
+   per-spec, so nothing is written to the spec dir:
+   ```bash
+   review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" code
+   ```
+   The `code` kind writes nothing durable: no `review.md`, no
+   `review-snapshot.md`, no fingerprint, and `status: n/a` because this round
+   has no document and no lane to promote. Its report is the whole output. If
+   `responses_complete: false`, say so instead of synthesizing a verdict out of
+   refusals — an all-refused round that prints a clean report is worse than one
+   that prints nothing.
+
    The report must print, alongside the verdicts:
    - the diff form used (`git diff HEAD`, or `git diff <ref>...HEAD`);
    - **the untracked-file exclusion**, stated plainly, so the operator knows a

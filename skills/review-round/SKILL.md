@@ -22,9 +22,21 @@ sent".
 | `KIND` | `spec` | `design` | `brief` | `code` |
 | Document(s) under review | the frozen `spec.md` image | `design.md` | `brief.md` | the frozen diff + the active spec, if any |
 | Template | `templates/prompts/review.md` (or `re-review.md` when scoped) | `templates/prompts/arch-review.md` | `templates/prompts/pm-review.md` | `templates/prompts/review-code.md` |
-| Verdict written to | `specs/<id>/review.md` | `design/<id>/review.md` | `product/<id>/review.md` | nothing durable |
+| `DOC_DIR` | `specs/<id>` | `design/<id>` | `product/<id>` | the active spec dir, or the repo root |
+| Verdict written to | `$DOC_DIR/review.md` | `$DOC_DIR/review.md` | `$DOC_DIR/review.md` | nothing durable |
 
-Everything below is identical across the four.
+Three shell variables are the **caller's** to set before step 0, because each
+command resolves them differently:
+
+- `AGENTS` — the space-separated reviewer names: the `--agents` list if one was
+  passed, otherwise every registry entry with `enabled != false`.
+- `DOC_DIR` — the row above.
+- `QUORUM` — from the registry (`review_quorum`, default 1).
+
+`$REVIEW_TIMEOUT_S` and `$CLAUDE_PLUGIN_ROOT` come from the environment. Every
+other variable in this runbook's shell blocks is assigned by this runbook; if
+you find yourself inventing one, a step is missing rather than obvious.
+Everything below is identical across the four commands.
 
 ## 0. Load the shell helpers
 
@@ -38,8 +50,14 @@ That pulls in the codex adapter and the round-directory helpers too.
 
 ```bash
 ROUND_DIR="$(review_round_dir_create "<KIND>" "<id>" "$REVIEW_TIMEOUT_S")"
+OUTCOMES="$ROUND_DIR/outcomes"
+: > "$OUTCOMES"
 echo "round dir: $ROUND_DIR"
 ```
+
+`$OUTCOMES` is created EMPTY here, before the first dispatch: a missing file and
+a round where nobody answered read identically to every helper that consumes
+it, and the dispatch steps below append to it rather than create it.
 
 **Print the round dir path and carry it forward.** This runbook spans many tool
 calls and the shell does not persist between them, so the path has to live in
@@ -203,7 +221,8 @@ quorum.
 
 ## 5. Record every outcome
 
-One line per reviewer, whatever happened — a verdict, a `timeout`, or a
+`$OUTCOMES` was created empty in step 1, before any dispatch. One line per
+reviewer, whatever happened — a verdict, a `timeout`, or a
 `failed <token>`. A reviewer with no recorded outcome is indistinguishable from
 one that was never dispatched.
 
@@ -261,7 +280,32 @@ A difference means a reviewer wrote outside its round dir: record
 cannot be attributed, so **both** record it with an `<unattributed>` marker and
 neither verdict counts.
 
-Then finalize for this `KIND`, and clean up:
+Then finalize for this `KIND`. The verdict document is written **only on a
+complete round** — gate it, write it, then finalize:
+
+```bash
+if ! review_responses_complete "$OUTCOMES"; then
+  review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" "<KIND>"
+  # INERT round: report every refusal and every verdict obtained, and stop.
+else
+  # …Write the synthesized review.md for this KIND (nothing, for `code`)…
+  review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" "<KIND>"
+fi
+```
+
+On the inert branch an existing `review.md` is left **byte-unchanged** and none
+is created where none existed, for every one of the four kinds. That matters
+beyond tidiness in the spec lane: the next `--diff` round classifies against
+`review.md`'s `reviewed_sha256:`, so a review.md replaced by a synthesis of
+refusals silently collapses spec 0035's provenance gate.
+
+`<KIND>` is not decoration. It selects which durable writes finalize performs:
+`spec` promotes `review-snapshot.md` and stamps the fingerprint; `design` and
+`brief` do neither, because those documents have neither; `code` writes nothing
+at all. An unrecognised kind is a named error rather than a fall-through to
+`spec` — a typo must not earn a non-spec directory the spec lane's writes.
+
+Finally, clean up:
 
 ```bash
 review_round_cleanup "$ROUND_DIR"

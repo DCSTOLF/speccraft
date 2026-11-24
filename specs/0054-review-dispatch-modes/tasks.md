@@ -117,9 +117,9 @@ contract: done-means-v1
   done: $ grep -qE 'MODE="\$\(review_agent_mode' commands/spec/review.md && test "$(grep -cE 'MODE="\$\(review_agent_field[^)]*input' commands/spec/review.md)" -eq 0 && grep -qF review_dispatch_agent commands/spec/review.md && test "$(grep -cE 'REVIEW_ROUND_TMPDIR|review_round_tmpdir' commands/spec/review.md)" -eq 0
 - [x] T45.9 — GREEN: the scoped round carries the prior review; subagent_type defaults agree
   done: $ grep -qE -- '--inline[^|]*PRIOR' commands/spec/review.md && grep -qF 'speccraft:reviewer' skills/review-round/SKILL.md && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-runbook.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 43
-- [ ] T48 — RED: arch and pm write review.md only on a complete round
+- [x] T48 — RED: arch and pm write review.md only on a complete round
   done: $ grep -q 'byte-unchanged' tests/hooks/spec-review-round-runbook.bats
-- [ ] T49 — GREEN: review_finalize_round gains an optional kind parameter
+- [x] T49 — GREEN: review_finalize_round gains an optional kind parameter
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-runbook.bats tests/hooks/spec-review-payload.bats
 - [ ] T50 — RED: agents/reviewer.md shape and the reviewer-vs-synthesizer contrast (markdown)
   done: $ test -f tests/hooks/review-subagent-agent.bats && ! test -f agents/reviewer.md

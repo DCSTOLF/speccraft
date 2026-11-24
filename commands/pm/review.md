@@ -40,6 +40,27 @@ Steps:
    `aux-delegator`, `codex-plugin` through the Codex plugin's companion, and
    `subagent` from this orchestrating session via the Agent tool.
 
-4. **Write** `product/$ACTIVE/review.md` with the synthesized verdict.
+4. **Gate the write on a complete round.** A refusal is not a verdict, and a
+   synthesis of refusals must never replace a real prior review:
+   ```bash
+   BRIEF_DIR="$REPO_ROOT/product/$ACTIVE"
+   if ! review_responses_complete "$OUTCOMES"; then
+     review_finalize_round "$BRIEF_DIR" "$QUORUM" "$OUTCOMES" brief
+     exit 0
+   fi
+   ```
+   On that branch an existing `product/$ACTIVE/review.md` is left
+   **byte-unchanged** and none is created where none existed; the report names
+   every refusal and every verdict that WAS obtained. Only when the gate passes
+   do you **Write** `product/$ACTIVE/review.md` with the synthesized verdict,
+   and then:
+   ```bash
+   review_finalize_round "$BRIEF_DIR" "$QUORUM" "$OUTCOMES" brief
+   ```
+   The `brief` kind is what keeps this lane out of the spec lane's durable
+   writes: no `review-snapshot.md` is promoted and no `reviewed_sha256:` is
+   stamped, because a brief has neither. The report's `status:` stays `draft`
+   even at quorum — a brief is promoted by `/speccraft:pm:prioritize`, never by
+   a review round.
 
 5. Suggest next step: `/speccraft:pm:prioritize` or `/speccraft:pm:close`.

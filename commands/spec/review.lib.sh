@@ -390,7 +390,13 @@ review_approval_quorum_met() {
   [ "$count" -ge "$quorum" ]
 }
 
-# review_finalize_round <spec-dir> <quorum> <outcomes-file>
+# The four lanes a review round can finalize. Kept as a space-separated list
+# and read through _review_list_has, never with `for k in $VAR`: these helpers
+# are sourced into the CALLER's shell, and zsh does not word-split an unquoted
+# parameter expansion, so a loop form answers "no" to every kind on macOS.
+REVIEW_ROUND_KINDS="spec design brief code"
+
+# review_finalize_round <doc-dir> <quorum> <outcomes-file> [<kind>]
 # — the ONLY place a review round performs a durable write. Emits the round
 # report on stdout and returns 0 whether or not the round was productive: a
 # refusal is data, not a shell failure.
@@ -405,11 +411,37 @@ review_approval_quorum_met() {
 # 0052 AC24). `review-diff --promote` used to re-baseline review-snapshot.md
 # before any verdict existed, so an all-refused round silently moved the anchor
 # the NEXT round classifies against, and the following round misclassified.
+#
+# <kind> defaults to `spec`, so every pre-0054 three-argument caller keeps
+# exactly the behaviour above. The other three lanes have no spec.md to
+# snapshot and no `reviewed_sha256:` envelope to stamp, so for them this
+# function performs NO durable write at all (spec 0054 AC21):
+#
+#   design, brief — the synthesized `review.md` is the command's own Write,
+#     gated on `responses_complete` by the runbook. finalize must not stamp a
+#     fingerprint into it: speccraft-state review-commit rewrites the file's
+#     frontmatter, which on a design/brief would corrupt a document whose
+#     provenance nothing verifies.
+#   code — nothing durable exists; the report IS the output (AC22a).
+#
+# `status:` stays `draft` for design and brief even at quorum. Those lanes are
+# promoted by /speccraft:arch:decide and /speccraft:pm:prioritize, never by a
+# review round, so `reviewed` would name a state neither machine has. For
+# `code` there is no document and no lane, hence `n/a`.
+#
+# An unrecognised kind is exit 2 with the word named, NOT a fall-through to
+# `spec`: a typo'd kind must not earn the spec lane's durable writes against a
+# directory that is not a spec dir.
 review_finalize_round() {
-  local spec_dir="${1:-}" quorum="${2:-}" file="${3:-}"
+  local spec_dir="${1:-}" quorum="${2:-}" file="${3:-}" round_kind="${4:-spec}"
   local complete=false quorum_met=false synthesis=skipped state=draft
   local rc fp agent outcome rest kind
   [ -n "$spec_dir" ] || { review_error "review_finalize_round: spec dir required"; return 2; }
+  _review_list_has "$round_kind" "$REVIEW_ROUND_KINDS" || {
+    review_error "review_finalize_round: unknown kind '$round_kind' (want one of: $REVIEW_ROUND_KINDS)"
+    return 2
+  }
+  [ "$round_kind" != code ] || state="n/a"
 
   rc=0; review_responses_complete "$file" || rc=$?
   [ "$rc" -ne 2 ] || return 2
@@ -421,15 +453,17 @@ review_finalize_round() {
 
   if [ "$complete" = true ]; then
     synthesis=done
-    fp="$(speccraft-state review-snapshot write "$spec_dir")" || {
-      review_error "review_finalize_round: review-snapshot write failed; review.md left unchanged"
-      return 1
-    }
-    speccraft-state review-commit "$spec_dir/review.md" "$fp" || {
-      review_error "review_finalize_round: review-commit failed; review.md left unchanged"
-      return 1
-    }
-    [ "$quorum_met" = true ] && state=reviewed
+    if [ "$round_kind" = spec ]; then
+      fp="$(speccraft-state review-snapshot write "$spec_dir")" || {
+        review_error "review_finalize_round: review-snapshot write failed; review.md left unchanged"
+        return 1
+      }
+      speccraft-state review-commit "$spec_dir/review.md" "$fp" || {
+        review_error "review_finalize_round: review-commit failed; review.md left unchanged"
+        return 1
+      }
+      [ "$quorum_met" = true ] && state=reviewed
+    fi
   fi
 
   printf 'responses_complete: %s\n' "$complete"

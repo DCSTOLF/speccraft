@@ -944,6 +944,29 @@ Both are landed TEXT that is known-wrong and must not be read as done.
   no fingerprint; `code` writes nothing durable.
 - All step-48 tests pass; 0052's finalize tests pass unedited.
 
+> **Landed beyond the written step, and why.** Three additions this step forced:
+>
+> 1. `status:` for the new kinds. `reviewed` is a spec-lane state; a design is
+>    promoted by `/speccraft:arch:decide` and a brief by
+>    `/speccraft:pm:prioritize`, never by a review round. So `design`/`brief`
+>    report `draft` even at quorum, and `code` reports `n/a` — it has no
+>    document and no lane. An unknown kind is exit 2 naming the word, NOT a
+>    fall-through to `spec`: a typo must not earn a non-spec directory the
+>    spec lane's durable writes.
+> 2. `commands/spec/review-code.md` step 5 now calls finalize with `code`.
+>    Without it the `code` arm would be a lib feature no command invokes.
+> 3. **The runbook had an undefined-variable defect of the same class round 2
+>    found.** Every step appended to `$OUTCOMES`, which nothing in the runbook
+>    ever set; §7 as first drafted here compounded it by passing
+>    `$ROUND_DIR/outcomes` instead. Because a model executes this markdown, an
+>    unset variable is not an error — it expands to empty and the step quietly
+>    does the wrong thing. Fixed by creating `$OUTCOMES` empty in §1 before any
+>    dispatch, declaring `AGENTS`/`DOC_DIR`/`QUORUM` as the caller's in the
+>    parameter table, and adding a guard that greps every `$VAR` out of the
+>    runbook's `bash` fences and requires each to be assigned there or declared
+>    exempt. That guard is general: it will red for the next such variable
+>    without anyone thinking to look.
+
 ### Phase G — The subagent reviewer, vendor, refusals, docs (ACs 17d, 18, 18a, 18b, 20a, 20b, 23, 23a, 23b, 24, 25)
 
 #### Step 50 — `agents/reviewer.md` shape and the naming contrast (RED) — **pure markdown**

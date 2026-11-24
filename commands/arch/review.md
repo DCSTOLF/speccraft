@@ -40,6 +40,27 @@ Steps:
    `aux-delegator`, `codex-plugin` through the Codex plugin's companion, and
    `subagent` from this orchestrating session via the Agent tool.
 
-4. **Write** `design/$ACTIVE/review.md` with the synthesized verdict.
+4. **Gate the write on a complete round.** A refusal is not a verdict, and a
+   synthesis of refusals must never replace a real prior review:
+   ```bash
+   DESIGN_DIR="$REPO_ROOT/design/$ACTIVE"
+   if ! review_responses_complete "$OUTCOMES"; then
+     review_finalize_round "$DESIGN_DIR" "$QUORUM" "$OUTCOMES" design
+     exit 0
+   fi
+   ```
+   On that branch an existing `design/$ACTIVE/review.md` is left
+   **byte-unchanged** and none is created where none existed; the report names
+   every refusal and every verdict that WAS obtained. Only when the gate passes
+   do you **Write** `design/$ACTIVE/review.md` with the synthesized verdict,
+   and then:
+   ```bash
+   review_finalize_round "$DESIGN_DIR" "$QUORUM" "$OUTCOMES" design
+   ```
+   The `design` kind is what keeps this lane out of the spec lane's durable
+   writes: no `review-snapshot.md` is promoted and no `reviewed_sha256:` is
+   stamped, because a design has neither. The report's `status:` stays `draft`
+   even at quorum — a design is promoted by `/speccraft:arch:decide`, never by
+   a review round.
 
 5. Suggest next step: `/speccraft:arch:decide`, then `/speccraft:arch:close`.
