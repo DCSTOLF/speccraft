@@ -291,13 +291,41 @@ _review_codex_root_from_registry() {
   repo="$(speccraft-state find-root 2>/dev/null || pwd)"
   repo="$(_review_canonical_dir "$repo")"
 
+  # The local-scope match canonicalizes BOTH sides, in shell, one entry at a
+  # time. jq cannot resolve a symlink, so comparing `.projectPath == $repo`
+  # against an already-canonicalized `$repo` is a string comparison between two
+  # different spellings of the same directory.
+  #
+  # That is not theoretical: on macOS `$TMPDIR` is under `/var/folders/…` and
+  # `/var` is a symlink to `/private/var`, so a repo reached through the
+  # symlink canonicalizes to a path that NEVER equals the `projectPath` Claude
+  # Code recorded. A local-scope entry could therefore never be selected on
+  # macOS, and resolution fell through to the USER-scope install — dispatching
+  # the job to a different companion than the one the operator configured for
+  # this project, silently. Found by this branch's first macOS CI run; the
+  # sibling check a few lines above (`_review_canonical_dir "$ipath"`) already
+  # canonicalized both sides, so the asymmetry was local to this query.
+  local line ppath ipath
+  while IFS="$(printf '\t')" read -r ppath ipath; do
+    [ -n "$ppath" ] && [ -n "$ipath" ] || continue
+    [ "$(_review_canonical_dir "$ppath")" = "$repo" ] || continue
+    printf '%s\n' "$ipath"
+    return 0
+  done <<EOF
+$(jq -r --arg key "$REVIEW_CODEX_PLUGIN_KEY" '
+    (.plugins[$key] // [])[]
+    | select(.scope == "local")
+    | select((.projectPath // "") != "" and (.installPath // "") != "")
+    | "\(.projectPath)\t\(.installPath)"
+  ' "$reg" 2>/dev/null || true)
+EOF
+
+  # No local entry for this repo: the user-scope install, in array order.
   local found
   found="$(
-    jq -r --arg key "$REVIEW_CODEX_PLUGIN_KEY" --arg repo "$repo" '
-      (.plugins[$key] // []) as $e
-      | ( [ $e[] | select(.scope == "local" and .projectPath == $repo) ][0].installPath
-          // [ $e[] | select(.scope == "user") ][0].installPath
-          // empty )
+    jq -r --arg key "$REVIEW_CODEX_PLUGIN_KEY" '
+      ( [ (.plugins[$key] // [])[] | select(.scope == "user") ][0].installPath
+        // empty )
     ' "$reg" 2>/dev/null || true
   )"
   [ -n "$found" ] || return 1

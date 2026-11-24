@@ -1938,3 +1938,138 @@ mode = "codex-plugin"'
   }
   printf '%s\n' "$output" | grep -qF 'no companion root'
 }
+
+# ---------------------------------------------------------------------------
+# The symlinked-repo-path class, reproduced on Linux.
+#
+# This branch's first macOS CI run failed exactly one test:
+# "the local-scope entry whose projectPath is the repo root wins". On macOS
+# `$TMPDIR` lives under `/var/folders/…` and `/var` is a symlink to
+# `/private/var`, so the canonicalized repo root never string-equals the
+# `projectPath` Claude Code recorded — and `_review_codex_root_from_registry`
+# compared a CANONICALIZED repo against a RAW projectPath inside jq, which
+# cannot resolve a symlink.
+#
+# The consequence was not a cosmetic mismatch: a local-scope entry could never
+# be selected on macOS, so resolution fell through to the USER-scope install
+# and the job went to a different companion than the operator configured for
+# this project — silently, which is the hazard the spec's own quarantine prose
+# warns about.
+#
+# Reproduced here by reaching the fixture repo through a symlink, which is the
+# recorded technique for this class in this repo. It bites on Linux, so the fix
+# is pinned on every platform rather than only on the one CI runner that has a
+# symlinked temp dir.
+# ---------------------------------------------------------------------------
+
+@test "review_codex_plugin_root: a local entry wins when the repo is reached through a symlink" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/local-root"
+  make_companion_root "$TEST_DIR/user-root"
+
+  # A second spelling of the SAME repo directory, via a symlink.
+  local linked="$TEST_DIR/linked-repo"
+  ln -s "$FAKE_REPO" "$linked"
+  [ "$(cd "$linked" && pwd -P)" = "$(cd "$FAKE_REPO" && pwd -P)" ] || {
+    echo "the symlink does not reach the same directory; row would be vacuous" >&2
+    return 1
+  }
+  [ "$linked" != "$FAKE_REPO" ] || {
+    echo "the two spellings are identical; row would be vacuous" >&2
+    return 1
+  }
+
+  # projectPath recorded as the SYMLINKED spelling, which is what a user who
+  # cd'd through the link would have had.
+  write_installed "[
+    { \"scope\": \"user\",  \"installPath\": \"$TEST_DIR/user-root\",  \"version\": \"1.0.6\" },
+    { \"scope\": \"local\", \"installPath\": \"$TEST_DIR/local-root\", \"version\": \"1.0.6\", \"projectPath\": \"$linked\" }
+  ]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/local-root" ] || {
+    echo "the local entry lost to the user entry because the two spellings of" >&2
+    echo "the repo path were compared without canonicalizing both:" >&2
+    echo "  projectPath: $linked" >&2
+    echo "  got:         $output" >&2
+    echo "  want:        $TEST_DIR/local-root" >&2
+    return 1
+  }
+}
+
+@test "review_codex_plugin_root: a symlinked local entry for a DIFFERENT project still loses" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/local-root"
+  make_companion_root "$TEST_DIR/user-root"
+  # The converse, so canonicalizing both sides cannot have turned the match
+  # into "any local entry wins".
+  local other="$TEST_DIR/other-project"
+  mkdir -p "$other"
+  local linked="$TEST_DIR/linked-other"
+  ln -s "$other" "$linked"
+  write_installed "[
+    { \"scope\": \"user\",  \"installPath\": \"$TEST_DIR/user-root\",  \"version\": \"1.0.6\" },
+    { \"scope\": \"local\", \"installPath\": \"$TEST_DIR/local-root\", \"version\": \"1.0.6\", \"projectPath\": \"$linked\" }
+  ]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/user-root" ] || {
+    echo "a local entry for another project was selected: $output" >&2
+    return 1
+  }
+}
+
+@test "review_codex_plugin_root: the FIRST matching local entry wins, in array order" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/first-root"
+  make_companion_root "$TEST_DIR/second-root"
+  make_companion_root "$TEST_DIR/user-root"
+  # The rewrite replaced jq's `[...][0]` with a shell loop, so array order has
+  # to be preserved explicitly rather than by jq's indexing.
+  write_installed "[
+    { \"scope\": \"local\", \"installPath\": \"$TEST_DIR/first-root\",  \"version\": \"1.0.6\", \"projectPath\": \"$FAKE_REPO\" },
+    { \"scope\": \"local\", \"installPath\": \"$TEST_DIR/second-root\", \"version\": \"1.0.6\", \"projectPath\": \"$FAKE_REPO\" },
+    { \"scope\": \"user\",  \"installPath\": \"$TEST_DIR/user-root\",   \"version\": \"1.0.6\" }
+  ]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/first-root" ] || {
+    echo "array order was not preserved by the shell loop: got $output" >&2
+    return 1
+  }
+}
+
+@test "review_codex_plugin_root: a local entry with no projectPath is skipped, not matched" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/local-root"
+  make_companion_root "$TEST_DIR/user-root"
+  # `_review_canonical_dir ""` must not resolve to the cwd and accidentally
+  # match the repo root.
+  write_installed "[
+    { \"scope\": \"local\", \"installPath\": \"$TEST_DIR/local-root\", \"version\": \"1.0.6\" },
+    { \"scope\": \"user\",  \"installPath\": \"$TEST_DIR/user-root\",  \"version\": \"1.0.6\" }
+  ]"
+  write_registry '[[agents]]
+name = "codex"
+mode = "codex-plugin"'
+  run review_codex_plugin_root "$TEST_DIR/agents.toml" codex
+  [ "$status" -eq 0 ]
+  [ "$output" = "$TEST_DIR/user-root" ] || {
+    echo "a local entry with no projectPath was selected: $output" >&2
+    return 1
+  }
+}
