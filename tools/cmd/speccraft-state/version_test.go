@@ -12,8 +12,8 @@ func Test_StateCmd_Version_Is1180(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr=%s", code, stderr)
 	}
 	got := strings.TrimSpace(stdout)
-	if got != "1.18.0" {
-		t.Errorf("--version = %q, want %q", got, "1.18.0")
+	if got != "1.19.0" {
+		t.Errorf("--version = %q, want %q", got, "1.19.0")
 	}
 }
 

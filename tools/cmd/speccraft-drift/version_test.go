@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func Test_DriftCmd_Version_Const1180(t *testing.T) {
-	if version != "1.18.0" {
-		t.Errorf("version = %q, want %q", version, "1.18.0")
+	if version != "1.19.0" {
+		t.Errorf("version = %q, want %q", version, "1.19.0")
 	}
 }

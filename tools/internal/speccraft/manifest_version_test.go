@@ -13,7 +13,7 @@ import (
 
 func Test_Manifests_VersionIs1180(t *testing.T) {
 	root := findDocsRoot(t)
-	const want = `"version": "1.18.0"`
+	const want = `"version": "1.19.0"`
 	const stale = "1.17.0"
 	for _, rel := range []string{
 		filepath.Join(".claude-plugin", "plugin.json"),
