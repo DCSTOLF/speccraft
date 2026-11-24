@@ -520,6 +520,7 @@ make_round_dir() {
   make_round_dir
   review_subagent_record "$ROUND_DIR" good agent_g 600
   printf 'verdict: approve\n' > "$ROUND_DIR/good.out"
+  review_subagent_completed "$ROUND_DIR" good > /dev/null
   run review_subagent_collect "$ROUND_DIR" good
   [ "$status" -eq 0 ]
   [ "$output" = "ok" ]
@@ -554,6 +555,7 @@ make_round_dir() {
   make_round_dir
   review_subagent_record "$ROUND_DIR" tardy agent_t -5
   printf 'verdict: approve\n' > "$ROUND_DIR/tardy.out"
+  review_subagent_completed "$ROUND_DIR" tardy > /dev/null
   run review_subagent_collect "$ROUND_DIR" tardy
   [ "$status" -eq 0 ]
   [ "$output" = "timeout late-completion" ]
@@ -572,6 +574,7 @@ make_round_dir() {
   make_round_dir
   review_subagent_record "$ROUND_DIR" tardy agent_t -5
   printf 'verdict: approve\n' > "$ROUND_DIR/tardy.out"
+  review_subagent_completed "$ROUND_DIR" tardy > /dev/null
   out="$(review_subagent_collect "$ROUND_DIR" tardy)"
   printf 'tardy %s\n' "$out" > "$TEST_DIR/outcomes"
   run review_approval_quorum_met 1 "$TEST_DIR/outcomes"
@@ -598,6 +601,7 @@ make_round_dir() {
   # re-finalizing with the late record must not either — the round is over.
   review_subagent_record "$ROUND_DIR" tardy agent_t -5
   printf 'verdict: approve\n' > "$ROUND_DIR/tardy.out"
+  review_subagent_completed "$ROUND_DIR" tardy > /dev/null
   out="$(review_subagent_collect "$ROUND_DIR" tardy)"
   printf 'tardy %s\n' "$out" >> "$TEST_DIR/outcomes"
   run review_finalize_round "$dir" 1 "$TEST_DIR/outcomes"
@@ -613,6 +617,7 @@ make_round_dir() {
   source "$LIB"
   make_round_dir
   review_subagent_record "$ROUND_DIR" ondisk agent_o 600
+  review_subagent_completed "$ROUND_DIR" ondisk > /dev/null
   # AC17a. Pass a plausible verdict as a THIRD argument and leave the artifact
   # absent: a collector that accepted pasted content would answer ok.
   run review_subagent_collect "$ROUND_DIR" ondisk 'verdict: approve'
@@ -720,9 +725,10 @@ make_round_dir() {
   }
 }
 
-@test "the runbook's protocol calls each of the four subagent helpers" {
+@test "the runbook's protocol calls each of the five subagent helpers" {
   local fn
-  for fn in review_subagent_record review_subagent_deadline_expired \
+  for fn in review_subagent_record review_subagent_completed \
+            review_subagent_deadline_expired \
             review_subagent_collect review_subagent_stop_failed; do
     grep -qF "$fn" "$RUNBOOK" || {
       echo "the runbook's protocol never calls $fn:" >&2
@@ -760,22 +766,28 @@ make_round_dir() {
   }
 }
 
-@test "a late reviewer with no artifact is recorded late, not as no-output" {
+@test "a reviewer with no artifact is no-output, whatever the clock says" {
   source "$LIB"
   make_round_dir
-  # The ordering case. Both facts are true — it was late AND it wrote nothing —
-  # so the order of the two checks decides the label, and that has to be a
-  # CHOICE rather than an accident of how the function was written.
+  # THIS ROW WAS REVERSED by Phase G.5, deliberately and not reluctantly.
   #
-  # Lateness wins: once the deadline has passed the round has already
-  # finalized, so "this arrived too late to count" is the governing fact, and
-  # what the artifact holds no longer matters. Both labels are non-verdicts, so
-  # quorum is unaffected either way; this pins which one an operator reads.
+  # It used to assert that lateness governs when BOTH facts are true — the
+  # deadline had passed and nothing was written. That ordering only made sense
+  # while lateness was decided by comparing NOW against the deadline. Round 8
+  # showed that test to be wrong: the protocol has the orchestrator wait for
+  # the SLOWEST reviewer before collecting, so "now is past the deadline" was
+  # true for every reviewer in any round containing one timeout, and a fast
+  # reviewer's timely verdict was being thrown away.
+  #
+  # Lateness is now decided by the ARTIFACT's mtime — did the output LAND after
+  # its deadline, which is what AC20b actually says. With no artifact there is
+  # no time to compare, so the only fact available is the diagnosable one: the
+  # agent returned without writing a verdict.
   review_subagent_record "$ROUND_DIR" tardy agent_t -5
   run review_subagent_collect "$ROUND_DIR" tardy
   [ "$status" -eq 0 ]
-  [ "$output" = "timeout late-completion" ] || {
-    echo "expected lateness to govern; got: $output" >&2
+  [ "$output" = "failed subagent-no-output" ] || {
+    echo "expected subagent-no-output with no artifact to time; got: $output" >&2
     return 1
   }
 }
@@ -1007,7 +1019,11 @@ snapshots() {
 @test "the runbook's attribution rule is conditioned on how many subagents ran" {
   # The landed text said both reviewers record it whenever "more than one
   # subagent" is active, with no one-agent arm and no clean-round arm.
-  grep -qF 'review_attribute_tree_writes' "$RUNBOOK" || {
+  # `review_attribute_tree_` covers both names: the runbook now calls the
+  # REWRITING form (`_outcomes`), and this row is about the RULE being
+  # conditioned on the subagent count, not about which of the two it calls.
+  # The sibling row below pins that it uses the rewriting one.
+  grep -qF 'review_attribute_tree_' "$RUNBOOK" || {
     echo "the runbook does not call the attributor:" >&2
     sed -n '/^## 7\./,$p' "$RUNBOOK" >&2
     return 1
@@ -1057,4 +1073,427 @@ snapshots() {
     return 1
   }
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# Phase G.5 — remediation from cross-model code-review round 8.
+#
+# Four defects, all reproduced before being fixed, and all invisible to the
+# unit rows above because each lives in the SEAM between two helpers that are
+# individually correct.
+# ---------------------------------------------------------------------------
+
+@test "the outcomes file never records the ok token" {
+  source "$LIB"
+  make_round_dir
+  # `ok` is the PROCEED signal, the same shape review_budget_check and
+  # review_subagent_preflight use. It is not an outcome: the outcomes file is
+  # read as `<agent> <outcome> <rest>`, and `ok` hits
+  # _review_outcome_kind's unknown-token arm, which aborts the whole round with
+  # exit 2. The runbook recorded it unconditionally, so EVERY successful
+  # subagent round died at the first predicate.
+  review_subagent_record "$ROUND_DIR" rev agent_1 600
+  printf 'verdict: approve\n' > "$ROUND_DIR/rev.out"
+  review_subagent_completed "$ROUND_DIR" rev > /dev/null
+  local col
+  col="$(review_subagent_collect "$ROUND_DIR" rev)"
+  [ "$col" = "ok" ]
+  run _review_outcome_kind "$col"
+  [ "$status" -eq 2 ] || {
+    echo "ok has become a recordable outcome; this row needs rethinking" >&2
+    return 1
+  }
+  # So the runbook must BRANCH on it rather than append it.
+  grep -qE 'if \[ "\$COL" != ok \]|\[ "\$COL" = ok \]' "$RUNBOOK" || {
+    echo "the runbook does not branch on collect's ok token:" >&2
+    grep -nF 'review_subagent_collect' -A3 "$RUNBOOK" >&2
+    return 1
+  }
+}
+
+@test "no runbook step appends collect's output without testing it first" {
+  # The exact shape that shipped: `printf ... "$(review_subagent_collect …)" >> "$OUTCOMES"`.
+  grep -qE 'review_subagent_collect[^)]*\)" *>> *"\$OUTCOMES"' "$RUNBOOK" && {
+    echo "the runbook still appends collect's output unconditionally:" >&2
+    grep -nE 'review_subagent_collect' "$RUNBOOK" >&2
+    return 1
+  }
+  # Premise: the pattern matches the line it forbids.
+  printf '  printf "%%s %%s\\n" "$agent" "$(review_subagent_collect "$ROUND_DIR" "$agent")" >> "$OUTCOMES"\n' \
+    > "$TEST_DIR/old-step6"
+  grep -qE 'review_subagent_collect[^)]*\)" *>> *"\$OUTCOMES"' "$TEST_DIR/old-step6" || {
+    echo "the guard pattern does not match the historical line" >&2
+    cat "$TEST_DIR/old-step6" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "a verdict stamped before its deadline is on time even when collected later" {
+  source "$LIB"
+  make_round_dir
+  # The defect round 8 found: lateness was decided by comparing NOW against the
+  # deadline, at the moment of collection. The protocol has the orchestrator
+  # wait for the SLOWEST reviewer's deadline before collecting (§4 steps 3-4),
+  # so a fast reviewer's perfectly timely verdict was recorded
+  # `timeout late-completion` and dropped from quorum. One timeout could
+  # discard every other verdict in the round.
+  #
+  # AC20b is about output that LANDS after its deadline, so what decides is the
+  # completion stamp the orchestrator writes when the notification arrives.
+  review_subagent_record "$ROUND_DIR" ontime agent_o 600
+  printf 'verdict: approve\n' > "$ROUND_DIR/ontime.out"
+  review_subagent_completed "$ROUND_DIR" ontime > /dev/null
+  # Now move the deadline to just AFTER the completion stamp and well before
+  # now — the fast-reviewer-plus-one-timeout shape, where collection happens
+  # long after the deadline has passed.
+  local done_at
+  done_at="$(awk -F= '/^completed=/ {print $2; exit}' "$ROUND_DIR/ontime.subagent")"
+  [ -n "$done_at" ] || { echo "no completion stamp was written" >&2; return 1; }
+  printf 'agent=ontime\nagent_id=agent_o\nlaunched=%s\ndeadline=%s\ncompleted=%s\n' \
+    "$((done_at - 10))" "$((done_at + 1))" "$done_at" > "$ROUND_DIR/ontime.subagent"
+  run review_subagent_collect "$ROUND_DIR" ontime
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ] || {
+    echo "a verdict stamped before its deadline was recorded '$output'" >&2
+    return 1
+  }
+}
+
+@test "a verdict stamped after its deadline is still late-completion" {
+  source "$LIB"
+  make_round_dir
+  # The converse, so the fix above cannot have simply disabled the check.
+  review_subagent_record "$ROUND_DIR" tardy2 agent_t2 600
+  printf 'verdict: approve\n' > "$ROUND_DIR/tardy2.out"
+  review_subagent_completed "$ROUND_DIR" tardy2 > /dev/null
+  local done_at
+  done_at="$(awk -F= '/^completed=/ {print $2; exit}' "$ROUND_DIR/tardy2.subagent")"
+  printf 'agent=tardy2\nagent_id=agent_t2\nlaunched=%s\ndeadline=%s\ncompleted=%s\n' \
+    "$((done_at - 100))" "$((done_at - 1))" "$done_at" > "$ROUND_DIR/tardy2.subagent"
+  run review_subagent_collect "$ROUND_DIR" tardy2
+  [ "$output" = "timeout late-completion" ] || {
+    echo "a verdict stamped after its deadline was recorded '$output'" >&2
+    return 1
+  }
+}
+
+@test "review_subagent_completed stamps an epoch second into the launch record" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" rev agent_r 600
+  run review_subagent_completed "$ROUND_DIR" rev
+  [ "$status" -eq 0 ]
+  case "$output" in ''|*[!0-9]*) echo "not an epoch second: '$output'" >&2; return 1 ;; esac
+  grep -qE '^completed=[0-9]+$' "$ROUND_DIR/rev.subagent" || {
+    echo "no completed= line in the record:" >&2
+    cat "$ROUND_DIR/rev.subagent" >&2
+    return 1
+  }
+  local now; now="$(date +%s)"
+  [ "$output" -le "$now" ] && [ "$output" -ge "$((now - 120))" ]
+}
+
+@test "stamping an unrecorded agent is a named error" {
+  source "$LIB"
+  make_round_dir
+  # A stamp with no launch record has no deadline to be judged against, so it
+  # would be data nothing can use.
+  run review_subagent_completed "$ROUND_DIR" neverlaunched
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qF "neverlaunched"
+}
+
+@test "an artifact with no completion stamp is a named error, never a guess" {
+  source "$LIB"
+  make_round_dir
+  # This is the one case where guessing is tempting and wrong twice over.
+  # Falling back to `now` reintroduces the exact defect round 8 found;
+  # assuming on-time lets a genuinely late verdict into quorum. So the
+  # protocol must have stamped it, and if it did not, say so.
+  review_subagent_record "$ROUND_DIR" unstamped agent_u 600
+  printf 'verdict: approve\n' > "$ROUND_DIR/unstamped.out"
+  run review_subagent_collect "$ROUND_DIR" unstamped
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qF 'review_subagent_completed' || {
+    echo "the error does not name the missing step: $output" >&2
+    return 1
+  }
+}
+
+@test "a missing artifact is no-output even when the deadline has passed" {
+  source "$LIB"
+  make_round_dir
+  # The ordering changed with the fix: no-output is now decided FIRST, because
+  # with the artifact's mtime as the lateness test there is nothing to read a
+  # time from when the artifact is absent. The agent returned without writing,
+  # which is the diagnosable fact.
+  review_subagent_record "$ROUND_DIR" silent2 agent_s2 -5
+  run review_subagent_collect "$ROUND_DIR" silent2
+  [ "$status" -eq 0 ]
+  [ "$output" = "failed subagent-no-output" ] || {
+    echo "expected subagent-no-output, got '$output'" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC17d — a disqualified approval must not count
+# ---------------------------------------------------------------------------
+
+@test "review_attribute_tree_outcomes replaces the implicated reviewers' records" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  review_subagent_record "$ROUND_DIR" beta  agent_b 600
+  snapshots changed
+  printf 'alpha approve\nbeta approve\n' > "$TEST_DIR/outcomes"
+  run review_attribute_tree_outcomes "$ROUND_DIR" "$TEST_DIR/outcomes"
+  # Exit 1 means "records were rewritten", matching
+  # review_hash_collision_outcomes; exit 0 means the tree was clean. A caller
+  # that treated 1 as failure would abort a round on a correct disqualification.
+  [ "$status" -eq 1 ]
+  # REPLACED, not appended: one authoritative record per reviewer.
+  [ "$(grep -c . "$TEST_DIR/outcomes")" -eq 2 ] || {
+    echo "the outcomes file grew instead of being rewritten:" >&2
+    cat "$TEST_DIR/outcomes" >&2
+    return 1
+  }
+  grep -qxF 'alpha failed subagent-wrote-files <unattributed>' "$TEST_DIR/outcomes"
+  grep -qxF 'beta failed subagent-wrote-files <unattributed>' "$TEST_DIR/outcomes"
+  grep -qF 'approve' "$TEST_DIR/outcomes" && {
+    echo "a disqualified approval survived the rewrite:" >&2
+    cat "$TEST_DIR/outcomes" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "a disqualified approval cannot meet quorum" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  review_subagent_record "$ROUND_DIR" beta  agent_b 600
+  snapshots changed
+  printf 'alpha approve\nbeta approve\n' > "$TEST_DIR/outcomes"
+  review_attribute_tree_outcomes "$ROUND_DIR" "$TEST_DIR/outcomes" || true
+  # The whole point of AC17d. Before the fix the attribution was APPENDED, so
+  # the approvals stayed in the file and the round reported
+  # responses_complete: false with approval_quorum_met: TRUE — an innocent
+  # reviewer's approval carrying a round whose integrity is unknown.
+  run review_approval_quorum_met 1 "$TEST_DIR/outcomes"
+  [ "$status" -eq 1 ] || { echo "the disqualified approval still met quorum" >&2; return 1; }
+  run review_responses_complete "$TEST_DIR/outcomes"
+  [ "$status" -eq 1 ]
+}
+
+@test "the rewrite leaves an uninvolved reviewer's verdict intact" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  snapshots changed
+  # A cli reviewer has no launch record, so it is not implicated — and its
+  # verdict must survive. A rewrite that blanked the whole file would pass the
+  # rows above.
+  printf 'alpha approve\ncodex changes-requested\n' > "$TEST_DIR/outcomes"
+  review_attribute_tree_outcomes "$ROUND_DIR" "$TEST_DIR/outcomes" || true
+  grep -qxF 'codex changes-requested' "$TEST_DIR/outcomes" || {
+    echo "an uninvolved reviewer's verdict was rewritten:" >&2
+    cat "$TEST_DIR/outcomes" >&2
+    return 1
+  }
+  grep -qxF 'alpha failed subagent-wrote-files' "$TEST_DIR/outcomes"
+}
+
+@test "a clean tree leaves the outcomes file byte-unchanged" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  snapshots same
+  printf 'alpha approve\n' > "$TEST_DIR/outcomes"
+  cp "$TEST_DIR/outcomes" "$TEST_DIR/before"
+  run review_attribute_tree_outcomes "$ROUND_DIR" "$TEST_DIR/outcomes"
+  [ "$status" -eq 0 ]
+  cmp -s "$TEST_DIR/before" "$TEST_DIR/outcomes" || {
+    echo "a clean round rewrote the outcomes file" >&2
+    return 1
+  }
+}
+
+@test "the runbook rewrites outcomes rather than appending the attribution" {
+  grep -qF 'review_attribute_tree_outcomes' "$RUNBOOK" || {
+    echo "the runbook does not use the rewriting form:" >&2
+    grep -nF 'review_attribute_tree' "$RUNBOOK" >&2
+    return 1
+  }
+  # And the appending form must be gone, or both run and the file grows.
+  grep -qE 'review_attribute_tree_writes[^)]*>> *"\$OUTCOMES"' "$RUNBOOK" && {
+    echo "the runbook still appends the attribution:" >&2
+    grep -nF 'review_attribute_tree' "$RUNBOOK" >&2
+    return 1
+  }
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# AC18b — the preflight holes
+# ---------------------------------------------------------------------------
+
+@test "a YAML block-list tools key is read, not treated as absent" {
+  source "$LIB"
+  # The hole: _review_frontmatter_field returns the text after `tools:` on the
+  # SAME line. A block list leaves that empty, which took the "declares no
+  # tools, inherits everything" branch — so a Write-less agent passed preflight
+  # and the round later recorded subagent-no-output after a full model run.
+  cat > "$AGENTS_DIR/blocked.md" <<'AGENT'
+---
+name: blocked
+tools:
+  - Read
+  - Grep
+model: inherit
+---
+body
+AGENT
+  run review_subagent_preflight "$AGENTS_DIR" blocked
+  [ "$status" -eq 0 ]
+  [ "$output" = "failed subagent-launch missing-write-tool" ] || {
+    echo "a block-list agent with no Write was not refused: '$output'" >&2
+    return 1
+  }
+}
+
+@test "a block list containing Write passes, and one containing Edit warns" {
+  source "$LIB"
+  cat > "$AGENTS_DIR/blockok.md" <<'AGENT'
+---
+name: blockok
+tools:
+  - Read
+  - Write
+model: inherit
+---
+body
+AGENT
+  run review_subagent_preflight "$AGENTS_DIR" blockok
+  [ "$output" = "ok" ]
+  cat > "$AGENTS_DIR/blockedit.md" <<'AGENT'
+---
+name: blockedit
+tools:
+  - Read
+  - Edit
+  - Write
+model: inherit
+---
+body
+AGENT
+  out="$(review_subagent_preflight "$AGENTS_DIR" blockedit 2>/dev/null)"
+  [ "$out" = "ok" ]
+  err="$(review_subagent_preflight "$AGENTS_DIR" blockedit 2>&1 >/dev/null)"
+  printf '%s\n' "$err" | grep -qF "Edit" || {
+    echo "the Edit warning is missing for a block list: '$err'" >&2
+    return 1
+  }
+}
+
+@test "a genuinely absent tools key still takes the unconfined arm" {
+  source "$LIB"
+  # The block-list fix must not swallow the real no-tools case.
+  make_agent nokey ''
+  out="$(review_subagent_preflight "$AGENTS_DIR" nokey 2>/dev/null)"
+  [ "$out" = "ok" ]
+  err="$(review_subagent_preflight "$AGENTS_DIR" nokey 2>&1 >/dev/null)"
+  printf '%s\n' "$err" | grep -qF "no tools" || {
+    echo "an agent with no tools key lost its warning: '$err'" >&2
+    return 1
+  }
+}
+
+@test "a foreign plugin qualifier is refused, not resolved against speccraft's agents" {
+  source "$LIB"
+  make_agent reviewer '[Read, Grep, Glob, Write]'
+  # The hole: `${type##*:}` strips EVERY qualifier, so `otherplugin:reviewer`
+  # was approved by inspecting speccraft's own agents/reviewer.md while the
+  # Agent tool would launch a different plugin's agent entirely — one that may
+  # lack Write (the very failure this check exists to prevent) or declare Edit
+  # (whose warning is then never shown).
+  run review_subagent_preflight "$AGENTS_DIR" otherplugin:reviewer
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qE '^failed subagent-launch ' || {
+    echo "a foreign plugin qualifier was accepted: '$output'" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF 'otherplugin' || {
+    echo "the refusal does not name the qualifier: '$output'" >&2
+    return 1
+  }
+}
+
+@test "a multi-colon qualifier is refused too" {
+  source "$LIB"
+  make_agent reviewer '[Read, Grep, Glob, Write]'
+  run review_subagent_preflight "$AGENTS_DIR" a:b:reviewer
+  printf '%s\n' "$output" | grep -qE '^failed subagent-launch ' || {
+    echo "a:b:reviewer was accepted: '$output'" >&2
+    return 1
+  }
+}
+
+@test "speccraft's own qualifier is still stripped" {
+  source "$LIB"
+  make_agent reviewer '[Read, Grep, Glob, Write]'
+  # The regression floor for the fix: the dispatch default IS
+  # `speccraft:reviewer`, so refusing every qualifier would refuse the one
+  # reviewer this spec ships.
+  run review_subagent_preflight "$AGENTS_DIR" speccraft:reviewer
+  [ "$output" = "ok" ]
+  run review_subagent_preflight "$AGENTS_DIR" reviewer
+  [ "$output" = "ok" ]
+}
+
+@test "an agent name with a newline or a glob character is refused" {
+  source "$LIB"
+  make_round_dir
+  # Registry names are user-controlled, and the launch record is a
+  # `key=value` file read with awk -F=. A newline in the name breaks that
+  # format; a glob character can match a path the caller did not mean.
+  run review_subagent_record "$ROUND_DIR" 'two
+lines' agent_x 600
+  [ "$status" -eq 2 ]
+  run review_subagent_record "$ROUND_DIR" 'star*' agent_x 600
+  [ "$status" -eq 2 ]
+  run review_subagent_record "$ROUND_DIR" 'brack[et]' agent_x 600
+  [ "$status" -eq 2 ]
+  # …while the names real registries use are still accepted.
+  run review_subagent_record "$ROUND_DIR" 'claude-p' agent_x 600
+  [ "$status" -eq 0 ]
+  run review_subagent_record "$ROUND_DIR" 'codex_acp.v2' agent_x 600
+  [ "$status" -eq 0 ]
+}
+
+@test "the runbook stamps completion before it collects" {
+  # Ordering again, and for the same reason as the outcomes-file init: the
+  # stamp has to be written when the notification arrives, which is strictly
+  # before the collection step that reads it. A runbook that stamped at
+  # collection time would reproduce exactly the defect the stamp replaced.
+  local stamp collect
+  stamp="$(grep -nF 'review_subagent_completed' "$RUNBOOK" | head -1 | cut -d: -f1)"
+  collect="$(grep -nF 'review_subagent_collect' "$RUNBOOK" | head -1 | cut -d: -f1)"
+  [ -n "$stamp" ] || { echo "the runbook never stamps completion" >&2; return 1; }
+  [ -n "$collect" ] || { echo "the runbook never collects; row would be vacuous" >&2; return 1; }
+  [ "$stamp" -lt "$collect" ] || {
+    echo "the runbook stamps at line $stamp, after collecting at $collect" >&2
+    return 1
+  }
+}
+
+@test "the runbook says collection time is not completion time" {
+  # The reasoning has to be in the text, or the next editor moves the stamp to
+  # the collection step because it reads more tidily there.
+  grep -qiE 'collection time is NOT|not when (it|the reviewer) finished' "$RUNBOOK" || {
+    echo "the runbook does not warn that collection time is not completion time:" >&2
+    grep -niF 'review_subagent_completed' -A3 "$RUNBOOK" >&2
+    return 1
+  }
 }

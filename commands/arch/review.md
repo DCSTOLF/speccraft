@@ -44,8 +44,10 @@ Steps:
    synthesis of refusals must never replace a real prior review:
    ```bash
    DESIGN_DIR="$REPO_ROOT/design/$ACTIVE"
+   AUTHORS="$(review_doc_authors "$DESIGN_DIR/design.md")"
    if ! review_responses_complete "$OUTCOMES"; then
-     review_finalize_round "$DESIGN_DIR" "$QUORUM" "$OUTCOMES" design
+     review_finalize_round "$DESIGN_DIR" "$QUORUM" "$OUTCOMES" design \
+       .speccraft/agents.toml "$AUTHORS"
      exit 0
    fi
    ```
@@ -55,7 +57,8 @@ Steps:
    do you **Write** `design/$ACTIVE/review.md` with the synthesized verdict,
    and then:
    ```bash
-   review_finalize_round "$DESIGN_DIR" "$QUORUM" "$OUTCOMES" design
+   review_finalize_round "$DESIGN_DIR" "$QUORUM" "$OUTCOMES" design \
+     .speccraft/agents.toml "$AUTHORS"
    ```
    The `design` kind is what keeps this lane out of the spec lane's durable
    writes: no `review-snapshot.md` is promoted and no `reviewed_sha256:` is

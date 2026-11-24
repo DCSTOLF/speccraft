@@ -78,20 +78,21 @@ reference_read = true
 strengths = ["general", "review"]
 
 # ---------------------------------------------------------------------------
-# A note on vendors, because the default here is a choice and not an accident.
+# A note on the SAME-VENDOR DEFAULT.
 #
-# As shipped, the enabled reviewers are `codex` (openai) and `subagent`
-# (anthropic): a round that consults two vendors. If you disable one of them —
-# or add `claude-p` and drop `codex` — the round still reports a quorum, but
-# every approval now comes from one vendor's models, often the same vendor that
-# wrote the document under review. A round like that records
+# The `cli` entries above need their binaries on PATH. The `subagent` entry
+# does not — it runs inside the Claude Code session you are already in. So on a
+# machine with no aux CLI installed, the only reviewer that actually answers is
+# the subagent, and quorum (1, below) can be met by a Claude reviewer on a
+# Claude-authored document. A round like that records
 # `single_vendor_approval: true` in its report and in `review.md`.
 #
 # That is a record, not a gate: the round still meets quorum and nothing is
-# refused. It is written down so a reader weeks later can see it, because "two
-# reviewers agreed" reads differently once you know both were the same vendor.
+# refused. It is written down so a reader weeks later can see it, because "the
+# reviewers agreed" reads differently once you know they were one vendor.
 #
-# Keeping a second vendor in the enabled set is what makes the flag stay false.
+# Enabling the `codex-plugin` entry below — after `/codex:setup` — is how you
+# get a genuine cross-vendor round without installing a separate CLI.
 # ---------------------------------------------------------------------------
 
 # Opt-in, and disabled until you have the Codex plugin. `/codex:setup` checks

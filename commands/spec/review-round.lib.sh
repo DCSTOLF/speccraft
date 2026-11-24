@@ -704,13 +704,45 @@ _review_subagent_rec() {
     return 2
   }
   [ -n "$agent" ] || { review_error "review subagent: agent name required"; return 2; }
+  # An allow-LIST, not a deny-list. The record is a `key=value` file read with
+  # `awk -F=`, so a newline in the name breaks the format; a glob character can
+  # match a path the caller did not mean; and registry names are
+  # user-controlled. A deny-list of `/` and `\` missed both (round 8).
   case "$agent" in
-    *[/\\]*|.|..)
-      review_error "review subagent: agent name '$agent' is not a bare registry key"
+    *[!A-Za-z0-9._-]*|.|..)
+      review_error "review subagent: agent name '$agent' is not a bare registry key (allowed: letters, digits, dot, underscore, hyphen)"
       return 2
       ;;
   esac
   printf '%s/%s.subagent\n' "$dir" "$agent"
+}
+
+# review_subagent_completed <round-dir> <agent> — stamp the moment the
+# orchestrator OBSERVED this reviewer finish, into its launch record.
+#
+# Call it the instant the completion notification arrives, before any other
+# tool call. That instant is the only time the information exists: the
+# orchestrator is re-invoked when a backgrounded agent finishes, and by the
+# time it gets round to collecting, an unknown number of tool calls have passed.
+#
+# Why a stamp rather than the artifact's mtime, which was the first fix for the
+# same defect: there is no portable way to read an mtime in shell. `date -r`
+# means "read this FILE" to GNU date and "this epoch SECOND" to BSD date;
+# `stat` wants `-c %Y` on GNU and `-f %m` on BSD, and this repo's portability
+# guard flags the GNU spelling on sight — correctly, since it is exactly the
+# kind of form that works on CI and fails on a maintainer's laptop. A stamp the
+# round writes itself is integer arithmetic over data we own, and it records
+# the event AC20b is actually about.
+review_subagent_completed() {
+  local dir="${1:-}" agent="${2:-}" rec now
+  rec="$(_review_subagent_rec "$dir" "$agent")" || return 2
+  [ -f "$rec" ] || {
+    review_error "review_subagent_completed: no launch record for agent \"$agent\" in $dir"
+    return 2
+  }
+  now="$(date +%s)"
+  printf 'completed=%s\n' "$now" >> "$rec"
+  printf '%s\n' "$now"
 }
 
 # _review_is_int <value> — a base-10 integer, optionally negative. A negative
@@ -802,24 +834,42 @@ review_subagent_deadline_expired() {
 # result stand in for the artifact whose digest attestation covers, and the
 # attestation would then prove nothing.
 #
-# Lateness is checked FIRST. Once the deadline has passed the round has already
-# finalized, so what the artifact holds no longer matters — keeping a late
-# approve out of quorum matters more than labelling precisely why it is
-# unusable. `timeout` is in REVIEW_NON_VERDICTS, which is the mechanism.
+# Lateness is decided by the recorded COMPLETION stamp, not by the clock at
+# collection time. That was wrong at first and round 8 caught it: the protocol
+# has the orchestrator wait for the SLOWEST reviewer's deadline before
+# collecting (§4 steps 3-4), so "now is past the deadline" was true for EVERY
+# reviewer in any round containing one timeout — and a fast reviewer's
+# perfectly timely verdict was recorded `timeout late-completion` and dropped
+# from quorum. One slow reviewer could discard every other verdict.
+#
+# AC20b is about output that LANDS after its deadline, which is what
+# `review_subagent_completed` stamps at the moment the notification arrives.
+#
+# No-output is decided FIRST: an agent that returned without writing a verdict
+# is diagnosable whatever the clock said, and there is nothing to judge the
+# timing of.
+#
+# A missing completion stamp is a NAMED error, never a guess. Falling back to
+# "now" is precisely the bug above, and assuming on-time would let a genuinely
+# late verdict into quorum — so the protocol has to have stamped it, and if it
+# did not, that is the thing to fix.
 review_subagent_collect() {
-  local dir="${1:-}" agent="${2:-}" art rc=0
-  review_subagent_deadline_expired "$dir" "$agent" || rc=$?
-  [ "$rc" -ne 2 ] || return 2
-  if [ "$rc" -eq 0 ]; then
-    printf 'timeout late-completion\n'
-    return 0
-  fi
+  local dir="${1:-}" agent="${2:-}" art deadline landed
+  deadline="$(_review_subagent_field "$dir" "$agent" deadline)" || return 2
   art="$dir/$agent.out"
   # Whitespace-only counts as no output: a reviewer that wrote a newline has
   # not returned a verdict, and an empty verdict is the one thing worse than a
   # missing one.
-  if [ ! -f "$art" ] || [ -z "$(tr -d '[:space:]' < "$art")" ]; then
+  if [ ! -f "$art" ] || [ -z "$(LC_ALL=C tr -d '[:space:]' < "$art")" ]; then
     printf 'failed subagent-no-output\n'
+    return 0
+  fi
+  landed="$(_review_subagent_field "$dir" "$agent" completed)" || {
+    review_error "review_subagent_collect: agent \"$agent\" wrote an artifact but has no completion stamp; call review_subagent_completed when the notification arrives — collection time is NOT when it finished"
+    return 2
+  }
+  if [ "$landed" -gt "$deadline" ]; then
+    printf 'timeout late-completion\n'
     return 0
   fi
   printf 'ok\n'
@@ -922,4 +972,58 @@ review_attribute_tree_writes() {
   done <<EOF
 $list
 EOF
+}
+
+# review_attribute_tree_outcomes <round-dir> <outcomes-file>
+#   0 — the tree was unchanged; the outcomes file is byte-unchanged
+#   1 — at least one reviewer was disqualified and its record REPLACED
+#   2 — a named error
+#
+# The companion to review_attribute_tree_writes, and the form the runbook must
+# use. Round 8 caught the difference: the runbook APPENDED the attribution, so
+# an implicated reviewer's `approve` stayed in the file alongside its own
+# `failed subagent-wrote-files`. At quorum 1 the round then printed
+# `responses_complete: false` AND `approval_quorum_met: true` — an innocent
+# reviewer's approval carrying a round whose integrity is unknown, which is
+# precisely what AC17d exists to prevent.
+#
+# So there is ONE authoritative record per reviewer. Same shape as
+# review_hash_collision_outcomes, for the same reason.
+review_attribute_tree_outcomes() {
+  local dir="${1:-}" outcomes="${2:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_attribute_tree_outcomes: round dir not found: '${dir:-}'"
+    return 2
+  }
+  [ -n "$outcomes" ] && [ -f "$outcomes" ] || {
+    review_error "review_attribute_tree_outcomes: outcomes file not found: '${outcomes:-}'"
+    return 2
+  }
+
+  local attributed rc=0
+  attributed="$(review_attribute_tree_writes "$dir" 2>/dev/null)" || rc=$?
+  [ "$rc" -ne 2 ] || return 2
+  # A clean tree, or a change no reviewer can answer for: nothing to rewrite,
+  # and the file must not be touched at all.
+  [ -n "$attributed" ] || return 0
+
+  local tmp line agent replacement
+  tmp="$(mktemp)" || return 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    agent="${line%% *}"
+    # The replacement for THIS agent, if it was implicated. Matched on the
+    # agent column of the attribution output, so a reviewer whose name is a
+    # prefix of another's is not swept in.
+    replacement="$(printf '%s\n' "$attributed" \
+      | awk -v a="$agent" '$1 == a { print; exit }')"
+    if [ -n "$replacement" ]; then
+      printf '%s\n' "$replacement" >> "$tmp"
+    else
+      printf '%s\n' "$line" >> "$tmp"
+    fi
+  done < "$outcomes"
+  cat -- "$tmp" > "$outcomes"
+  rm -f "$tmp"
+  return 1
 }

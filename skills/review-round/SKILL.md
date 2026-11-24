@@ -25,13 +25,17 @@ sent".
 | `DOC_DIR` | `specs/<id>` | `design/<id>` | `product/<id>` | the active spec dir, or the repo root |
 | Verdict written to | `$DOC_DIR/review.md` | `$DOC_DIR/review.md` | `$DOC_DIR/review.md` | nothing durable |
 
-Three shell variables are the **caller's** to set before step 0, because each
+Four shell variables are the **caller's** to set before step 0, because each
 command resolves them differently:
 
 - `AGENTS` — the space-separated reviewer names: the `--agents` list if one was
   passed, otherwise every registry entry with `enabled != false`.
 - `DOC_DIR` — the row above.
 - `QUORUM` — from the registry (`review_quorum`, default 1).
+- `AUTHORS` — the document's `authors:` frontmatter value, passed through
+  verbatim. `[claude, dstolf]` is fine; the helper normalizes brackets, commas
+  and quotes itself. For `code` rounds use the active spec's authors, or leave
+  it empty when no spec is active.
 
 `$REVIEW_TIMEOUT_S` and `$CLAUDE_PLUGIN_ROOT` come from the environment. Every
 other variable in this runbook's shell blocks is assigned by this runbook; if
@@ -234,7 +238,14 @@ no shell state survives. Seven steps, in order:
    clock each time it is consulted, so nothing is ever late.
 3. **Wait for completion notifications rather than polling.** You are
    re-invoked when a backgrounded agent finishes; a poll loop would burn tool
-   calls and still race the deadline.
+   calls and still race the deadline. **The instant a notification arrives,
+   before any other tool call, stamp it:**
+   ```bash
+   review_subagent_completed "$ROUND_DIR" "$agent"
+   ```
+   That instant is the only time the information exists. Step 6 judges lateness
+   against this stamp, and it has no fallback: collection time is NOT when the
+   reviewer finished, because you are about to wait for the slowest one.
 4. **At the deadline, stop whatever has not completed.** Check it, then call
    **TaskStop** with that agent's recorded id:
    ```bash
@@ -254,19 +265,30 @@ no shell state survives. Seven steps, in order:
    different situation from one that stopped late, and its payload and output
    path must be kept. Only an operator removing `$ROUND_DIR/quarantine`
    resolves it: no probe can ask whether a subagent is alive.
-5. **A reviewer that completes after its deadline has its output ignored**, and
-   is recorded `<agent> timeout late-completion`. The round it belonged to is
-   already finalized, so a late verdict must never re-enter quorum.
-6. **Partial output is never a verdict.** Collect from disk and let the helper
-   classify it:
+5. **A reviewer whose output LANDS after its deadline has it ignored**, and is
+   recorded `<agent> timeout late-completion`. Lateness is judged by the
+   artifact's own modification time, not by the clock when you get round to
+   collecting it — you waited for the slowest reviewer in step 4, so "now is
+   past the deadline" is true for every reviewer in any round that contained
+   one timeout. A late verdict must never re-enter quorum.
+6. **Partial output is never a verdict.** Collect from disk, and **branch** on
+   the result:
    ```bash
-   printf '%s %s\n' "$agent" \
-     "$(review_subagent_collect "$ROUND_DIR" "$agent")" >> "$OUTCOMES"
+   COL="$(review_subagent_collect "$ROUND_DIR" "$agent")"
+   if [ "$COL" != ok ]; then
+     printf '%s %s\n' "$agent" "$COL" >> "$OUTCOMES"
+     continue        # not a verdict; the other reviewers still run
+   fi
+   # else: proceed to §6's attestation, which records the real verdict
    ```
-   `ok` means proceed to attestation; `timeout late-completion` and
-   `failed subagent-no-output` are the two non-verdicts. A missing or
-   whitespace-only `$ROUND_DIR/<agent>.out` is `subagent-no-output`, never an
-   empty verdict.
+   **Do not append `COL` unconditionally.** `ok` is a PROCEED signal, the same
+   shape `review_budget_check` and `review_subagent_preflight` use — it is not
+   an outcome. The outcomes file is read as `<agent> <outcome> <rest>`, and a
+   recorded `ok` hits the unknown-token arm, which aborts the WHOLE round with
+   exit 2 at its first predicate. The other two answers,
+   `timeout late-completion` and `failed subagent-no-output`, are real
+   non-verdicts and are recorded as-is. A missing or whitespace-only
+   `$ROUND_DIR/<agent>.out` is `subagent-no-output`, never an empty verdict.
 7. **Cleanup runs only once every reviewer is proven terminal** — completed,
    timed out, or *confirmed* stopped. See §7's gate; it refuses a quarantined
    dir.
@@ -324,8 +346,16 @@ diagnostic printed harmlessly beside it.
 
 ```bash
 review_tree_snapshot > "$ROUND_DIR/tree.after"
-review_attribute_tree_writes "$ROUND_DIR" >> "$OUTCOMES"
+review_attribute_tree_outcomes "$ROUND_DIR" "$OUTCOMES" || true
 ```
+
+**`_outcomes`, not `_writes` >> the file.** The rewriting form REPLACES each
+implicated reviewer's record; appending would leave its `approve` in place
+beside its own `failed subagent-wrote-files`, and at quorum 1 the round would
+then report `responses_complete: false` AND `approval_quorum_met: true` — the
+disqualified approval still carrying the round. Exit 1 means "records were
+rewritten", not failure; exit 0 means the tree was clean and the file is
+byte-unchanged.
 
 A difference means a reviewer wrote outside its round dir. Who answers for it
 depends on **how many subagents were active** — with two running concurrently,
@@ -354,11 +384,13 @@ complete round** — gate it, write it, then finalize:
 
 ```bash
 if ! review_responses_complete "$OUTCOMES"; then
-  review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" "<KIND>"
+  review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" "<KIND>" \
+    .speccraft/agents.toml "$AUTHORS"
   # INERT round: report every refusal and every verdict obtained, and stop.
 else
   # …Write the synthesized review.md for this KIND (nothing, for `code`)…
-  review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" "<KIND>"
+  review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" "<KIND>" \
+    .speccraft/agents.toml "$AUTHORS"
 fi
 ```
 
@@ -367,6 +399,12 @@ is created where none existed, for every one of the four kinds. That matters
 beyond tidiness in the spec lane: the next `--diff` round classifies against
 `review.md`'s `reviewed_sha256:`, so a review.md replaced by a synthesis of
 refusals silently collapses spec 0035's provenance gate.
+
+**Pass the registry and the authors.** Without the 5th and 6th arguments the
+round still finalizes, but it reports no `single_vendor_approval:` line and no
+per-verdict `mode=`/`model=`/`vendor=` — so ACs 23 and 23a are simply absent
+from every real round, which is exactly how they shipped dead until round 8
+noticed that no caller passed them.
 
 `<KIND>` is not decoration. It selects which durable writes finalize performs:
 `spec` promotes `review-snapshot.md` and stamps the fingerprint; `design` and

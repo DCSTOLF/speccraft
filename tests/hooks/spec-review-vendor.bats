@@ -454,3 +454,125 @@ make_spec_dir() {
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Phase G.5 — remediation from cross-model code-review round 8.
+# ---------------------------------------------------------------------------
+
+@test "a vendor-resolution failure aborts finalize instead of printing an empty field" {
+  source "$LIB"
+  make_spec_dir
+  : > "$TOML"
+  entry known cli '["codex", "exec"]'
+  # An approving agent that is not in the registry makes review_agent_vendor
+  # fail by name. The flag was printed inside a printf argument, so the
+  # substitution's exit status was DISCARDED: the report carried
+  # `single_vendor_approval: ` with an empty value and finalize still returned
+  # 0 — a failure reported as success (round 8).
+  printf 'gone approve\n' > "$TEST_DIR/outcomes.txt"
+  run review_finalize_round "$SPEC_DIR" 1 "$TEST_DIR/outcomes.txt" spec "$TOML" claude
+  [ "$status" -eq 2 ] || {
+    echo "expected exit 2 on an unresolvable vendor, got $status" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF 'gone' || {
+    echo "the error does not name the unresolvable agent: $output" >&2
+    return 1
+  }
+  # And no half-written flag line.
+  printf '%s\n' "$output" | grep -qE '^single_vendor_approval: *$' && {
+    echo "an empty flag line was printed: $output" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "the authors list is accepted in the shape a spec's frontmatter carries it" {
+  source "$LIB"
+  : > "$TOML"
+  entry cx cli '["codex", "exec"]'
+  # The caller reads `authors:` straight out of frontmatter, where the value is
+  # `[claude, dstolf]`. Splitting on spaces alone left every author as
+  # `[claude,` or `dstolf]`, which resolve to `unknown` and are DROPPED — so a
+  # claude-authored spec approved only by openai reported `true` (one vendor)
+  # when the correct answer is `false` (two).
+  local f
+  f="$(outcomes 'cx approve')"
+  local a
+  for a in 'claude' '[claude]' 'claude,' '[claude, dstolf]' '["claude", "dstolf"]'; do
+    run review_single_vendor_approval "$TOML" "$f" "$a"
+    [ "$output" = "false" ] || {
+      echo "authors='$a' gave '$output', want false (claude + codex = two vendors)" >&2
+      return 1
+    }
+  done
+  # …and a human-only list still leaves the approval single-vendor.
+  for a in 'dstolf' '[dstolf]' '[dstolf, someone-else]'; do
+    run review_single_vendor_approval "$TOML" "$f" "$a"
+    [ "$output" = "true" ] || {
+      echo "authors='$a' gave '$output', want true (no known author vendor)" >&2
+      return 1
+    }
+  done
+}
+
+@test "review_doc_authors reads the frontmatter value verbatim" {
+  source "$LIB"
+  # One implementation, so the four commands cannot each invent a slightly
+  # different read. Emitted RAW: the normalization lives in one place, and two
+  # places stripping the same punctuation is how one strips what the other
+  # needed.
+  printf -- '---\nid: "0001"\nauthors: [claude, dstolf]\nstatus: draft\n---\n\n# Spec\n' \
+    > "$TEST_DIR/spec.md"
+  run review_doc_authors "$TEST_DIR/spec.md"
+  [ "$status" -eq 0 ]
+  [ "$output" = "[claude, dstolf]" ] || {
+    echo "got '$output', want the raw frontmatter value" >&2
+    return 1
+  }
+}
+
+@test "review_doc_authors on a document with no authors key is empty, not an error" {
+  source "$LIB"
+  # A design or brief may legitimately have none; the round still finalizes and
+  # the flag then describes the approvals alone.
+  printf -- '---\nid: "0001"\nstatus: draft\n---\n\n# Design\n' > "$TEST_DIR/design.md"
+  run review_doc_authors "$TEST_DIR/design.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "review_doc_authors on a missing document is a named error" {
+  source "$LIB"
+  run review_doc_authors "$TEST_DIR/nope.md"
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -qF 'nope.md'
+}
+
+@test "every shipped review command passes the registry and the authors" {
+  # The feature shipped DEAD: review_finalize_round only emits the vendor
+  # record when given a 5th and 6th argument, and no caller passed them, so
+  # ACs 23 and 23a were absent from every real round. Both round-8 reviewers
+  # found it independently.
+  local f n
+  for f in commands/spec/review.md commands/arch/review.md commands/pm/review.md \
+           commands/spec/review-code.md; do
+    # INVOCATIONS, not mentions: `^<indent>review_finalize_round <arg>`.
+    # A plain `grep -c` also counts the prose in spec/review.md step 6 that
+    # names the function, which made this row demand a registry argument on a
+    # sentence.
+    n="$(grep -cE '^[[:space:]]+review_finalize_round ' "$PLUGIN_DIR/$f" || true)"
+    [ "$n" -gt 0 ] || { echo "$f does not finalize at all" >&2; return 1; }
+    # Every call site must carry the registry, on its own continuation line.
+    [ "$(grep -A1 -E '^[[:space:]]+review_finalize_round ' "$PLUGIN_DIR/$f" \
+        | grep -c 'agents.toml' || true)" -ge "$n" ] || {
+      echo "$f has $n finalize call(s) but fewer registry arguments:" >&2
+      grep -n -A1 -E '^[[:space:]]+review_finalize_round ' "$PLUGIN_DIR/$f" >&2
+      return 1
+    }
+    grep -qF 'AUTHORS' "$PLUGIN_DIR/$f" || {
+      echo "$f never resolves AUTHORS" >&2
+      return 1
+    }
+  done
+}

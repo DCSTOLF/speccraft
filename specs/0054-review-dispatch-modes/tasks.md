@@ -149,6 +149,18 @@ contract: done-means-v1
   done: $ test -f tests/hooks/review-dispatch-docs.bats && test -f tools/internal/delegate/template_test.go
 - [x] T63 — GREEN: the shipped template, the convention clarification and the skill
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-dispatch-docs.bats && go test -C tools ./internal/delegate/ -count=1 && grep -q 'codex-plugin' templates/speccraft/agents.toml && grep -q 'subagent' templates/speccraft/agents.toml
+- [x] T63.1 — RED: the runbook records `ok`, the disqualified approval counts, lateness is judged at collection
+  done: $ grep -q 'never records the ok token' tests/hooks/spec-review-subagent.bats && grep -q 'stamped before its deadline' tests/hooks/spec-review-subagent.bats && grep -q 'no completion stamp' tests/hooks/spec-review-subagent.bats
+- [x] T63.2 — GREEN: collect judges lateness by the artifact, and the runbook branches on ok
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats tests/hooks/spec-review-round-runbook.bats
+- [x] T63.3 — GREEN: review_attribute_tree_outcomes rewrites the implicated reviewers' records
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats && grep -q 'review_attribute_tree_outcomes' skills/review-round/SKILL.md
+- [x] T63.4 — GREEN: preflight reads a YAML block list and refuses a foreign plugin qualifier
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats && grep -q 'unsupported-subagent-plugin' commands/spec/review.lib.sh
+- [x] T63.5 — GREEN: the vendor record reaches every shipped caller, and its failure is not silent
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-vendor.bats && grep -q 'AUTHORS' skills/review-round/SKILL.md
+- [x] T63.6 — GREEN: the refusal matches the contracted string; the template comment matches what ships
+  done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-only-mode-refusal.bats tests/hooks/review-dispatch-docs.bats && grep -q 'is a review-only dispatch mode' commands/spec/review.lib.sh
 - [ ] T64 — RED: cleanup on every exit path, never while a reviewer is pending
   done: $ test -f tests/hooks/spec-review-round-lifecycle.bats && grep -q 'pending' tests/hooks/spec-review-round-lifecycle.bats
 - [ ] T65 — GREEN: review_round_all_terminal plus the runbook cleanup gate

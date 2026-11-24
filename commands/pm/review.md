@@ -44,8 +44,10 @@ Steps:
    synthesis of refusals must never replace a real prior review:
    ```bash
    BRIEF_DIR="$REPO_ROOT/product/$ACTIVE"
+   AUTHORS="$(review_doc_authors "$BRIEF_DIR/brief.md")"
    if ! review_responses_complete "$OUTCOMES"; then
-     review_finalize_round "$BRIEF_DIR" "$QUORUM" "$OUTCOMES" brief
+     review_finalize_round "$BRIEF_DIR" "$QUORUM" "$OUTCOMES" brief \
+       .speccraft/agents.toml "$AUTHORS"
      exit 0
    fi
    ```
@@ -55,7 +57,8 @@ Steps:
    do you **Write** `product/$ACTIVE/review.md` with the synthesized verdict,
    and then:
    ```bash
-   review_finalize_round "$BRIEF_DIR" "$QUORUM" "$OUTCOMES" brief
+   review_finalize_round "$BRIEF_DIR" "$QUORUM" "$OUTCOMES" brief \
+     .speccraft/agents.toml "$AUTHORS"
    ```
    The `brief` kind is what keeps this lane out of the spec lane's durable
    writes: no `review-snapshot.md` is promoted and no `reviewed_sha256:` is

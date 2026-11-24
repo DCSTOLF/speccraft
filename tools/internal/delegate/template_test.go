@@ -84,10 +84,23 @@ func Test_ShippedTemplate_LoadsWithNewModes(t *testing.T) {
 	}
 }
 
-// The default round the template configures must consult more than one vendor.
-// A single-vendor default would make `single_vendor_approval: true` the norm
-// rather than the exception the flag exists to surface (AC23a).
-func Test_ShippedTemplate_DefaultRoundIsCrossVendor(t *testing.T) {
+// Spec 0054 §6's same-vendor default, at the loader.
+//
+// REPLACES a test I wrote and should not have:
+// Test_ShippedTemplate_DefaultRoundIsCrossVendor asserted that the default
+// enabled set spans two vendors. That was my invented policy, not the spec's —
+// §6 says the opposite, that "with only the `subagent` entry enabled, quorum
+// can be met by a Claude reviewer on a Claude-authored spec", and names
+// /codex:setup as the route OUT of that. Both round-8 reviewers caught it, and
+// both also noted it was vacuous: the pre-existing `codex` and `claude-p`
+// entries already supply two vendors, so it passed with the subagent entry
+// deleted entirely.
+//
+// What the spec does require is testable and is what this asserts: the entry
+// that needs NO external binary is enabled, so a fresh repo can run a round at
+// all; and it is an anthropic reviewer, which is why the same-vendor comment
+// has to exist.
+func Test_ShippedTemplate_HasAnEnabledReviewerNeedingNoBinary(t *testing.T) {
 	src := filepath.Join("..", "..", "..", "templates", "speccraft", "agents.toml")
 	body, err := os.ReadFile(src)
 	if err != nil {
@@ -99,41 +112,24 @@ func Test_ShippedTemplate_DefaultRoundIsCrossVendor(t *testing.T) {
 		t.Fatalf("the shipped template must load: %v", err)
 	}
 
-	// Resolved the same way commands/spec/review.lib.sh does it: by exact
-	// basename match on argv[0], with the two constructed modes decided by the
-	// mode itself. Kept deliberately small and duplicated rather than exported
-	// — if the shell table and this one ever disagree, the disagreement is
-	// about which vendor a BINARY belongs to, which is a fact, not a policy.
-	vendorOf := func(a delegate.Agent) string {
-		switch a.Mode {
-		case "subagent":
-			return "anthropic"
-		case "codex-plugin":
-			return "openai"
-		}
-		if len(a.Cmd) == 0 {
-			return "unknown"
-		}
-		switch filepath.Base(a.Cmd[0]) {
-		case "claude":
-			return "anthropic"
-		case "codex":
-			return "openai"
-		}
-		return "unknown"
-	}
-
-	seen := map[string]bool{}
+	found := false
 	for _, a := range cfg.Agents {
+		if a.Mode != "subagent" {
+			continue
+		}
 		if a.Enabled != nil && !*a.Enabled {
 			continue
 		}
-		if v := vendorOf(a); v != "unknown" {
-			seen[v] = true
+		// No cmd at all is the property that matters: nothing to install, so
+		// this reviewer answers on a machine with no aux CLI on PATH.
+		if len(a.Cmd) != 0 {
+			t.Errorf("the enabled subagent entry %q carries a cmd, so it is not install-free: %v",
+				a.Name, a.Cmd)
 		}
+		found = true
 	}
-	if len(seen) < 2 {
-		t.Errorf("the default enabled set resolves to %d known vendor(s) (%v); "+
-			"a fresh init should be able to run a cross-vendor round", len(seen), seen)
+	if !found {
+		t.Error("no enabled subagent entry: a fresh repo with no aux CLI installed " +
+			"would have no reviewer that answers at all")
 	}
 }

@@ -37,6 +37,7 @@ rather than re-deriving a per-command variant.
    ```bash
    source "$PLUGIN_ROOT/commands/spec/review.lib.sh"
    SPEC_DIR="specs/<active>"
+   AUTHORS="$(review_doc_authors "$SPEC_DIR/spec.md")"
    # READ-ONLY. The snapshot promote is DEFERRED to step 6 (spec 0052 AC24):
    # promoting here would rewrite review-snapshot.md before any verdict exists,
    # so a round in which every reviewer refused would silently re-baseline the
@@ -205,7 +206,8 @@ rather than re-deriving a per-command variant.
 5. Gate synthesis on response completeness:
    ```bash
    if ! review_responses_complete "$OUTCOMES"; then
-     review_finalize_round "$SPEC_DIR" "$QUORUM" "$OUTCOMES"
+     review_finalize_round "$SPEC_DIR" "$QUORUM" "$OUTCOMES" spec \
+       .speccraft/agents.toml "$AUTHORS"
      # INERT round: report every refusal and every verdict obtained, and stop.
      exit 0
    fi
@@ -222,7 +224,8 @@ rather than re-deriving a per-command variant.
    it re-checks the completeness gate itself, so a durable write cannot happen
    behind this runbook's back:
    ```bash
-   review_finalize_round "$SPEC_DIR" "$QUORUM" "$OUTCOMES"
+   review_finalize_round "$SPEC_DIR" "$QUORUM" "$OUTCOMES" spec \
+     .speccraft/agents.toml "$AUTHORS"
    ```
    On a complete round this promotes `review-snapshot.md` from `spec.md` and
    stamps exactly one `reviewed_sha256:` line via temp + rename — for ANY verdict

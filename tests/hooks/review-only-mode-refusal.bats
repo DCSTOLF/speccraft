@@ -65,14 +65,38 @@ entry() {
   # a reason, and the message has to say where it DOES work rather than only
   # where it does not.
   run review_refuse_review_only_mode subagent
+  # The BARE names, as §5 and §Contracts write them. An earlier draft of this
+  # row asserted the `/speccraft:`-prefixed form and the message paraphrased
+  # the contract to match — the test and the code agreed with each other and
+  # both disagreed with the spec (round 8).
   local cmd
-  for cmd in /speccraft:spec:review /speccraft:arch:review /speccraft:pm:review \
-             /speccraft:spec:review-code; do
+  for cmd in spec:review arch:review pm:review spec:review-code; do
     printf '%s\n' "$output" | grep -qF "$cmd" || {
       echo "the refusal does not name $cmd: $output" >&2
       return 1
     }
   done
+}
+
+@test "the refusal is the contracted string, byte for byte" {
+  source "$LIB"
+  # §Contracts pins `unsupported-mode: <mode> is a review-only dispatch mode`,
+  # and §5 pins the full sentence. Asserted as a FIXED string so a paraphrase
+  # reds, because the contract is what an operator and any downstream grep
+  # match on.
+  run review_refuse_review_only_mode codex-plugin
+  printf '%s\n' "$output" | grep -qF \
+    'unsupported-mode: codex-plugin is a review-only dispatch mode (used by spec:review, arch:review, pm:review, spec:review-code); spec:delegate supports cli, acp' || {
+    echo "the refusal is not the contracted string; got:" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+  # And the mode is NOT quoted: `'codex-plugin'` would break the contracted form.
+  printf '%s\n' "$output" | grep -qF "'codex-plugin'" && {
+    echo "the mode is quoted, which the contract does not permit" >&2
+    return 1
+  }
+  return 0
 }
 
 @test "the refusal names cli and acp as what delegation supports" {

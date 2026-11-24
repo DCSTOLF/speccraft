@@ -92,7 +92,12 @@ rather than re-deriving a per-command variant.
    subagent and **report on stdout only** — this is per-iteration, not
    per-spec, so nothing is written to the spec dir:
    ```bash
-   review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" code
+   # The active spec's authors, or empty when no spec is active — a diff has
+   # no authors frontmatter of its own.
+   AUTHORS=""
+   [ -z "$ACTIVE" ] || AUTHORS="$(review_doc_authors "$DOC_DIR/spec.md")"
+   review_finalize_round "$DOC_DIR" "$QUORUM" "$OUTCOMES" code \
+     .speccraft/agents.toml "$AUTHORS"
    ```
    The `code` kind writes nothing durable: no `review.md`, no
    `review-snapshot.md`, no fingerprint, and `status: n/a` because this round

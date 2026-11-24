@@ -476,8 +476,20 @@ review_finalize_round() {
   # unconditionally. The vendor record below is additive: with no registry
   # argument nothing extra is printed, so every three-argument caller's report
   # is byte-identical to what 0052 produced. A test pins that.
-  [ -z "$toml" ] || printf 'single_vendor_approval: %s\n' \
-    "$(review_single_vendor_approval "$toml" "$file" "$authors")"
+  #
+  # The status is CAPTURED, not discarded inside a printf argument. Round 8
+  # caught that: `printf '…%s\n' "$(helper)"` throws away the helper's exit
+  # code, so an approving agent missing from the registry — which makes
+  # review_agent_vendor fail by name — printed `single_vendor_approval: ` with
+  # an EMPTY value and still returned 0. A failure reported as success.
+  if [ -n "$toml" ]; then
+    local flag
+    flag="$(review_single_vendor_approval "$toml" "$file" "$authors")" || {
+      review_error "review_finalize_round: vendor resolution failed; the round's single_vendor_approval cannot be determined"
+      return 2
+    }
+    printf 'single_vendor_approval: %s\n' "$flag"
+  fi
 
   # Every refusal AND every verdict obtained. A report naming only the failures
   # hides a real verdict from the developer; one naming only the verdicts hides
@@ -2160,14 +2172,48 @@ EOF
 # FIRST `---`-delimited block only. Scoped to the frontmatter on purpose: an
 # agent whose body documents a well-formed `tools:` list in a fenced example
 # must not thereby satisfy a check about its own grants.
+# Both YAML forms of a value are read: the inline `key: [A, B]` and the BLOCK
+# LIST
+#
+#     key:
+#       - A
+#       - B
+#
+# which is equally legal frontmatter. Reading only the same-line text made a
+# block list look like an ABSENT key, which took the "declares no tools, so it
+# inherits everything" branch — so an agent that explicitly granted itself
+# `[Read, Grep]` and no `Write` passed preflight, and the round discovered it
+# only as `subagent-no-output`, after a full model run. Found by round 8.
+#
+# A block list is emitted space-separated, so one caller (`_review_tools_has`)
+# handles both forms without caring which was written.
 _review_frontmatter_field() {
   awk -v key="$2" '
     NR == 1 && $0 == "---" { inb = 1; next }
     inb && $0 == "---"     { exit }
-    inb {
-      k = $0; sub(/:.*/, "", k)
-      if (k == key) { v = $0; sub(/^[^:]*:[ \t]*/, "", v); print v; exit }
+    collecting {
+      # An indented `- item` continues the list; anything else ends it.
+      if ($0 ~ /^[ \t]+-[ \t]*[^ \t]/) {
+        v = $0; sub(/^[ \t]*-[ \t]*/, "", v)
+        sub(/[ \t]+$/, "", v)
+        out = (out == "" ? v : out " " v)
+        next
+      }
+      print out; exit
     }
+    inb {
+      k = $0; sub(/:.*/, "", k); gsub(/[ \t]/, "", k)
+      if (k == key) {
+        v = $0; sub(/^[^:]*:[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+        if (v != "") { print v; exit }
+        # An empty same-line value: either a genuinely empty key or the head of
+        # a block list. Keep reading to find out.
+        collecting = 1
+        out = ""
+        next
+      }
+    }
+    END { if (collecting) print out }
   ' "$1"
 }
 
@@ -2210,10 +2256,31 @@ review_subagent_preflight() {
   # the first is ours to fix, the second the operator's.
   [ -d "$dir" ] || { review_error "review_subagent_preflight: agents dir not found: $dir"; return 2; }
 
-  # Strip one `<plugin>:` qualifier. `speccraft:reviewer` is the dispatch
-  # default and the file is `agents/reviewer.md`, so a preflight that did not
-  # strip it would refuse the one reviewer this spec ships.
-  bare="${type##*:}"
+  # Strip ONLY speccraft's own qualifier. `speccraft:reviewer` is the dispatch
+  # default and the file is `agents/reviewer.md`, so a preflight that stripped
+  # nothing would refuse the one reviewer this spec ships.
+  #
+  # But `${type##*:}` strips EVERY qualifier, and round 8 showed what that
+  # costs: `otherplugin:reviewer` was approved by inspecting *speccraft's*
+  # agents/reviewer.md — which has Write — while the Agent tool would launch a
+  # different plugin's agent, possibly one with no Write (the exact failure
+  # this check exists to prevent) or one declaring Edit (whose warning is then
+  # never shown). We cannot see another plugin's definitions, so the honest
+  # answer is a named refusal rather than a check of the wrong file.
+  case "$type" in
+    speccraft:*) bare="${type#speccraft:}" ;;
+    *:*)
+      printf 'failed subagent-launch unsupported-subagent-plugin %s\n' "$type"
+      return 0
+      ;;
+    *) bare="$type" ;;
+  esac
+  case "$bare" in
+    *:*)
+      printf 'failed subagent-launch unsupported-subagent-plugin %s\n' "$type"
+      return 0
+      ;;
+  esac
   # A subagent type is a bare file stem. Anything carrying a path separator or
   # a dot segment is a registry error, not a path to resolve — an agents dir is
   # not a jumping-off point for the rest of the filesystem.
@@ -2357,6 +2424,18 @@ review_single_vendor_approval() {
 
   # An author with a known vendor joins the set: a spec written by claude and
   # approved only by anthropic is the sharpest case this flag exists for.
+  #
+  # The list is normalized first. Callers read it straight out of a spec's
+  # `authors:` frontmatter, whose shape is `[claude, dstolf]` — so brackets and
+  # commas have to go, or every author resolves to `unknown` and is DROPPED.
+  # Round 8 flagged this; the reported symptom was wrong (the flag still read
+  # `true` in the example given), but the underlying bug is real and worse:
+  # with `authors = "[claude]"` and a single openai approval the answer flips
+  # to `true` when it should be `false`, because the claude author never joined
+  # the set.
+  # Brackets, commas and quotes become SPACES, not nothing: deleting them would
+  # fuse `[claude, dstolf]` into one token `claudedstolf`.
+  authors="$(printf '%s\n' "$authors" | LC_ALL=C tr '[],"'"'" '     ')"
   while IFS= read -r a; do
     [ -n "$a" ] || continue
     vendor="$(_review_vendor_of_basename "${a##*/}")"
@@ -2423,7 +2502,11 @@ review_refuse_review_only_mode() {
     review_error "review_refuse_review_only_mode: unknown mode '$mode'"
     return 2
   }
-  review_error "unsupported-mode: '$mode' is a review-only mode and cannot be used for delegation. Delegation supports $(_review_list_join "$REVIEW_DELEGATABLE_MODES") only. Use this agent through /speccraft:spec:review, /speccraft:arch:review, /speccraft:pm:review or /speccraft:spec:review-code, or point the delegation at a cli or acp entry instead."
+  # The wording is the spec's, verbatim from §5 and §Contracts — unquoted
+  # mode, the exact phrase "is a review-only dispatch mode", and the
+  # parenthesized command list. An earlier draft paraphrased it, so a test or
+  # an operator grepping the CONTRACTED string matched nothing (round 8).
+  review_error "unsupported-mode: $mode is a review-only dispatch mode (used by spec:review, arch:review, pm:review, spec:review-code); spec:delegate supports $(_review_list_join "$REVIEW_DELEGATABLE_MODES")"
   return 1
 }
 
@@ -2438,4 +2521,19 @@ review_require_delegatable_mode() {
   mode="$(review_agent_mode "$toml" "$agent")" || return 2
   _review_list_has "$mode" "$REVIEW_ONLY_MODES" || return 0
   review_refuse_review_only_mode "$mode"
+}
+
+# review_doc_authors <document> — the document's `authors:` frontmatter value,
+# verbatim. One implementation, so the four review commands cannot each invent
+# a slightly different read.
+#
+# Emitted RAW (`[claude, dstolf]` and all), because
+# review_single_vendor_approval normalizes brackets, commas and quotes itself —
+# two places stripping the same punctuation is how one of them ends up
+# stripping something the other needed.
+review_doc_authors() {
+  local f="${1:-}"
+  [ -n "$f" ] || { review_error "review_doc_authors: document path required"; return 2; }
+  [ -f "$f" ] || { review_error "review_doc_authors: not found: $f"; return 2; }
+  _review_frontmatter_field "$f" authors
 }

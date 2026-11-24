@@ -959,7 +959,7 @@ OLD
 # expands to empty and the step quietly does the wrong thing. That is how §7
 # came to pass a `$ROUND_DIR/outcomes` path while every other step appended to
 # an `$OUTCOMES` nothing had ever set.
-RUNBOOK_EXTERNAL_VARS="AGENTS DOC_DIR QUORUM REVIEW_TIMEOUT_S CLAUDE_PLUGIN_ROOT"
+RUNBOOK_EXTERNAL_VARS="AGENTS AUTHORS DOC_DIR QUORUM REVIEW_TIMEOUT_S CLAUDE_PLUGIN_ROOT"
 
 # runbook_shell_blocks — the contents of every ```bash fence, concatenated.
 runbook_shell_blocks() {
@@ -1020,7 +1020,7 @@ echo "$NOWHERE_SET"'
   # RUNBOOK_EXTERNAL_VARS is an escape hatch; it must not become a place to
   # hide a variable from the reader of the runbook.
   local var
-  for var in AGENTS DOC_DIR QUORUM; do
+  for var in AGENTS AUTHORS DOC_DIR QUORUM; do
     grep -qF "\`$var\`" "$RUNBOOK" || {
       echo "$var is exempted by the guard but never documented as the caller's" >&2
       return 1
