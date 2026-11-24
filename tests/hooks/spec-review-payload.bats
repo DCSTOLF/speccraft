@@ -589,7 +589,17 @@ start_single_use_source() {
   fifo="$TEST_DIR/.speccraft/conventions.md"
   start_single_use_source "$fifo"
   two_pass_size="$(wc -c < "$fifo" | tr -d ' ')"
-  two_pass_index="$(grep -E '^## |^### ' "$fifo" || true)"
+  # The second pass is BOUNDED. The writer's three extra `: > "$fifo"` opens do
+  # NOT block when a reader is already attached, so all three can be consumed
+  # inside the first read's open window — and then the second read finds no
+  # writer and blocks in open() forever. Observed hanging roughly half the runs
+  # in this container, with `grep` parked in the kernel's `wait_for_partner`.
+  #
+  # `timeout` turns "no writer left" into "reads nothing", which is the SAME
+  # conclusion this test asserts — a second pass does not see the content — but
+  # reached deterministically instead of by a race the helper's own comment
+  # assumed could not happen.
+  two_pass_index="$(timeout 10 grep -E '^## |^### ' "$fifo" || true)"
   [ "$two_pass_size" -gt 0 ]
   [ -z "$two_pass_index" ]
 }

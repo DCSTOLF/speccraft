@@ -280,15 +280,41 @@ review_round_cleanup() {
   # still be running, which is why TaskStop and stop-failed exist. Deleting a
   # live reviewer's output path fails SILENTLY — it writes into a removed
   # directory and the round records `subagent-no-output`, blaming the reviewer.
-  local pending_msg
-  pending_msg="$(review_round_all_terminal "$canon_dir" 2>&1 >/dev/null)" || {
-    # Strip the inner function's own prefix so the message reads as one
-    # sentence rather than two stacked diagnostics.
-    review_error "review_round_cleanup: refusing '$dir' — ${pending_msg#*: }"
-    return 1
-  }
+  #
+  # SKIPPED when reclaiming (see review_round_reclaim). This gate is for the
+  # round's OWN cleanup, while the round is still running and a stamp is still
+  # coming. The sweep reclaims rounds that were ABANDONED — the orchestrator
+  # died, so no stamp will ever arrive — and for those the expired lease is the
+  # proof instead. Round 9 found that applying this gate on both paths broke
+  # lease-based reclamation entirely for any round that launched a subagent,
+  # and silently: the sweep's `|| true` swallowed the refusal.
+  if [ "${REVIEW_ROUND_RECLAIMING:-0}" != 1 ]; then
+    local pending_msg
+    pending_msg="$(review_round_all_terminal "$canon_dir" 2>&1 >/dev/null)" || {
+      # Strip the inner function's own prefix so the message reads as one
+      # sentence rather than two stacked diagnostics.
+      review_error "review_round_cleanup: refusing '$dir' — ${pending_msg#*: }"
+      return 1
+    }
+  fi
 
   rm -rf "$canon_dir"
+}
+
+# review_round_reclaim <dir> — the SWEEP's deletion entry point.
+#
+# Identical to review_round_cleanup except that the proven-terminal gate does
+# not apply, because the thing being reclaimed is by definition abandoned: its
+# lease has expired, and the lease margin (`review_timeout_s + 300 s`) already
+# bounds every reviewer's deadline. A subagent in a lease-expired round is
+# necessarily past its own deadline, so "no stamp arrived" means the
+# orchestrator died rather than that a reviewer is still working.
+#
+# The QUARANTINE refusal still applies — that is the one state where a reviewer
+# may genuinely still be running past the lease, and it is why quarantine
+# outranks the lease.
+review_round_reclaim() {
+  REVIEW_ROUND_RECLAIMING=1 review_round_cleanup "$@"
 }
 
 # review_round_sweep — reclaim abandoned round dirs. NO ARGUMENTS.
@@ -358,7 +384,9 @@ review_round_sweep() {
           # is also what every error path returns — so an unprobeable record is
           # retained and reported rather than reclaimed on a failed probe.
           if review_round_quarantine_resolve "$entry" >/dev/null 2>&1; then
-            review_round_cleanup "$entry" >/dev/null 2>&1 || true
+            review_round_reclaim "$entry" >/dev/null 2>&1 || \
+              printf '%s: retained after resolve, cleanup refused %s\n' \
+                "$entry" "$(_review_iso_now)"
           else
             printf '%s: quarantined %s %s lease-expired %s\n' \
               "$entry" \
@@ -367,7 +395,14 @@ review_round_sweep() {
               "$(_review_iso_now)"
           fi
         else
-          review_round_cleanup "$entry" >/dev/null 2>&1 || true
+          # RECLAIM, not cleanup: the lease has expired, so this round is
+          # abandoned and the proven-terminal gate does not apply. And a
+          # refusal is REPORTED, never swallowed — round 9 found that a
+          # `|| true` here left lease-expired rounds neither deleted nor
+          # mentioned, on every sweep, forever.
+          review_round_reclaim "$entry" >/dev/null 2>&1 || \
+            printf '%s: lease-expired but not reclaimable %s\n' \
+              "$entry" "$(_review_iso_now)"
         fi
         ;;
     esac
@@ -526,34 +561,83 @@ review_round_quarantine_resolve() {
     return 2
   }
 
-  local mode q_id root
-  mode="$(_review_quarantine_field "$dir" mode)"
-  q_id="$(_review_quarantine_field "$dir" id)"
+  # PER BLOCK. The record holds one blank-line-separated block per unresolved
+  # reviewer, and each must be probed against ITS OWN recorded owner.
+  #
+  # Round 9 found the hazard this replaces, and it was one I introduced: the
+  # resolver read only the FIRST block (`_review_quarantine_field` stops at the
+  # first match) and then `rm -f`'d the WHOLE file on success. Two codex jobs
+  # in one round, the first finished and the second still running, meant the
+  # sweep reclaimed the dir under the live one — exactly the failure the
+  # multi-block record was added to prevent. A codex-plugin block followed by a
+  # subagent block wiped the subagent's quarantine too, which no probe is
+  # allowed to resolve at all.
+  #
+  # Only RESOLVED blocks are removed, and the file goes only when none remain.
+  local tmp kept=0 resolved=0 mode q_id root st block line
+  # SAME-DIR temp, so the rename below is atomic. A /tmp temp can land on a
+  # different filesystem, where `mv` degrades to copy-then-unlink and a reader
+  # can see a half-written record — which is read as "not quarantined" and the
+  # dir reclaimed under a live reviewer.
+  tmp="$dir/.quarantine.resolve.$$"
+  : > "$tmp" || return 2
 
-  case "$mode" in
-    subagent)
-      review_error "review_round_quarantine_resolve: a subagent quarantine ($q_id) cannot be resolved by a probe — no shell-reachable API reports whether a subagent is still running; remove $dir/quarantine once it is known to have stopped"
-      return 1
-      ;;
-    codex-plugin) : ;;
-    *)
-      review_error "review_round_quarantine_resolve: unknown recorded mode '${mode:-}' in $dir/quarantine"
-      return 2
-      ;;
-  esac
-
-  root="$(_review_quarantine_field "$dir" root)"
-  [ -n "$root" ] || {
-    review_error "review_round_quarantine_resolve: $dir/quarantine records no companion root; cannot probe"
-    return 2
+  # Read the file one block at a time. `mode`/`id`/`root` are reset per block,
+  # so a block missing a field cannot inherit the previous block's.
+  mode=""; q_id=""; root=""; block=""
+  _resolve_flush() {
+    [ -n "$q_id" ] || { mode=""; root=""; block=""; return 0; }
+    local keep=1
+    case "$mode" in
+      codex-plugin)
+        if [ -n "$root" ]; then
+          st="$(review_codex_job_status "$root" "$q_id" 2>/dev/null || true)"
+          if [ -n "$st" ] && _review_codex_job_terminal "$st"; then
+            keep=0
+            resolved=$((resolved + 1))
+          fi
+        else
+          review_error "review_round_quarantine_resolve: block for '$q_id' records no companion root; cannot probe, retaining"
+        fi
+        ;;
+      subagent)
+        review_error "review_round_quarantine_resolve: a subagent quarantine ($q_id) cannot be resolved by a probe — no shell-reachable API reports whether a subagent is still running; remove $dir/quarantine once it is known to have stopped"
+        ;;
+      *)
+        review_error "review_round_quarantine_resolve: unknown recorded mode '${mode:-}' for '$q_id' in $dir/quarantine; retaining"
+        ;;
+    esac
+    if [ "$keep" -eq 1 ]; then
+      [ "$kept" -eq 0 ] || printf '\n' >> "$tmp"
+      printf '%s' "$block" >> "$tmp"
+      kept=$((kept + 1))
+    fi
+    mode=""; q_id=""; root=""; block=""
   }
 
-  local st
-  st="$(review_codex_job_status "$root" "$q_id" 2>/dev/null || true)"
-  if [ -n "$st" ] && _review_codex_job_terminal "$st"; then
-    rm -f "$dir/quarantine"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '') _resolve_flush ;;
+      'id '*)      q_id="${line#id }";      block="$block$line
+" ;;
+      'mode '*)    mode="${line#mode }";    block="$block$line
+" ;;
+      'root '*)    root="${line#root }";    block="$block$line
+" ;;
+      *)           block="$block$line
+" ;;
+    esac
+  done < "$dir/quarantine"
+  _resolve_flush
+  unset -f _resolve_flush 2>/dev/null || true
+
+  if [ "$kept" -eq 0 ]; then
+    rm -f "$tmp" "$dir/quarantine"
     return 0
   fi
+  # Same-dir temp + rename, as the writer uses: a half-written record would be
+  # read as "not quarantined" and the dir reclaimed under a live reviewer.
+  mv -f "$tmp" "$dir/quarantine"
   return 1
 }
 
@@ -902,6 +986,14 @@ review_subagent_collect() {
     review_error "review_subagent_collect: agent \"$agent\" wrote an artifact but has no completion stamp; call review_subagent_completed when the notification arrives — collection time is NOT when it finished"
     return 2
   }
+  # Both values validated. `[ "$x" -gt "$y" ]` on a non-integer errors with
+  # status 2, which `if` reads as FALSE — so a malformed stamp would quietly
+  # admit the verdict as on time instead of raising. The sibling
+  # review_subagent_deadline_expired validated its value and this did not.
+  _review_is_int "$landed" && _review_is_int "$deadline" || {
+    review_error "review_subagent_collect: agent \"$agent\" has a malformed record (completed='$landed', deadline='$deadline'); refusing to guess whether its verdict was on time"
+    return 2
+  }
   if [ "$landed" -gt "$deadline" ]; then
     printf 'timeout late-completion\n'
     return 0
@@ -1149,5 +1241,11 @@ review_round_quarantine_count() {
     return 2
   }
   [ -f "$dir/quarantine" ] || { printf '0\n'; return 0; }
-  grep -c '^id ' "$dir/quarantine" 2>/dev/null || printf '0\n'
+  # `grep -c` prints 0 AND exits 1 when there is no match, so a
+  # `grep -c … || printf '0\n'` emitted "0" TWICE for a record with no `id`
+  # lines. Captured, then printed once.
+  local n
+  n="$(grep -c '^id ' "$dir/quarantine" 2>/dev/null || true)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s\n' "$n"
 }

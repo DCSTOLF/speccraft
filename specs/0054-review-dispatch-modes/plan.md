@@ -1473,3 +1473,112 @@ behavioural work.
   that already has sibling tests, so step 2's RED is a runtime failure, not a
   build error. If step 3's struct-field addition does trip the build probe it
   costs build-repair admissions, not an override — budget 2 of 10.
+
+
+### Phase H.5 — remediation from cross-model code-review round 9
+
+Round 9 reviewed the Phase G.5 / H / I diff. Both reviewers `changes-requested`,
+both attested, **eleven defects reproduced — six of them regressions I had just
+introduced in G.5 and T65.** The honest summary: my last two phases made several
+things worse, and only cross-model review caught it.
+
+Fixed here:
+
+1. **The T65 cleanup gate broke lease-based reclamation entirely.** I put the
+   proven-terminal gate inside `review_round_cleanup`, which the SWEEP also
+   calls — so any round that launched a subagent and was then abandoned (the
+   orchestrator died, no stamp ever arrives) could never be reclaimed, and
+   SILENTLY, because the sweep's `|| true` swallowed the refusal. AC14b's
+   "lease expired ⇒ removed" stopped holding.
+
+   The distinction the fix rests on: the gate is for the round's OWN cleanup,
+   while a stamp is still coming. The sweep reclaims ABANDONED rounds, and for
+   those the expired lease IS the proof — the margin
+   (`review_timeout_s + 300 s`) already bounds every reviewer's deadline. New
+   `review_round_reclaim`, which skips the terminal gate and keeps the
+   quarantine refusal.
+
+2. **AC15a's documented operator action stopped working.** "Remove
+   `$ROUND_DIR/quarantine` and the same sweep reclaims it" — but
+   `review_subagent_stop_failed` never stamped the agent terminal, so after the
+   operator removed the file the sweep called cleanup, cleanup refused "still
+   pending", and the refusal was swallowed. The dir was then never reclaimed
+   AND never reported, because the quarantine file that produced the report
+   line was gone.
+
+3. **The per-block quarantine record was undone by its own consumer.** T65 made
+   the record append one block per reviewer; the RESOLVER still read only the
+   first block and `rm -f`'d the whole file on success. Two codex jobs, the
+   first finished and the second running, meant the sweep reclaimed the dir
+   under the live one — exactly the failure the multi-block record was added to
+   prevent. A codex block followed by a subagent block wiped the subagent's
+   quarantine too, which no probe may resolve. Now per-block: each probed
+   against ITS OWN recorded root, only resolved blocks removed, the file
+   deleted only when none remain.
+
+4. **`review_finalize_round` failed AFTER its durable writes.** My G.5 fix
+   captured the vendor helper's exit status but left the call after the
+   snapshot promote and the fingerprint stamp — so an approving agent missing
+   from the registry left both written and then returned 2: a partially
+   committed round that reads as a failed one. The flag is now resolved before
+   any durable write.
+
+5. **The runbook's `|| true` swallowed exit 2** from the tree attribution, so a
+   round whose integrity check could not RUN finalized as though it had passed.
+   Now an explicit `rc` check that aborts on 2.
+
+6. **The frontmatter parser had three defects**, all mine from G.5: it required
+   block-list items to be INDENTED (an unindented sequence is legal YAML, and
+   such an agent's grants read as absent → Write-less reviewer passes
+   preflight); it stripped whitespace from the key, so a nested `meta:` block's
+   indented `tools:` SHADOWED the real top-level one — a preflight bypass; and
+   it printed the value TWICE, because in POSIX awk `exit` inside a main rule
+   still runs END.
+
+7. Smaller: `review_round_quarantine_count` printed "0" twice (`grep -c` prints
+   0 AND exits 1, so the `|| printf` fallback also ran);
+   `review_subagent_collect` lost the integer validation its sibling has, so a
+   malformed stamp admitted the verdict as on time (`[ x -gt y ]` on a
+   non-integer exits 2, which `if` reads as FALSE); §4 step 5 still taught the
+   abandoned mtime mechanism; and
+   `Test_ShippedTemplate_HasAnEnabledReviewerNeedingNoBinary` had an
+   unreachable branch — `LoadConfig` already rejects a `cmd` on a subagent
+   entry — so it reduced to "some enabled subagent exists".
+
+#### Scoped amendment: `unsupported-subagent-plugin`
+
+`review_subagent_preflight` refuses any non-`speccraft:` plugin qualifier with
+`failed subagent-launch unsupported-subagent-plugin <type>`. §3 permits a custom
+`subagent_type` and §Contracts does not name this sub-reason, so this is a
+**contract addition, recorded here rather than left implicit** (round 9 flagged
+it as an unrecorded deviation).
+
+Why refuse: `${type##*:}` stripped EVERY qualifier, so `otherplugin:reviewer`
+was vetted against *speccraft's* `agents/reviewer.md` while the Agent tool would
+launch a different plugin's agent — one that may lack `Write` (the exact failure
+the preflight exists to prevent) or declare `Edit` (whose warning is then never
+shown). We cannot read another plugin's definitions, so the options are a named
+refusal or a check of the wrong file. A custom `subagent_type` within speccraft
+is unaffected.
+
+#### Two findings deliberately NOT changed
+
+- **The vendor flag is reported below quorum.** Raised in rounds 8 and 9; codex
+  argues it should require a met quorum. AC23a's example has quorum met but the
+  AC does not make the flag conditional on it, and the statement "every approval
+  came from one vendor" is true regardless of how many approvals there were.
+  The flag is a RECORD; gating it on quorum would make the record disappear in
+  exactly the case an operator most wants it — a round that nearly passed on one
+  vendor's say-so. Kept, and documented here because two reviewers raised it.
+
+- **The shipped template enables four reviewers, so a bare host gets an inert
+  round.** `codex`, `opencode` and `claude-p` are enabled by omission (they
+  predate this spec) alongside the new `subagent`. On a machine with none of
+  those binaries, the three CLI dispatches fail, `responses_complete` is false,
+  and no `review.md` is written — even though the subagent approved. That is
+  the designed behaviour (an unavailable reviewer is a named non-verdict and an
+  incomplete round is inert), and the CLI entries' enabled-by-default state is
+  pre-existing. But 0054 makes it newly sharp by adding a reviewer that needs
+  no install. **Changing the shipped default affects every future
+  `/speccraft:init` and is not a call to make inside a remediation phase** —
+  recorded for the user, and a candidate for its own spec.

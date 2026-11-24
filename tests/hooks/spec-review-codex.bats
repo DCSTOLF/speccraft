@@ -1784,3 +1784,157 @@ mode = "codex-plugin"'
   }
   refute_line 'verdict: changes-requested'
 }
+
+# ---------------------------------------------------------------------------
+# Phase H.5 — remediation from cross-model code-review round 9.
+#
+# The quarantine record holds one blank-line-separated block per unresolved
+# reviewer (spec 0054 T65). The resolver read only the FIRST block and then
+# removed the WHOLE file on success, so a round with one finished job and one
+# still running was reclaimed under the live one — exactly the failure the
+# multi-block record was added to prevent, reintroduced by the function that
+# consumes it. Both round-9 reviewers found it independently.
+# ---------------------------------------------------------------------------
+
+@test "the resolver removes only the blocks it resolved" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  local r="$TEST_DIR/round"
+  mkdir -p "$r"
+  review_round_quarantine "$r" job_first  codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root"
+  review_round_quarantine "$r" job_second codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root"
+  [ "$(grep -c '^id ' "$r/quarantine")" -eq 2 ]
+
+  # Probed in block order, so the sequence gives block 1 a terminal status and
+  # block 2 a live one.
+  export STUB_CODEX_STATUS_SEQUENCE='completed running'
+  run review_round_quarantine_resolve "$r"
+  # Still quarantined, because one reviewer is still running.
+  [ "$status" -eq 1 ]
+  [ -f "$r/quarantine" ] || {
+    echo "the whole record was deleted while a reviewer was still running" >&2
+    return 1
+  }
+  grep -qF 'job_second' "$r/quarantine" || {
+    echo "the LIVE job's block was lost:" >&2
+    cat "$r/quarantine" >&2
+    return 1
+  }
+  grep -qF 'job_first' "$r/quarantine" && {
+    echo "the resolved job's block was retained:" >&2
+    cat "$r/quarantine" >&2
+    return 1
+  }
+  [ "$(grep -c '^id ' "$r/quarantine")" -eq 1 ]
+}
+
+@test "the resolver clears the record only when every block resolves" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  local r="$TEST_DIR/round"
+  mkdir -p "$r"
+  review_round_quarantine "$r" job_a codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root"
+  review_round_quarantine "$r" job_b codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root"
+  export STUB_CODEX_STATUS_SEQUENCE='completed completed'
+  run review_round_quarantine_resolve "$r"
+  [ "$status" -eq 0 ]
+  [ ! -f "$r/quarantine" ] || {
+    echo "the record survived with every block resolved:" >&2
+    cat "$r/quarantine" >&2
+    return 1
+  }
+}
+
+@test "a subagent block is never resolved by a probe, even beside a codex one" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  local r="$TEST_DIR/round"
+  mkdir -p "$r"
+  review_round_quarantine "$r" job_a codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root"
+  review_round_quarantine "$r" agent_x subagent-stop-failed subagent
+  # Even with the companion reporting terminal for the codex job, the subagent
+  # block must survive: no shell-reachable API can say whether a subagent is
+  # still running, so only an operator resolves it. Before the per-block
+  # rewrite, resolving the codex block deleted this one too.
+  export STUB_CODEX_STATUS_SEQUENCE='completed'
+  run review_round_quarantine_resolve "$r"
+  [ "$status" -eq 1 ]
+  grep -qF 'agent_x' "$r/quarantine" || {
+    echo "the subagent block was wiped by the codex probe:" >&2
+    cat "$r/quarantine" >&2
+    return 1
+  }
+  grep -qF 'job_a' "$r/quarantine" && {
+    echo "the resolved codex block was retained" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "a block whose own root is missing is retained, not resolved" {
+  source "$LIB"
+  codex_env
+  local r="$TEST_DIR/round"
+  mkdir -p "$r"
+  # Hand-written: review_round_quarantine refuses a codex-plugin block with no
+  # root, so this is the shape a corrupted or older record would have. Probing
+  # an arbitrary install is worse than refusing, so it must be kept.
+  {
+    printf 'id job_rootless\n'
+    printf 'outcome codex-cancel-unconfirmed\n'
+    printf 'mode codex-plugin\n'
+    printf 'at 2026-01-01T00:00:00Z\n'
+  } > "$r/quarantine"
+  run review_round_quarantine_resolve "$r"
+  [ "$status" -eq 1 ]
+  grep -qF 'job_rootless' "$r/quarantine" || {
+    echo "a block with no probe root was dropped" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF 'no companion root'
+}
+
+@test "the root is read PER BLOCK, not once for the whole record" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  # Block 1 carries a root; block 2 carries none. If the resolver read `root`
+  # once — the way it read `id` and `mode` once before the per-block rewrite —
+  # block 2 would be probed with block 1's root, get the companion's terminal
+  # status, and resolve. Per block, it is retained with a named reason instead.
+  #
+  # This is the decisive shape here because the companion stub is deliberately
+  # root-AGNOSTIC: it answers whatever path it is handed, so two different
+  # valid roots cannot be told apart by behaviour. A MISSING field can.
+  local r="$TEST_DIR/round"
+  mkdir -p "$r"
+  review_round_quarantine "$r" job_a codex-cancel-unconfirmed codex-plugin "$TEST_DIR/root"
+  {
+    printf '\n'
+    printf 'id job_rootless\n'
+    printf 'outcome codex-cancel-unconfirmed\n'
+    printf 'mode codex-plugin\n'
+    printf 'at 2026-01-01T00:00:00Z\n'
+  } >> "$r/quarantine"
+  export STUB_CODEX_STATUS_SEQUENCE='completed completed'
+  run review_round_quarantine_resolve "$r"
+  [ "$status" -eq 1 ] || {
+    echo "the rootless block resolved, so it inherited block 1's root" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+  grep -qF 'job_rootless' "$r/quarantine" || {
+    echo "the rootless block was dropped:" >&2
+    cat "$r/quarantine" >&2
+    return 1
+  }
+  grep -qF 'job_a' "$r/quarantine" && {
+    echo "block 1 was not resolved although its own root reports terminal" >&2
+    cat "$r/quarantine" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qF 'no companion root'
+}

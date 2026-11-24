@@ -672,3 +672,202 @@ EOF
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Phase H.5 — remediation from cross-model code-review round 9.
+#
+# The T65 cleanup gate was put inside `review_round_cleanup`, which the SWEEP
+# also calls — and that broke lease-based reclamation for every round that
+# launched a subagent, silently, because the sweep's `|| true` swallowed the
+# refusal. Both round-9 reviewers found it independently.
+#
+# The distinction the fix rests on: the gate is for the round's OWN cleanup,
+# while a stamp is still coming. The sweep reclaims rounds that were
+# ABANDONED — the orchestrator died, so no stamp will ever arrive — and for
+# those the EXPIRED LEASE is the proof instead. The lease margin
+# (`review_timeout_s + 300 s`) already bounds every reviewer's deadline, so a
+# subagent in a lease-expired round is necessarily past its own.
+# ---------------------------------------------------------------------------
+
+@test "the sweep reclaims an abandoned round that launched a subagent" {
+  source "$LIB"
+  local dir
+  dir="$(review_round_dir_create spec 0009 600)"
+  # The orchestrator crashed after launching: a record exists, no stamp ever
+  # arrives, and the lease runs out.
+  review_subagent_record "$dir" sub agent_s 600
+  review_round_lease_write "$dir" "$(( $(date +%s) - 10 ))"
+  sweep_now
+  [ ! -d "$dir" ] || {
+    echo "a lease-expired abandoned round was not reclaimed — AC14b's" >&2
+    echo "'lease expired ⇒ removed' no longer holds for subagent rounds" >&2
+    return 1
+  }
+}
+
+@test "the round's own cleanup still refuses a pending reviewer" {
+  source "$LIB"
+  # The regression floor for the fix above: making the sweep able to reclaim
+  # must NOT make the in-round path able to delete under a live reviewer.
+  review_subagent_record "$ROUND_DIR" live agent_l 600
+  run review_round_cleanup "$ROUND_DIR"
+  [ "$status" -ne 0 ]
+  [ -d "$ROUND_DIR" ]
+  printf '%s\n' "$output" | grep -qiF 'pending'
+}
+
+@test "review_round_reclaim still refuses a quarantined dir" {
+  source "$LIB"
+  # Quarantine is the ONE state where a reviewer may genuinely still be running
+  # past the lease, which is why it outranks the lease. The reclaim path drops
+  # the terminal gate; it must not drop this.
+  local dir
+  dir="$(review_round_dir_create spec 0010 600)"
+  review_subagent_record "$dir" stuck agent_q 600
+  review_subagent_stop_failed "$dir" stuck > /dev/null
+  review_round_lease_write "$dir" "$(( $(date +%s) - 10 ))"
+  run review_round_reclaim "$dir"
+  [ "$status" -ne 0 ]
+  [ -d "$dir" ] || { echo "reclaim deleted a quarantined dir" >&2; return 1; }
+  printf '%s\n' "$output" | grep -qiF 'quarantin'
+}
+
+@test "removing the quarantine file lets the sweep reclaim the round" {
+  source "$LIB"
+  # AC15a's documented operator action: "once the quarantine file is removed
+  # (operator action) … the same sweep reclaims it". The T65 gate broke it —
+  # review_subagent_stop_failed never stamped the agent terminal, so after the
+  # operator removed the file the sweep called cleanup, cleanup refused
+  # 'still pending', and the refusal was swallowed. The dir was then never
+  # reclaimed AND never reported, because the quarantine file that produced the
+  # report line was gone.
+  local dir
+  dir="$(review_round_dir_create spec 0011 600)"
+  review_subagent_record "$dir" stuck agent_q 600
+  review_subagent_stop_failed "$dir" stuck > /dev/null
+  review_round_lease_write "$dir" "$(( $(date +%s) - 10 ))"
+  rm -f "$dir/quarantine"
+  sweep_now
+  [ ! -d "$dir" ] || {
+    echo "the operator's documented resolution did not reclaim the round" >&2
+    return 1
+  }
+}
+
+@test "the sweep REPORTS a lease-expired NON-quarantined round it cannot reclaim" {
+  source "$LIB"
+  # The else branch — not quarantined, lease expired, and the delete itself
+  # fails. A `|| true` there left such rounds neither deleted nor mentioned,
+  # on every sweep, forever: the operator had no way to learn the directory
+  # existed. The quarantine branch has its own report line (next row), so a
+  # row using a quarantined dir would exercise the wrong arm — which is how
+  # the first version of this row passed against the `|| true`.
+  [ "$(id -u)" -ne 0 ] || skip "a read-only parent does not deny unlink as root"
+  local dir parent out
+  dir="$(review_round_dir_create spec 0013 600)"
+  review_round_lease_write "$dir" "$(( $(date +%s) - 10 ))"
+  parent="$(review_round_parent)"
+  chmod 0500 "$parent"
+  out="$(review_round_sweep 2>&1 || true)"
+  chmod 0700 "$parent"
+  [ -d "$dir" ] || skip "the platform allowed the unlink; the report cannot be observed here"
+  printf '%s\n' "$out" | grep -qF "$dir" || {
+    echo "an unreclaimable lease-expired dir was not reported:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  printf '%s\n' "$out" | grep -qF 'not reclaimable' || {
+    echo "the report does not say why it was retained:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+}
+
+@test "the sweep REPORTS a quarantined lease-expired round it cannot reclaim" {
+  source "$LIB"
+  # Never swallowed. A `|| true` here left such rounds neither deleted nor
+  # mentioned, on every sweep, forever — the operator had no way to learn the
+  # directory existed.
+  local dir out
+  dir="$(review_round_dir_create spec 0012 600)"
+  review_subagent_record "$dir" stuck agent_q 600
+  review_subagent_stop_failed "$dir" stuck > /dev/null
+  review_round_lease_write "$dir" "$(( $(date +%s) - 10 ))"
+  out="$(review_round_sweep 2>&1 || true)"
+  [ -d "$dir" ]
+  printf '%s\n' "$out" | grep -qF "$dir" || {
+    echo "the retained dir was not named in the sweep's report:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+}
+
+@test "review_round_quarantine_count prints one number for an id-less record" {
+  source "$LIB"
+  # `grep -c` prints 0 AND exits 1 with no match, so a
+  # `grep -c … || printf '0\n'` fallback emitted "0" twice — and any caller
+  # doing arithmetic on that got a syntax error rather than a count.
+  printf 'outcome something\n' > "$ROUND_DIR/quarantine"
+  run review_round_quarantine_count "$ROUND_DIR"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ] || {
+    echo "expected a single '0', got: '$output'" >&2
+    return 1
+  }
+  [ "$(printf '%s\n' "$output" | grep -c .)" -eq 1 ]
+}
+
+@test "a malformed completion stamp is a named error, not an on-time verdict" {
+  source "$LIB"
+  # `[ "$x" -gt "$y" ]` on a non-integer errors with status 2, which `if`
+  # reads as FALSE — so a malformed record quietly admitted the verdict as on
+  # time. The sibling deadline predicate validated its value; collect did not.
+  review_subagent_record "$ROUND_DIR" m agent_m 600
+  printf 'verdict: approve\n' > "$ROUND_DIR/m.out"
+  printf 'agent=m\nagent_id=agent_m\nlaunched=1\ndeadline=notanumber\ncompleted=5\n' \
+    > "$ROUND_DIR/m.subagent"
+  run review_subagent_collect "$ROUND_DIR" m
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qiF 'malformed'
+  # …and the converse, so the validation cannot have simply rejected everything.
+  printf 'agent=m\nagent_id=agent_m\nlaunched=1\ndeadline=99999999999\ncompleted=5\n' \
+    > "$ROUND_DIR/m.subagent"
+  run review_subagent_collect "$ROUND_DIR" m
+  [ "$output" = "ok" ]
+}
+
+@test "the runbook handles the attribution's exit 2 rather than swallowing it" {
+  # `|| true` discarded exit 2 (a missing snapshot) as well as the normal
+  # exit 1, so a round whose integrity check could not RUN finalized as though
+  # it had passed — an approval reaching synthesis unverified.
+  grep -qE 'review_attribute_tree_outcomes[^|]*\|\| *true' "$RUNBOOK" && {
+    echo "the runbook still swallows the attribution's exit status:" >&2
+    grep -nF 'review_attribute_tree_outcomes' "$RUNBOOK" >&2
+    return 1
+  }
+  grep -qE 'rc=\$\?' "$RUNBOOK" || {
+    echo "the runbook does not capture the attribution's exit code" >&2
+    return 1
+  }
+  grep -qE '"\$rc" -eq 2' "$RUNBOOK" || {
+    echo "the runbook does not treat exit 2 as fatal:" >&2
+    grep -nF 'review_attribute_tree_outcomes' -A4 "$RUNBOOK" >&2
+    return 1
+  }
+}
+
+@test "the runbook no longer describes the abandoned mtime mechanism" {
+  # The code judges lateness by the completion stamp; §4 step 5 still said
+  # "the artifact's own modification time". The runbook is what the
+  # orchestrator follows, so a stale mechanism there is not a stale comment —
+  # it is a stale instruction.
+  grep -qiF 'modification time' "$RUNBOOK" && {
+    echo "the runbook still teaches the mtime mechanism:" >&2
+    grep -niF 'modification time' "$RUNBOOK" >&2
+    return 1
+  }
+  grep -qF 'completion stamp from step 3' "$RUNBOOK" || {
+    echo "the runbook does not point step 5 at the completion stamp" >&2
+    return 1
+  }
+}

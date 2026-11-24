@@ -175,5 +175,13 @@ contract: done-means-v1
   done: $ test -f tests/hooks/live-codex-smoke.bats && grep -q 'SPECCRAFT_LIVE_CODEX_SMOKE' tests/hooks/live-codex-smoke.bats
 - [x] T70 — GREEN: the two gated bodies plus the self-naming skip (NON-CI)
   done: $ f=$(mktemp) && PATH="$PWD/bin:$PATH" bats tests/hooks/live-codex-smoke.bats > "$f" 2>&1 && test "$(grep -c '^not ok' "$f")" -eq 0 && test "$(grep -c '# skip' "$f")" -eq 2 && test "$(grep -c '^ok ' "$f")" -eq 7 && rm -f "$f"
+- [x] T70.1 — GREEN: the sweep reclaims abandoned rounds again; the resolver works per block
+  done: $ grep -q 'review_round_reclaim()' commands/spec/review-round.lib.sh && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-lifecycle.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 45
+- [x] T70.2 — GREEN: the frontmatter parser reads both YAML list forms, column 0 only, once
+  done: $ o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && grep -q 'Column 0 ONLY' commands/spec/review.lib.sh
+- [x] T70.3 — GREEN: finalize resolves the vendor flag before any durable write
+  done: $ o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-vendor.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && grep -q 'nothing was written' commands/spec/review.lib.sh
+- [x] T70.4 — GREEN: the runbook aborts on the tree check's exit 2, and step 5 names the stamp
+  done: $ test -z "$(grep -E 'review_attribute_tree_outcomes[^|]*\|\| *true' skills/review-round/SKILL.md)" && grep -q 'completion stamp from step 3' skills/review-round/SKILL.md && test -z "$(grep -iF 'modification time' skills/review-round/SKILL.md)"
 - [ ] T71 — Close gate: both suites green on Linux and macOS, 0052's assertions intact, bin/ uncommitted, the gated skips named in the log
   done: $ go test -C tools -count=1 ./... && GOOS=windows go build -C tools ./... && test -z "$(git status --porcelain bin/ tools/bin/)" && test "$(git show 19317e5:tests/hooks/spec-review-payload.bats | grep '^@test' | cksum)" = "$(grep '^@test' tests/hooks/spec-review-payload.bats | cksum)" && test "$(grep -c '^@test' tests/hooks/spec-review-payload.bats)" -eq 120 && test -z "$(grep -rn SPECCRAFT_LIVE_CODEX_SMOKE .github 2>/dev/null)" && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/live-codex-smoke.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -c '# skip')" -eq 2

@@ -1497,3 +1497,93 @@ lines' agent_x 600
     return 1
   }
 }
+
+@test "an UNINDENTED YAML block list is read, not treated as absent" {
+  source "$LIB"
+  # Round 9. The block-list branch first required indentation, but an
+  # unindented sequence under a key is legal YAML — and an agent using one had
+  # its grants read as ABSENT, took the "inherits every tool" arm, and passed
+  # preflight with no Write at all.
+  cat > "$AGENTS_DIR/unindented.md" <<'AGENT'
+---
+name: unindented
+tools:
+- Read
+- Grep
+model: inherit
+---
+body
+AGENT
+  run review_subagent_preflight "$AGENTS_DIR" unindented
+  [ "$status" -eq 0 ]
+  [ "$output" = "failed subagent-launch missing-write-tool" ] || {
+    echo "an unindented block list with no Write was not refused: '$output'" >&2
+    return 1
+  }
+  # …and one that DOES grant Write still passes, so the fix is not a blanket
+  # refusal of unindented lists.
+  cat > "$AGENTS_DIR/unindented-ok.md" <<'AGENT'
+---
+name: unindented-ok
+tools:
+- Read
+- Write
+model: inherit
+---
+body
+AGENT
+  run review_subagent_preflight "$AGENTS_DIR" unindented-ok
+  [ "$output" = "ok" ]
+}
+
+@test "a nested indented key cannot shadow the real top-level one" {
+  source "$LIB"
+  # Round 9: the key match stripped whitespace, so an indented `tools:` inside
+  # a `meta:` block matched first and won. That is a preflight BYPASS — an
+  # agent could declare a generous nested list and a Write-less real one.
+  cat > "$AGENTS_DIR/nested.md" <<'AGENT'
+---
+name: nested
+meta:
+  tools: [Read, Write, Edit]
+tools: [Read, Grep]
+model: inherit
+---
+body
+AGENT
+  [ "$(_review_frontmatter_field "$AGENTS_DIR/nested.md" tools)" = "[Read, Grep]" ] || {
+    echo "the nested key won: '$(_review_frontmatter_field "$AGENTS_DIR/nested.md" tools)'" >&2
+    return 1
+  }
+  run review_subagent_preflight "$AGENTS_DIR" nested
+  [ "$output" = "failed subagent-launch missing-write-tool" ] || {
+    echo "the nested grant list was used for the preflight: '$output'" >&2
+    return 1
+  }
+}
+
+@test "a block-list value is emitted exactly once" {
+  source "$LIB"
+  # In POSIX awk, `exit` inside a main rule still runs END — so the branch that
+  # printed on list end and the END rule both fired, and the helper returned
+  # its value twice. Harmless for a membership test, wrong for anything that
+  # reads "the value".
+  cat > "$AGENTS_DIR/twice.md" <<'AGENT'
+---
+name: twice
+authors:
+  - claude
+  - dstolf
+status: draft
+---
+body
+AGENT
+  local out
+  out="$(_review_frontmatter_field "$AGENTS_DIR/twice.md" authors)"
+  [ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ] || {
+    echo "the value was emitted more than once:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+  [ "$out" = "claude dstolf" ]
+}

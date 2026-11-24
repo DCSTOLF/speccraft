@@ -481,6 +481,20 @@ review_finalize_round() {
   [ "$rc" -ne 2 ] || return 2
   [ "$rc" -eq 0 ] && quorum_met=true
 
+  # The vendor flag is resolved BEFORE any durable write. Round 9 caught the
+  # ordering: computing it after the snapshot promote and the fingerprint stamp
+  # meant an approving agent missing from the registry left review-snapshot.md
+  # promoted and reviewed_sha256 stamped, and THEN returned 2 — a partially
+  # committed round that looks like a failed one. An unresolvable vendor must
+  # leave review.md exactly as it was.
+  local flag=""
+  if [ -n "$toml" ]; then
+    flag="$(review_single_vendor_approval "$toml" "$file" "$authors")" || {
+      review_error "review_finalize_round: vendor resolution failed; nothing was written and the round's single_vendor_approval cannot be determined"
+      return 2
+    }
+  fi
+
   if [ "$complete" = true ]; then
     synthesis=done
     if [ "$round_kind" = spec ]; then
@@ -511,14 +525,7 @@ review_finalize_round() {
   # code, so an approving agent missing from the registry — which makes
   # review_agent_vendor fail by name — printed `single_vendor_approval: ` with
   # an EMPTY value and still returned 0. A failure reported as success.
-  if [ -n "$toml" ]; then
-    local flag
-    flag="$(review_single_vendor_approval "$toml" "$file" "$authors")" || {
-      review_error "review_finalize_round: vendor resolution failed; the round's single_vendor_approval cannot be determined"
-      return 2
-    }
-    printf 'single_vendor_approval: %s\n' "$flag"
-  fi
+  [ -z "$toml" ] || printf 'single_vendor_approval: %s\n' "$flag"
 
   # Every refusal AND every verdict obtained. A report naming only the failures
   # hides a real verdict from the developer; one naming only the verdicts hides
@@ -2219,19 +2226,29 @@ EOF
 _review_frontmatter_field() {
   awk -v key="$2" '
     NR == 1 && $0 == "---" { inb = 1; next }
-    inb && $0 == "---"     { exit }
+    inb && $0 == "---"     { if (collecting) { print out; collecting = 0 } ; exit }
     collecting {
-      # An indented `- item` continues the list; anything else ends it.
-      if ($0 ~ /^[ \t]+-[ \t]*[^ \t]/) {
-        v = $0; sub(/^[ \t]*-[ \t]*/, "", v)
-        sub(/[ \t]+$/, "", v)
+      # A `- item` line continues the list, at ANY indent. Unindented block
+      # sequences are legal YAML and round 9 found an agent using one — the
+      # first version of this branch required indentation, read the grant as
+      # absent, and let a Write-less reviewer through preflight.
+      if ($0 ~ /^[ \t]*-[ \t]*[^ \t]/) {
+        v = $0; sub(/^[ \t]*-[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
         out = (out == "" ? v : out " " v)
         next
       }
-      print out; exit
+      # Anything else ends the list. Printed HERE and the flag cleared, so the
+      # END rule cannot print it a second time: in POSIX awk `exit` inside a
+      # main rule still runs END, which made this helper emit its value twice.
+      print out; collecting = 0; exit
     }
     inb {
-      k = $0; sub(/:.*/, "", k); gsub(/[ \t]/, "", k)
+      # Column 0 ONLY. A nested `meta:` block containing an indented `tools:`
+      # would otherwise shadow the real top-level key — round 9 showed
+      # `meta:\n  tools: [Write]\ntools: [Read]` returning [Write], which is a
+      # preflight bypass, not a cosmetic issue.
+      if ($0 !~ /^[A-Za-z_][A-Za-z0-9_.-]*[ \t]*:/) next
+      k = $0; sub(/:.*/, "", k); sub(/[ \t]+$/, "", k)
       if (k == key) {
         v = $0; sub(/^[^:]*:[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
         if (v != "") { print v; exit }

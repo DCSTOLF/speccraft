@@ -276,10 +276,13 @@ no shell state survives. Seven steps, in order:
    resolves it: no probe can ask whether a subagent is alive.
 5. **A reviewer whose output LANDS after its deadline has it ignored**, and is
    recorded `<agent> timeout late-completion`. Lateness is judged by the
-   artifact's own modification time, not by the clock when you get round to
-   collecting it — you waited for the slowest reviewer in step 4, so "now is
-   past the deadline" is true for every reviewer in any round that contained
-   one timeout. A late verdict must never re-enter quorum.
+   **completion stamp from step 3**, not by the clock when you get round to
+   collecting — you waited for the slowest reviewer in step 4, so "now is past
+   the deadline" is true for every reviewer in any round that contained one
+   timeout. (Not the artifact's mtime either: there is no portable way to read
+   one in shell — `date -r` means "a FILE" to GNU and "an epoch SECOND" to BSD,
+   and `stat` needs different flags on each.) A late verdict must never
+   re-enter quorum.
 6. **Partial output is never a verdict.** Collect from disk, and **branch** on
    the result:
    ```bash
@@ -355,8 +358,20 @@ diagnostic printed harmlessly beside it.
 
 ```bash
 review_tree_snapshot > "$ROUND_DIR/tree.after"
-review_attribute_tree_outcomes "$ROUND_DIR" "$OUTCOMES" || true
+rc=0; review_attribute_tree_outcomes "$ROUND_DIR" "$OUTCOMES" || rc=$?
+if [ "$rc" -eq 2 ]; then
+  echo "ABORT: the tree check could not run; do not synthesize this round"
+  exit 1
+fi
 ```
+
+**Do NOT write `|| true` here.** Exit 1 means "records were rewritten" and is
+normal; exit **2** is a named error — a missing snapshot, say — and `|| true`
+swallows both. A round that discarded the 2 would finalize as though the tree
+check had passed, which is the one outcome the check exists to prevent: an
+approval reaching synthesis with the round's integrity unverified. Nor should
+the inner stderr be discarded; the "tree changed but no subagent was launched"
+warning is the only notice of an unattributable write.
 
 **`_outcomes`, not `_writes` >> the file.** The rewriting form REPLACES each
 implicated reviewer's record; appending would leave its `approve` in place

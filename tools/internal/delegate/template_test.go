@@ -112,7 +112,7 @@ func Test_ShippedTemplate_HasAnEnabledReviewerNeedingNoBinary(t *testing.T) {
 		t.Fatalf("the shipped template must load: %v", err)
 	}
 
-	found := false
+	found := 0
 	for _, a := range cfg.Agents {
 		if a.Mode != "subagent" {
 			continue
@@ -120,16 +120,25 @@ func Test_ShippedTemplate_HasAnEnabledReviewerNeedingNoBinary(t *testing.T) {
 		if a.Enabled != nil && !*a.Enabled {
 			continue
 		}
-		// No cmd at all is the property that matters: nothing to install, so
-		// this reviewer answers on a machine with no aux CLI on PATH.
-		if len(a.Cmd) != 0 {
-			t.Errorf("the enabled subagent entry %q carries a cmd, so it is not install-free: %v",
-				a.Name, a.Cmd)
+		// NOT `len(a.Cmd) != 0`: LoadConfig refuses a `cmd` on a subagent entry
+		// (AC2), so that branch can never fire and the check was dead — round 9
+		// caught it. The install-free property is already guaranteed by the
+		// loader accepting this entry at all; what this test can still add is
+		// that the entry is usable as a reviewer once dispatched.
+		if a.Model != "opus" {
+			t.Errorf("the install-free reviewer %q has model %q, want opus — "+
+				"without it the round cannot report which model answered",
+				a.Name, a.Model)
 		}
-		found = true
+		if a.ReferenceRead == nil || !*a.ReferenceRead {
+			t.Errorf("the install-free reviewer %q does not read reference-tier "+
+				"context, so it would be sent every memory file inline", a.Name)
+		}
+		found++
 	}
-	if !found {
-		t.Error("no enabled subagent entry: a fresh repo with no aux CLI installed " +
-			"would have no reviewer that answers at all")
+	if found != 1 {
+		t.Errorf("want exactly 1 ENABLED install-free reviewer, got %d: a fresh "+
+			"repo with none has no reviewer that answers at all, and more than "+
+			"one makes the same-vendor default worse without saying so", found)
 	}
 }

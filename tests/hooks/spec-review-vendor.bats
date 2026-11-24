@@ -576,3 +576,44 @@ make_spec_dir() {
     }
   done
 }
+
+@test "a vendor failure leaves the spec dir untouched" {
+  source "$LIB"
+  make_spec_dir
+  : > "$TOML"
+  entry known cli '["codex", "exec"]'
+  # Round 9: the flag was computed AFTER the snapshot promote and the
+  # fingerprint stamp, so an unresolvable vendor left review-snapshot.md
+  # promoted and reviewed_sha256 written and THEN returned 2 — a partially
+  # committed round that reads as a failed one. Nothing may move.
+  local before_snap before_rev
+  before_snap="$(cat "$SPEC_DIR/review-snapshot.md")"
+  before_rev="$(cat "$SPEC_DIR/review.md")"
+  printf 'gone approve\n' > "$TEST_DIR/outcomes.txt"
+  run review_finalize_round "$SPEC_DIR" 1 "$TEST_DIR/outcomes.txt" spec "$TOML" claude
+  [ "$status" -eq 2 ]
+  [ "$(cat "$SPEC_DIR/review-snapshot.md")" = "$before_snap" ] || {
+    echo "review-snapshot.md was promoted despite the failure" >&2
+    return 1
+  }
+  [ "$(cat "$SPEC_DIR/review.md")" = "$before_rev" ] || {
+    echo "review.md was stamped despite the failure" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qiF 'nothing was written'
+}
+
+@test "the happy path still promotes and still reports the flag" {
+  source "$LIB"
+  # The converse, so moving the check earlier cannot have disabled the writes.
+  make_spec_dir
+  : > "$TOML"
+  entry known cli '["codex", "exec"]'
+  printf 'known approve\n' > "$TEST_DIR/outcomes.txt"
+  run review_finalize_round "$SPEC_DIR" 1 "$TEST_DIR/outcomes.txt" spec "$TOML" claude
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF 'status: reviewed'
+  printf '%s\n' "$output" | grep -qE '^single_vendor_approval: (true|false)$'
+  grep -qE '^reviewed_sha256: [0-9a-f]{64}$' "$SPEC_DIR/review.md"
+  grep -qF 'SPEC' "$SPEC_DIR/review-snapshot.md"
+}
