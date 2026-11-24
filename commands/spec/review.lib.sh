@@ -434,8 +434,9 @@ REVIEW_ROUND_KINDS="spec design brief code"
 # directory that is not a spec dir.
 review_finalize_round() {
   local spec_dir="${1:-}" quorum="${2:-}" file="${3:-}" round_kind="${4:-spec}"
+  local toml="${5:-}" authors="${6:-}"
   local complete=false quorum_met=false synthesis=skipped state=draft
-  local rc fp agent outcome rest kind
+  local rc fp agent outcome rest kind model
   [ -n "$spec_dir" ] || { review_error "review_finalize_round: spec dir required"; return 2; }
   _review_list_has "$round_kind" "$REVIEW_ROUND_KINDS" || {
     review_error "review_finalize_round: unknown kind '$round_kind' (want one of: $REVIEW_ROUND_KINDS)"
@@ -471,6 +472,13 @@ review_finalize_round() {
   printf 'synthesis: %s\n' "$synthesis"
   printf 'status: %s\n' "$state"
 
+  # The four lines above are spec 0052's contract and are emitted FIRST and
+  # unconditionally. The vendor record below is additive: with no registry
+  # argument nothing extra is printed, so every three-argument caller's report
+  # is byte-identical to what 0052 produced. A test pins that.
+  [ -z "$toml" ] || printf 'single_vendor_approval: %s\n' \
+    "$(review_single_vendor_approval "$toml" "$file" "$authors")"
+
   # Every refusal AND every verdict obtained. A report naming only the failures
   # hides a real verdict from the developer; one naming only the verdicts hides
   # that the round consulted fewer models than it appears to have.
@@ -479,7 +487,19 @@ review_finalize_round() {
     rc=0; kind="$(_review_outcome_kind "$outcome")" || rc=$?
     [ "$rc" -eq 0 ] || return 2
     if [ "$kind" = "verdict" ]; then
-      printf 'verdict: %s %s\n' "$agent" "$outcome"
+      if [ -n "$toml" ]; then
+        # mode / requested model / vendor, so the synthesized review.md can say
+        # WHO agreed rather than only how many did. An omitted registry model
+        # is recorded `inherit`, which is what the dispatch actually does.
+        model="$(review_agent_field "$toml" "$agent" model 2>/dev/null)" || model=""
+        printf 'verdict: %s %s mode=%s model=%s vendor=%s\n' \
+          "$agent" "$outcome" \
+          "$(review_agent_mode "$toml" "$agent" 2>/dev/null || printf 'unknown')" \
+          "${model:-inherit}" \
+          "$(review_agent_vendor "$toml" "$agent" 2>/dev/null || printf 'unknown')"
+      else
+        printf 'verdict: %s %s\n' "$agent" "$outcome"
+      fi
     elif [ "$outcome" = "attestation-failed" ]; then
       # Its own category: a reviewer whose reference reads never attest must be
       # diagnosable, not merely excluded round after round (AC25).
@@ -2242,3 +2262,121 @@ review_subagent_preflight() {
 # ---------------------------------------------------------------------------
 # shellcheck source=./review-round.lib.sh
 . "$_REVIEW_LIB_DIR/review-round.lib.sh"
+
+# ---------------------------------------------------------------------------
+# ACs 23 / 23a — vendor resolution and the same-vendor approval record.
+#
+# With a `subagent` reviewer available, the cheapest round to configure is one
+# where every reviewer is Anthropic: the subagent, plus `claude -p`. That round
+# LOOKS like cross-model review and reports a quorum, but every verdict came
+# from one vendor's models — and often on a spec those same models wrote.
+#
+# So the round records it. The flag is a RECORD, NOT A GATE:
+# `approval_quorum_met` is computed exactly as spec 0052 left it, and a test
+# asserts the four round predicates are byte-identical with and without the
+# flag enabled. Flagging is useful; silently refusing a round the operator
+# deliberately configured is not ours to do.
+# ---------------------------------------------------------------------------
+
+# The vendor table. Deliberately tiny, and matched EXACTLY on a basename — no
+# substring, no prefix, no suffix. `claudex`, `claude-code`, `myclaude` and
+# `claude_wrapper.sh` all resolve to `unknown`, because a predicate that
+# guesses is one every implementer reimplements differently, and a wrapper
+# named after a vendor is not evidence about which API it reaches.
+#
+# `unknown` is a legitimate answer, never treated as agreement: a round whose
+# approvals all resolve to `unknown` is NOT reported single-vendor, since "they
+# are the same vendor" is precisely what is not known.
+_review_vendor_of_basename() {
+  case "${1:-}" in
+    claude) printf 'anthropic\n' ;;
+    codex)  printf 'openai\n' ;;
+    *)      printf 'unknown\n' ;;
+  esac
+}
+
+# review_agent_vendor <agents.toml> <agent> — echo the reviewer's vendor.
+#
+# The two modes this spec adds are resolved BY CONSTRUCTION rather than from a
+# command: a `subagent` runs inside this Claude Code session, and
+# `codex-plugin` reaches the Codex companion. Their `cmd`, if any, is never
+# dispatched, so a leftover one must not be able to relabel the vendor.
+review_agent_vendor() {
+  local toml="${1:-}" agent="${2:-}" mode cmd base
+  # Errors (a missing registry, an unknown agent) propagate by NAME from
+  # review_agent_mode. `unknown` means "resolved, and we cannot tell" — a typo
+  # in a registry entry must not arrive dressed as that answer.
+  mode="$(review_agent_mode "$toml" "$agent")" || return 1
+  case "$mode" in
+    subagent)     printf 'anthropic\n'; return 0 ;;
+    codex-plugin) printf 'openai\n';    return 0 ;;
+  esac
+  cmd="$(review_agent_cmd "$toml" "$agent" 2>/dev/null)" || cmd=""
+  [ -n "$cmd" ] || { printf 'unknown\n'; return 0; }
+  base="${cmd%% *}"    # argv[0] only: flags after it say nothing about vendor
+  base="${base##*/}"   # and by basename, so an absolute path still resolves
+  _review_vendor_of_basename "$base"
+}
+
+# review_single_vendor_approval <agents.toml> <outcomes-file> [<authors>]
+#   stdout `true`  — every APPROVAL came from one known vendor, and every
+#                    author that resolves to a known vendor is that same one
+#   stdout `false` — otherwise
+#
+# Only approving verdicts count: a reviewer that participated and disagreed has
+# not lent its vendor to the approval, which is the thing being described.
+# A round with no approval at all is `false` — there is nothing to flag, and
+# `true` would read as a claim about an approval that never happened.
+#
+# Authors resolve through the same table, and those that come back `unknown` —
+# every human — are DROPPED rather than counted as a second vendor. Otherwise a
+# human-authored spec could never be flagged, which is most of them.
+review_single_vendor_approval() {
+  local toml="${1:-}" file="${2:-}" authors="${3:-}"
+  local agent outcome rest vendor seen="" approvals=0 a count=0 only=""
+  [ -n "$toml" ] && [ -f "$toml" ] || {
+    review_error "review_single_vendor_approval: registry not found: '${toml:-}'"
+    return 2
+  }
+  [ -n "$file" ] && [ -f "$file" ] || {
+    review_error "review_single_vendor_approval: outcomes file not found: '${file:-}'"
+    return 2
+  }
+
+  while IFS=' ' read -r agent outcome rest || [ -n "$agent" ]; do
+    [ -n "$agent" ] || continue
+    _review_list_has "$outcome" "$REVIEW_AGREEING_VERDICTS" || continue
+    approvals=$((approvals + 1))
+    vendor="$(review_agent_vendor "$toml" "$agent")" || return 2
+    _review_list_has "$vendor" "$seen" || {
+      seen="$seen $vendor"; count=$((count + 1)); only="$vendor"
+    }
+  done < "$file"
+
+  [ "$approvals" -gt 0 ] || { printf 'false\n'; return 0; }
+
+  # An author with a known vendor joins the set: a spec written by claude and
+  # approved only by anthropic is the sharpest case this flag exists for.
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    vendor="$(_review_vendor_of_basename "${a##*/}")"
+    [ "$vendor" != unknown ] || continue
+    _review_list_has "$vendor" "$seen" || {
+      seen="$seen $vendor"; count=$((count + 1)); only="$vendor"
+    }
+  done <<EOF
+$(printf '%s\n' "$authors" | LC_ALL=C tr ' ' '\n')
+EOF
+
+  # Exactly one member, and it must be a KNOWN vendor.
+  #
+  # Counted as the set is built rather than with `set -- $seen`: that is an
+  # unquoted parameter expansion, which zsh does NOT word-split, so the
+  # positional count would be 1 for ANY number of vendors and every round
+  # would report single_vendor_approval: true on macOS.
+  if [ "$count" -eq 1 ] && [ "$only" != unknown ]; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}

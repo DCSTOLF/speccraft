@@ -137,9 +137,9 @@ contract: done-means-v1
   done: $ grep -q 'unattributed' tests/hooks/spec-review-subagent.bats
 - [x] T57 — GREEN: review_attribute_tree_writes
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats && grep -q 'review_attribute_tree_writes()' commands/spec/review*.lib.sh
-- [ ] T58 — RED: review_agent_vendor rows, quorum rows, single_vendor_approval rows
+- [x] T58 — RED: review_agent_vendor rows, quorum rows, single_vendor_approval rows
   done: $ test -f tests/hooks/spec-review-vendor.bats && grep -q 'single_vendor_approval' tests/hooks/spec-review-vendor.bats
-- [ ] T59 — GREEN: review_agent_vendor, review_single_vendor_approval, the recorded fields
+- [x] T59 — GREEN: review_agent_vendor, review_single_vendor_approval, the recorded fields
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-vendor.bats && grep -q 'review_agent_vendor()' commands/spec/review.lib.sh && grep -q 'single_vendor_approval' agents/cross-reviewer.md
 - [ ] T60 — RED: spec:delegate and aux-delegator refuse the review-only modes
   done: $ test -f tests/hooks/review-only-mode-refusal.bats && grep -q 'unsupported-mode' tests/hooks/review-only-mode-refusal.bats

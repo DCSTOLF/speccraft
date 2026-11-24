@@ -33,17 +33,28 @@ and stop, rather than "agreeing with yourself" and reporting a quorum of one.
    - Else if quorum approve agents say `approve` or `approve-with-comments`: overall is `approve-with-comments`.
    - Else: overall is `changes-requested`.
 
-5. **Write `review.md`** using this template:
+5. **Write `review.md`** using this template. Every field under
+   `## Reviewers` comes from the round report the caller hands you — the
+   `verdict:` and `single_vendor_approval:` lines — never from your own guess
+   about which model answered:
    ```markdown
    ---
    spec: "<id>"
    reviewers: [<agent1>, <agent2>]
    quorum: <N>
    verdict: <overall verdict>
+   single_vendor_approval: <true | false>
    generated: <ISO 8601 timestamp>
    ---
 
    # Cross-model review — <id>
+
+   ## Reviewers
+
+   | Agent | Verdict | Mode | Model | Vendor |
+   |---|---|---|---|---|
+   | <agent1> | <verdict> | <cli \| acp \| codex-plugin \| subagent> | <requested model, or inherit> | <anthropic \| openai \| unknown> |
+   | <agent2> | ... | ... | ... | ... |
 
    ## <agent1>
 
@@ -65,5 +76,12 @@ and stop, rather than "agreeing with yourself" and reporting a quorum of one.
 
    **Action:** <concrete next step for the spec author>
    ```
+
+   **When `single_vendor_approval` is `true`, say so in the Synthesis.** It
+   means every approval came from one vendor's models — often the same vendor
+   that wrote the document. The round still met quorum and the flag changes
+   nothing about that; it is a record, not a gate. But a reader weeks later has
+   only this file, and "two reviewers agreed" reads very differently once they
+   know both were the same vendor. Do not editorialize beyond naming it.
 
 6. Return the overall verdict and the action recommendation to the caller.
