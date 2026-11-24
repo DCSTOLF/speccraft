@@ -1231,9 +1231,22 @@ Both are landed TEXT that is known-wrong and must not be read as done.
 > watching `go test ./internal/delegate/` stay green until `-count=1` was
 > added. The same applies to `Test_LoadConfig_RealRegistries_LoadUnchanged`.
 >
-> **Open, for T71 itself:** that predicate runs the whole bats suite, which
-> takes minutes and will exceed `tasks-verify`'s 30s per-predicate budget. It
-> has to be split or the gate run by hand when T71 lands.
+> **Resolved at T71.** The predicate ran the whole bats suite — minutes, far
+> over `tasks-verify`'s 30s per-predicate budget, and `tasks-verify --run`
+> re-runs it for every later task. Split by what a LOCAL predicate can
+> honestly assert:
+>
+> In the predicate (≈16 s): `go test -count=1 ./...`, the
+> `GOOS=windows` build, `bin/` uncommitted, 0052's 120 assertion names
+> byte-identical to `19317e5`, CI not setting `SPECCRAFT_LIVE_CODEX_SMOKE`,
+> and the live-smoke file producing exactly two skips.
+>
+> NOT in the predicate, because no local command can establish them: the bats
+> suite green **on macOS** (only CI has that runner), and the manual live smoke
+> of ACs 26/26a. Those belong to CI and to the changelog entry respectively,
+> which is what the ACs already say. Putting the Linux bats run in the
+> predicate too would have bought nothing — it is run on every commit anyway —
+> while making every subsequent `tasks-verify --run` take minutes.
 
 ### Phase H — Lifecycle integration (ACs 14d, 15, 27)
 
