@@ -125,9 +125,9 @@ contract: done-means-v1
   done: $ test -f tests/hooks/review-subagent-agent.bats && grep -q 'no bare Bash' tests/hooks/review-subagent-agent.bats && grep -q "the other's role" tests/hooks/review-subagent-agent.bats
 - [x] T51 — GREEN: agents/reviewer.md plus the cross-reviewer and SKILL.md amendments
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-subagent-agent.bats && grep -q 'model: inherit' agents/reviewer.md
-- [ ] T52 — RED: custom subagent_type lacking Write, declaring Edit, or unknown
+- [x] T52 — RED: custom subagent_type lacking Write, declaring Edit, or unknown
   done: $ test -f tests/hooks/spec-review-subagent.bats && grep -q 'missing-write-tool' tests/hooks/spec-review-subagent.bats
-- [ ] T53 — GREEN: review_subagent_preflight
+- [x] T53 — GREEN: review_subagent_preflight
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats -f subagent_preflight && grep -q 'review_subagent_preflight()' commands/spec/review*.lib.sh
 - [ ] T54 — RED: TaskStop timeout, stop-failed, late-completion, subagent-no-output
   done: $ grep -q 'late-completion' tests/hooks/spec-review-subagent.bats && grep -q 'subagent-no-output' tests/hooks/spec-review-subagent.bats

@@ -330,6 +330,78 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# AC18b — the subagent preflight. Its membership test over a frontmatter
+# `tools:` list is the same shape as the mode and tier tables, and it decides
+# whether a reviewer is LAUNCHED, so a zsh answer of "no tool is present"
+# refuses every reviewer and a "yes, all of them" launches one that cannot
+# write its verdict.
+# ---------------------------------------------------------------------------
+
+@test "review_subagent_preflight agrees across shells on all three arms" {
+  mkdir -p "$REPO/agents"
+  cat > "$REPO/agents/good.md" <<'A'
+---
+name: good
+tools: [Read, Grep, Glob, Bash(shasum:*), Write]
+---
+body
+A
+  cat > "$REPO/agents/nowrite.md" <<'A'
+---
+name: nowrite
+tools: [Read, Grep, Glob]
+---
+body
+A
+  cat > "$REPO/agents/editor.md" <<'A'
+---
+name: editor
+tools: [Read, Edit, Write]
+---
+body
+A
+  parity 'review_subagent_preflight over refuse / pass / warn' '
+for t in nowrite good editor speccraft:good missing; do
+  printf "%s => %s\n" "$t" "$(review_subagent_preflight "$PWD/agents" "$t" 2>&1 | head -1)"
+done'
+}
+
+@test "the preflight parity row would notice a shell that refused everything" {
+  # Premise. Both shells failing IDENTICALLY is invisible to a parity check, so
+  # pin the bash-side ANSWERS too: the row above proves the two agree, and this
+  # one proves what they agree ON.
+  mkdir -p "$REPO/agents"
+  cat > "$REPO/agents/good.md" <<'A'
+---
+name: good
+tools: [Read, Grep, Glob, Bash(shasum:*), Write]
+---
+body
+A
+  cat > "$REPO/agents/nowrite.md" <<'A'
+---
+name: nowrite
+tools: [Read, Grep, Glob]
+---
+body
+A
+  local sh out
+  for sh in bash zsh; do
+    command -v "$sh" >/dev/null 2>&1 || { echo "$sh required" >&2; return 1; }
+    out="$(in_shell "$sh" 'review_subagent_preflight "$PWD/agents" good')"
+    [ "$out" = "ok" ] || {
+      echo "$sh refused an agent that declares Write: [$out]" >&2
+      return 1
+    }
+    out="$(in_shell "$sh" 'review_subagent_preflight "$PWD/agents" nowrite')"
+    [ "$out" = "failed subagent-launch missing-write-tool" ] || {
+      echo "$sh accepted an agent with no Write: [$out]" >&2
+      return 1
+    }
+  done
+}
+
+# ---------------------------------------------------------------------------
 # A sourced lib must not mutate the caller's shell state.
 # ---------------------------------------------------------------------------
 

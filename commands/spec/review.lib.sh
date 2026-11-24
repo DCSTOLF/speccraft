@@ -2122,6 +2122,121 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# AC18b — preflight a `subagent` reviewer's own definition before launching it.
+#
+# A registry entry may name any agent as its reviewer. The round reads that
+# reviewer's verdict from `<round-dir>/<agent>.out`, so an agent without the
+# `Write` tool CANNOT produce one: it would be launched, think for minutes, and
+# return nothing, and the round would then record a missing artifact. Reading
+# the agent's frontmatter first turns that into an immediate named refusal.
+#
+# `Edit` is the other case and is deliberately NOT fatal. It is not needed for
+# the round to work, but a reviewer that can Edit can rewrite the very document
+# it is judging — so it warns on stderr and dispatches anyway, because the
+# operator named that agent on purpose.
+# ---------------------------------------------------------------------------
+
+# _review_frontmatter_field <file> <key> — the value of a top-level key in the
+# FIRST `---`-delimited block only. Scoped to the frontmatter on purpose: an
+# agent whose body documents a well-formed `tools:` list in a fenced example
+# must not thereby satisfy a check about its own grants.
+_review_frontmatter_field() {
+  awk -v key="$2" '
+    NR == 1 && $0 == "---" { inb = 1; next }
+    inb && $0 == "---"     { exit }
+    inb {
+      k = $0; sub(/:.*/, "", k)
+      if (k == key) { v = $0; sub(/^[^:]*:[ \t]*/, "", v); print v; exit }
+    }
+  ' "$1"
+}
+
+# _review_tools_has <tools-value> <tool> — is <tool> an ELEMENT of a
+# `[A, B, C]` frontmatter list? Membership, never substring: `[Read, WriteFile]`
+# does not grant `Write`, and `Bash(shasum:*)` is not a bare `Bash`.
+_review_tools_has() {
+  local list="${1:-}" needle="${2:-}"
+  # Normalize the brackets and commas to spaces, then hand off to the
+  # cross-shell word walker. NOT `for item in $list`: these libs are sourced
+  # into the caller's shell, which on macOS is zsh, where an unquoted parameter
+  # expansion is NOT word-split — the loop would see one blob and answer "no"
+  # to every tool, so a Write-less agent would pass preflight on exactly the
+  # platform nobody tests on.
+  #
+  # Nor a padded `case " $list " in *" $needle "*)`: that puts the needle on
+  # the PATTERN side, where `Bash(shasum:*)` is a glob that matches far more
+  # than itself.
+  list="$(printf '%s\n' "$list" | tr '[],' '   ')"
+  _review_list_has "$needle" "$list"
+}
+
+# review_subagent_preflight <agents-dir> <subagent-type>
+#   stdout `ok`                                        — launch it
+#   stdout `failed subagent-launch <reason> [<type>]`  — do NOT launch it
+#   exit 2 with a named error                          — our bug, not the
+#                                                        operator's registry
+#
+# A refusal is DATA, like review_budget_check's: exit 0 with a token on stdout,
+# so the round records it against this agent and the other reviewers still run.
+# The token is a whole outcome line beginning `failed`, because the outcomes
+# file is read as `<agent> <outcome> <rest>` — a bare reason in the outcome
+# column would hit _review_outcome_kind's unknown-token arm and abort the round
+# with exit 2 instead of recording the refusal.
+review_subagent_preflight() {
+  local dir="${1:-}" type="${2:-}" bare file tools
+  [ -n "$dir" ] || { review_error "review_subagent_preflight: agents dir required"; return 2; }
+  [ -n "$type" ] || { review_error "review_subagent_preflight: subagent type required"; return 2; }
+  # A missing plugin dir and a typo'd registry entry must be DISTINGUISHABLE:
+  # the first is ours to fix, the second the operator's.
+  [ -d "$dir" ] || { review_error "review_subagent_preflight: agents dir not found: $dir"; return 2; }
+
+  # Strip one `<plugin>:` qualifier. `speccraft:reviewer` is the dispatch
+  # default and the file is `agents/reviewer.md`, so a preflight that did not
+  # strip it would refuse the one reviewer this spec ships.
+  bare="${type##*:}"
+  # A subagent type is a bare file stem. Anything carrying a path separator or
+  # a dot segment is a registry error, not a path to resolve — an agents dir is
+  # not a jumping-off point for the rest of the filesystem.
+  case "$bare" in
+    ''|.|..|*/*|*'\'*)
+      printf 'failed subagent-launch unknown-subagent-type %s\n' "$type"
+      return 0
+      ;;
+  esac
+
+  file="$dir/$bare.md"
+  [ -f "$file" ] || {
+    # Named, because an operator with four registry entries cannot otherwise
+    # tell which one points at an agent that is not there.
+    printf 'failed subagent-launch unknown-subagent-type %s\n' "$type"
+    return 0
+  }
+
+  tools="$(_review_frontmatter_field "$file" tools)"
+  if [ -z "$tools" ]; then
+    # Omitting `tools:` grants EVERY tool, so Write is present and the round
+    # works — but so are Edit and unscoped Bash. That is the operator's choice
+    # to make and ours to say out loud.
+    review_error "review_subagent_preflight: agent \"$bare\" declares no tools, so it inherits EVERY tool including Edit and unscoped Bash; dispatching anyway"
+    printf 'ok\n'
+    return 0
+  fi
+
+  # The refusal is checked FIRST. A warn-first implementation would print the
+  # Edit warning, fall through to `ok`, and launch a reviewer that cannot write
+  # its verdict.
+  _review_tools_has "$tools" Write || {
+    printf 'failed subagent-launch missing-write-tool\n'
+    return 0
+  }
+
+  ! _review_tools_has "$tools" Edit || {
+    review_error "review_subagent_preflight: agent \"$bare\" declares Edit, so it can rewrite the document it is reviewing; dispatching anyway"
+  }
+  printf 'ok\n'
+}
+
+# ---------------------------------------------------------------------------
 # Spec 0054 — the round directory and tree check live in a sibling lib.
 # See the note above _REVIEW_LIB_DIR for why the fallback form is used.
 # ---------------------------------------------------------------------------

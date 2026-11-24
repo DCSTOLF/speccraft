@@ -157,7 +157,30 @@ be started by the orchestrating session's own tooling, so it is never handed to
 **aux-delegator** (which shells out to external CLIs) and never dispatched from
 a shell.
 
-Use the **Agent** tool directly:
+**Preflight the agent's own definition first, before any launch** (AC18b):
+
+```bash
+TYPE="$(review_agent_field .speccraft/agents.toml "$agent" subagent_type)"
+TYPE="${TYPE:-speccraft:reviewer}"
+PRE="$(review_subagent_preflight "$CLAUDE_PLUGIN_ROOT/agents" "$TYPE")"
+if [ "$PRE" != ok ]; then
+  printf '%s %s\n' "$agent" "$PRE" >> "$OUTCOMES"
+  continue        # do NOT launch; the other reviewers still run
+fi
+```
+
+The round reads this reviewer's verdict from `$ROUND_DIR/<agent>.out`, so an
+agent whose frontmatter lacks `Write` **cannot produce one**. Without the
+preflight it would be launched, think for minutes, and return nothing — and the
+failure would surface as a missing artifact rather than as the registry error
+it is. The refusal is recorded against the agent (`failed subagent-launch
+<reason>`) so the round can tell a refused reviewer from one never dispatched.
+
+A warning on stderr — the agent declares `Edit`, or declares no `tools:` at all
+and so inherits every tool — is **not** a refusal. Surface it and dispatch: the
+operator named that agent on purpose.
+
+Then use the **Agent** tool:
 
 - `subagent_type`: the registry's `subagent_type`, defaulting to
   **`speccraft:reviewer`** — the fully qualified name, matching the Go loader
