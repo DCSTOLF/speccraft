@@ -16,7 +16,12 @@
 setup() {
   PLUGIN_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
   HOOKS="$PLUGIN_DIR/tests/hooks"
+  TEST_DIR="$(mktemp -d)"
   export PLUGIN_DIR HOOKS
+}
+
+teardown() {
+  [ -z "${TEST_DIR:-}" ] || rm -rf "$TEST_DIR"
 }
 
 # The enumerated GNU-only forms, same set as the shipped-surface guard.
@@ -152,4 +157,79 @@ executing_files() {
     diff <(echo "$expected") <(echo "$actual") || true
     return 1
   }
+}
+
+# ---------------------------------------------------------------------------
+# An awk RANGE whose END pattern is an interval expression. Two portability
+# bugs that compose into a silent one, and CI caught it in a test of this
+# repo's own — the first CI run spec 0054's branch ever had.
+#
+#   awk RANGE, end pattern an interval: /start/,/^#<N,M> /
+#   (written with <N,M> rather than the real braces, because this file is
+#   itself under the sweep and the literal form would flag it)
+#
+# mawk (this devcontainer's awk, and Debian's default) does not implement
+# intervals: the end pattern matches NOTHING, so the range runs to EOF and the
+# extraction silently covers the whole file. An awk that DOES implement them
+# ends the range on its own start line, because a `## …` heading matches
+# `^#{2,3} ` too — awk closes a range when the start line also matches the end.
+# So the same line yields "the whole file" on one platform and "one line" on
+# the other, and NEITHER is the section the author meant.
+#
+# `sed` is the portable spelling: its range never ends on the start line, and
+# an alternation (`/^## [0-9]/`) needs no interval.
+#
+# Scoped to the lethal COMBINATION rather than to intervals generally, because
+# `portability-guard.bats` legitimately writes forbidden fixtures containing
+# them, and `spec-review-payload.bats` legitimately proves mawk's behaviour.
+# Narrowing the pattern is what keeps this guard free of an exemption list.
+# ---------------------------------------------------------------------------
+
+awk_range_interval_pattern() {
+  printf '%s\n' "awk[^|;]*'/[^/]*/,/[^/]*\{[0-9]+(,[0-9]*)?\}[^/]*/'"
+}
+
+@test "sweep: no test uses an awk range with an interval end pattern" {
+  local hits
+  hits="$(grep -rnE "$(awk_range_interval_pattern)" "$HOOKS" 2>/dev/null || true)"
+  [ -z "$hits" ] || {
+    echo "awk range with an interval end pattern (whole file under mawk, one line elsewhere):" >&2
+    printf '%s\n' "$hits" >&2
+    echo "Use sed: its range never closes on the start line, and an" >&2
+    echo "alternation such as /^## [0-9]/ needs no interval." >&2
+    return 1
+  }
+}
+
+@test "sweep: the awk-range guard matches the form it forbids" {
+  # Premise. The exact line CI failed on, reconstructed, plus the portable
+  # replacement which must NOT match.
+  local bad good
+  bad="$TEST_DIR/bad.bats"
+  mkdir -p "$TEST_DIR"
+  # Assembled from pieces so the literal does not appear in this file's own
+  # source: the sweep scans tests/hooks, which includes this file.
+  local lo=2 hi=3 ivl
+  ivl="{$lo,$hi}"
+  printf '%s\n' "  n=\"\$(awk '/[Tt]imeout .*protocol/,/^#$ivl /' \"\$RUNBOOK\" | grep -c x)\"" > "$bad"
+  grep -qE "$(awk_range_interval_pattern)" "$bad" || {
+    echo "the guard does not match the line CI actually failed on:" >&2
+    cat "$bad" >&2
+    return 1
+  }
+  good="$TEST_DIR/good.bats"
+  printf '%s\n' "  section=\"\$(sed -n '/[Tt]imeout and cancellation protocol/,/^## [0-9]/p' \"\$RUNBOOK\")\"" > "$good"
+  grep -qE "$(awk_range_interval_pattern)" "$good" && {
+    echo "the guard false-positives on the portable sed replacement" >&2
+    return 1
+  }
+  # And it must NOT fire on the deliberate non-range uses that exist today:
+  # the guard's own forbidden fixtures, and 0052's proof of mawk's behaviour.
+  printf '%s\n' "awk '/^#$ivl /{print}' \"\$f\"" > "$TEST_DIR/action.sh"
+  grep -qE "$(awk_range_interval_pattern)" "$TEST_DIR/action.sh" && {
+    echo "the guard fires on a non-range interval use, which would need an" >&2
+    echo "exemption list for the fixtures that legitimately carry one" >&2
+    return 1
+  }
+  return 0
 }

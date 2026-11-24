@@ -226,16 +226,27 @@ EOF
   }
 }
 
-# bats_child <bats-args...> — run a nested bats with the parent's BATS_*
-# environment cleared.
+# The parent-run variables a nested bats must NOT inherit. A child inherits
+# BATS_TEST_NAMES and then reports `unknown test name` for its OWN tests, and
+# its TAP output collides with the parent's stream ("Executed 6 instead of
+# expected 8").
 #
-# A child bats inherits BATS_TEST_NAMES / BATS_TEST_FILTER and then reports
-# `unknown test name` for its OWN tests, and its TAP output collides with the
-# parent's stream ("Executed 6 instead of expected 8"). Clearing them is what
-# makes a nested run readable.
+# An EXPLICIT LIST, not every `BATS_*` variable. Clearing them all also removed
+# BATS_ROOT / BATS_LIBEXEC, which some bats installations need to locate their
+# own internals — this devcontainer's resolves them from argv0 and did not
+# care, CI's install does, and there the child died with
+# `//bats-core/validator.bash: No such file or directory`. Found by the first
+# CI run this branch ever had; a nested-process helper must clear the
+# RUN-scoped state and keep the INSTALL-scoped state.
+BATS_CHILD_CLEAR="BATS_TEST_NAMES BATS_TEST_FILTER BATS_TEST_NAME
+BATS_TEST_NUMBER BATS_TEST_DESCRIPTION BATS_TEST_FILENAME BATS_TEST_TMPDIR
+BATS_SUITE_TEST_NUMBER BATS_RUN_TMPDIR BATS_TEST_SOURCE BATS_OUT"
+
+# bats_child <bats-args...> — run a nested bats with the parent's RUN-scoped
+# BATS state cleared and its installation state intact.
 bats_child() {
   local v clear=""
-  for v in $(env | sed -n 's/^\(BATS_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  for v in $BATS_CHILD_CLEAR; do
     clear="$clear -u $v"
   done
   # shellcheck disable=SC2086
@@ -325,6 +336,37 @@ bats_child() {
   [ "$n" -eq 2 ] || {
     echo "expected 2 gated test titles naming the knob, found $n" >&2
     grep -nE '^@test' "$BATS_TEST_FILENAME" >&2
+    return 1
+  }
+}
+
+@test "the nested-bats helper keeps bats' own installation variables" {
+  # The defect CI caught: clearing every BATS_* variable also removed
+  # BATS_ROOT / BATS_LIBEXEC, so on an installation that resolves its
+  # internals from those (CI's does; this container's does not) the child died
+  # with `//bats-core/validator.bash: No such file or directory`. The row that
+  # used the helper then failed for a reason having nothing to do with what it
+  # was testing.
+  local v
+  for v in BATS_ROOT BATS_LIBEXEC BATS_LIB_PATH BATS_TMPDIR; do
+    printf '%s\n' "$BATS_CHILD_CLEAR" | grep -qxF "$v" && {
+      echo "$v is install-scoped and must NOT be cleared for the child" >&2
+      return 1
+    }
+  done
+  # …and the run-scoped one that caused the original problem IS cleared.
+  printf '%s\n' "$BATS_CHILD_CLEAR" | tr ' ' '\n' | grep -qxF 'BATS_TEST_NAMES' || {
+    echo "BATS_TEST_NAMES is not cleared, so a child would filter on the parent's list" >&2
+    return 1
+  }
+  # The helper must actually work: a trivial nested run succeeds.
+  local probe="$TEST_DIR/trivial.bats"
+  printf '%s\n' '@test "trivial" { :; }' > "$probe"
+  local out
+  out="$(bats_child "$probe" || true)"
+  printf '%s\n' "$out" | grep -qE '^ok 1 trivial' || {
+    echo "the nested helper could not run a trivial file:" >&2
+    printf '%s\n' "$out" >&2
     return 1
   }
 }

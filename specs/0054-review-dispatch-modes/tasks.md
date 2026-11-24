@@ -174,7 +174,7 @@ contract: done-means-v1
 - [x] T69 — RED: the gated live-smoke harness that skips by name (NON-CI)
   done: $ test -f tests/hooks/live-codex-smoke.bats && grep -q 'SPECCRAFT_LIVE_CODEX_SMOKE' tests/hooks/live-codex-smoke.bats
 - [x] T70 — GREEN: the two gated bodies plus the self-naming skip (NON-CI)
-  done: $ f=$(mktemp) && PATH="$PWD/bin:$PATH" bats tests/hooks/live-codex-smoke.bats > "$f" 2>&1 && test "$(grep -c '^not ok' "$f")" -eq 0 && test "$(grep -c '# skip' "$f")" -eq 2 && test "$(grep -c '^ok ' "$f")" -eq 7 && rm -f "$f"
+  done: $ f=$(mktemp) && PATH="$PWD/bin:$PATH" bats tests/hooks/live-codex-smoke.bats > "$f" 2>&1 && test "$(grep -c '^not ok' "$f")" -eq 0 && test "$(grep -c '# skip' "$f")" -eq 2 && test "$(grep -c '^ok ' "$f")" -ge 7 && rm -f "$f"
 - [x] T70.1 — GREEN: the sweep reclaims abandoned rounds again; the resolver works per block
   done: $ grep -q 'review_round_reclaim()' commands/spec/review-round.lib.sh && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-lifecycle.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 45
 - [x] T70.2 — GREEN: the frontmatter parser reads both YAML list forms, column 0 only, once

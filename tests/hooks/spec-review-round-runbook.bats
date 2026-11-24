@@ -166,10 +166,30 @@ allowed_tools() {
   # Counted, so the protocol cannot be silently shortened to "stop it and move
   # on" — the steps are what keep an unstoppable reviewer from being recorded
   # as a plain timeout.
-  local n
-  n="$(awk '/[Tt]imeout .*protocol/,/^#{2,3} /' "$RUNBOOK" | grep -cE '^[[:space:]]*[1-9]\.')"
+  # `sed`, not an awk RANGE, and no interval expression. Two portability traps
+  # in one line, both found by CI (the first CI run this branch ever had):
+  #
+  #   1. `/^#{2,3} /` is an ERE INTERVAL. mawk — this devcontainer's awk and
+  #      Debian's default — does not implement intervals and matches NOTHING,
+  #      silently, so the range ran to EOF and happened to count 7. CI's awk
+  #      does implement them, and there the range ENDED on its own start line,
+  #      because `## 4. Subagent timeout and cancellation protocol` matches the
+  #      end pattern too. awk closes a range on the start line when both match;
+  #      sed never does.
+  #   2. `grep -c` prints 0 AND exits 1 with no match, so the empty range made
+  #      the ASSIGNMENT fail under errexit rather than yielding a count of 0.
+  #      The error then named the whole pipeline instead of the real problem.
+  local section n
+  section="$(sed -n '/[Tt]imeout and cancellation protocol/,/^## [0-9]/p' "$RUNBOOK")"
+  [ -n "$section" ] || {
+    echo "could not isolate the timeout protocol section; this row would be vacuous" >&2
+    grep -nE '^## ' "$RUNBOOK" >&2
+    return 1
+  }
+  n="$(printf '%s\n' "$section" | grep -cE '^[[:space:]]*[1-9]\.' || true)"
   [ "$n" -ge 7 ] || {
     echo "expected at least 7 numbered steps in the timeout protocol, found $n" >&2
+    printf '%s\n' "$section" >&2
     return 1
   }
 }
