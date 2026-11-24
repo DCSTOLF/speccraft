@@ -253,8 +253,17 @@ no shell state survives. Seven steps, in order:
      ID="$(review_subagent_agent_id "$ROUND_DIR" "$agent")"   # TaskStop this
    fi
    ```
-   On a **confirmed** stop record `<agent> timeout` and continue the round. A
-   `TaskStop` that errors or returns without confirming is **not** a stop:
+   On a **confirmed** stop, record `<agent> timeout`, stamp it terminal, and
+   continue the round:
+   ```bash
+   printf '%s timeout\n' "$agent" >> "$OUTCOMES"
+   review_subagent_terminal "$ROUND_DIR" "$agent" timeout
+   ```
+   The stamp is what lets §7 clean up: a reviewer that was stopped never
+   completes, so without it the round is pending forever and has to wait for
+   lease expiry.
+
+   A `TaskStop` that errors or returns without confirming is **not** a stop:
    ```bash
    printf '%s %s\n' "$agent" \
      "$(review_subagent_stop_failed "$ROUND_DIR" "$agent")" >> "$OUTCOMES"
@@ -415,11 +424,28 @@ at all. An unrecognised kind is a named error rather than a fall-through to
 Finally, clean up:
 
 ```bash
-review_round_cleanup "$ROUND_DIR"
+if review_round_all_terminal "$ROUND_DIR"; then
+  review_round_cleanup "$ROUND_DIR"
+else
+  echo "round dir retained: a reviewer is not yet proven terminal"
+fi
 ```
 
-Cleanup happens only once **every** reviewer is proven terminal, and it refuses
-a quarantined dir.
+Cleanup happens only once **every** reviewer is proven terminal — completed,
+timed out, or *confirmed* stopped — and it refuses a quarantined dir.
+`review_round_cleanup` re-checks both itself, so a durable delete cannot happen
+behind this runbook's back; the gate here is so the round can say which it did.
+
+**An expired deadline is not proof of termination.** A reviewer whose deadline
+passed may still be running — that is the whole reason TaskStop and
+`subagent-stop-failed` exist. Proof is a stamp in the round's own records:
+`review_subagent_completed` for a reviewer that returned,
+`review_subagent_terminal` for one that never will. Deleting a live reviewer's
+output path fails SILENTLY: it writes into a removed directory, and the round
+records `subagent-no-output` — which reads as the reviewer's fault.
+
+With more than one reviewer unresolved, the refusal says HOW MANY. An operator
+told only about the first would resolve it and expect the dir to go away.
 
 ## Resolving a quarantine later
 

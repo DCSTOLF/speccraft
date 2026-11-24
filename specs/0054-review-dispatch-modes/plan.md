@@ -1255,6 +1255,43 @@ Both are landed TEXT that is known-wrong and must not be read as done.
   the recorded reviewer set; runbook's cleanup step gates on it.
 - All step-64 tests pass.
 
+> **Two things landed here beyond the written step.**
+>
+> 1. `review_subagent_terminal <dir> <agent> <reason>`. "Proven terminal" needs
+>    a stamp for the reviewers that never complete — timed out, confirmed
+>    stopped — or a round containing one timeout stays pending forever and can
+>    only be reclaimed by lease expiry. The reason is required: a bare
+>    `terminal=` cannot be audited. Proof is deliberately NEVER the clock; a
+>    reviewer whose deadline passed may still be running, which is the entire
+>    reason TaskStop and `subagent-stop-failed` exist.
+>
+> 2. **The round-8 quarantine-multiplicity defect, deferred here from Phase
+>    G.5.** `review_round_quarantine` wrote its record with `mv -f`, so a round
+>    with TWO unconfirmed stops kept only the LAST agent id: the operator lost
+>    the other handle, and resolving the survivor would release the dir while
+>    the first reviewer might still be writing to it. The record now APPENDS
+>    one blank-line-separated block per reviewer, idempotently, with the FIRST
+>    block still first so `_review_quarantine_field`, the resolver and the
+>    sweep's pinned report format all keep working unchanged. New
+>    `review_round_quarantine_count`, and `review_round_cleanup` now says how
+>    many are unresolved — an operator told only about the first resolves it
+>    and expects the dir to go away.
+>
+>    The spec says "a `quarantine` file records the unconfirmed job/agent id",
+>    singular. That wording is what made the single-record implementation look
+>    right; the multi-reviewer case simply was not considered. Recorded here
+>    rather than silently generalized.
+>
+> **The first draft of `spec-review-round-lifecycle.bats` read green on the
+> wrong refusal.** It built round dirs with `mktemp -d`, and
+> `review_round_cleanup` correctly refuses any path outside the
+> `.review-rounds` parent — so every cleanup row passed on *that* error rather
+> than on the pending-reviewer gate. The setup now creates a real repo and a
+> real round via `review_round_dir_create`. Same class as the `rev` substring
+> in `review_round_cleanup`'s own name matching a `grep -qF 'rev'`: when a
+> negative or a message assertion passes immediately, check WHICH failure it
+> saw.
+
 #### Step 66 — The lease is never renewed, and every bounded path survives (RED)
 - Extend `tests/hooks/spec-review-round-lifecycle.bats`:
   - `@test "a lease file's expiry is byte-identical before and after a full round"`

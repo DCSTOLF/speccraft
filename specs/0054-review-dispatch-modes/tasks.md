@@ -161,9 +161,9 @@ contract: done-means-v1
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-vendor.bats && grep -q 'AUTHORS' skills/review-round/SKILL.md
 - [x] T63.6 — GREEN: the refusal matches the contracted string; the template comment matches what ships
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/review-only-mode-refusal.bats tests/hooks/review-dispatch-docs.bats && grep -q 'is a review-only dispatch mode' commands/spec/review.lib.sh
-- [ ] T64 — RED: cleanup on every exit path, never while a reviewer is pending
+- [x] T64 — RED: cleanup on every exit path, never while a reviewer is pending
   done: $ test -f tests/hooks/spec-review-round-lifecycle.bats && grep -q 'pending' tests/hooks/spec-review-round-lifecycle.bats
-- [ ] T65 — GREEN: review_round_all_terminal plus the runbook cleanup gate
+- [x] T65 — GREEN: review_round_all_terminal plus the runbook cleanup gate
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-round-lifecycle.bats && grep -q 'review_round_all_terminal()' commands/spec/review-round.lib.sh
 - [ ] T66 — RED: the lease expiry is byte-identical across a round, and four bounded paths survive a concurrent sweep
   done: $ grep -q 'byte-identical' tests/hooks/spec-review-round-lifecycle.bats && grep -q 'review_round_lease_renew' tests/hooks/spec-review-round-lifecycle.bats

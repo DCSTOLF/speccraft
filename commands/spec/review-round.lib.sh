@@ -267,9 +267,26 @@ review_round_cleanup() {
   # delete, so there is no path that validates the target and then removes it
   # while a reviewer may still be running.
   if review_round_quarantined "$canon_dir"; then
-    review_error "review_round_cleanup: refusing '$dir' — quarantined ($(_review_quarantine_field "$canon_dir" outcome) $(_review_quarantine_field "$canon_dir" id)); resolve or remove $canon_dir/quarantine first"
+    # The COUNT, not just the first record. An operator told
+    # "quarantined (subagent-stop-failed task_2)" resolves that one and expects
+    # the dir to go; with two unresolved reviewers it will not, and the second
+    # message would look like the same refusal repeating.
+    review_error "review_round_cleanup: refusing '$dir' — $(review_round_quarantine_count "$canon_dir") reviewer(s) quarantined, first ($(_review_quarantine_field "$canon_dir" outcome) $(_review_quarantine_field "$canon_dir" id)); resolve or remove $canon_dir/quarantine first"
     return 1
   fi
+
+  # AC14d — never while a reviewer might still write here. Proof comes from the
+  # round's own stamps, not the clock: a reviewer whose deadline passed may
+  # still be running, which is why TaskStop and stop-failed exist. Deleting a
+  # live reviewer's output path fails SILENTLY — it writes into a removed
+  # directory and the round records `subagent-no-output`, blaming the reviewer.
+  local pending_msg
+  pending_msg="$(review_round_all_terminal "$canon_dir" 2>&1 >/dev/null)" || {
+    # Strip the inner function's own prefix so the message reads as one
+    # sentence rather than two stacked diagnostics.
+    review_error "review_round_cleanup: refusing '$dir' — ${pending_msg#*: }"
+    return 1
+  }
 
   rm -rf "$canon_dir"
 }
@@ -449,10 +466,27 @@ review_round_quarantine() {
       ;;
   esac
 
-  # Same-dir temp + rename: a half-written quarantine record would be read as
-  # "not quarantined" and the dir reclaimed under a live reviewer.
+  # IDEMPOTENT: a retried stop must not grow the record, or the count stops
+  # meaning anything.
+  if [ -f "$dir/quarantine" ] && grep -qxF "id $q_id" "$dir/quarantine"; then
+    return 0
+  fi
+
+  # Same-dir temp + rename, and the existing records are carried over: a
+  # half-written quarantine record would be read as "not quarantined" and the
+  # dir reclaimed under a live reviewer.
+  #
+  # APPENDS rather than replacing. One round can have two reviewers whose stop
+  # never confirmed; `mv -f` of a fresh single record meant the second
+  # OVERWROTE the first, so the operator lost that agent's handle and
+  # resolving the survivor would release the dir while the first reviewer might
+  # still be writing to it (round 8). Each reviewer is one block, blank-line
+  # separated, and the FIRST block stays first — `_review_quarantine_field` and
+  # `review_round_quarantine_resolve` read it, and this spec's earlier tests
+  # pin the sweep's report format built from it.
   local tmp="$dir/.quarantine.tmp.$$"
   {
+    [ ! -f "$dir/quarantine" ] || { cat -- "$dir/quarantine"; printf '\n'; }
     printf 'id %s\n' "$q_id"
     printf 'outcome %s\n' "$outcome"
     printf 'mode %s\n' "$mode"
@@ -1026,4 +1060,94 @@ review_attribute_tree_outcomes() {
   cat -- "$tmp" > "$outcomes"
   rm -f "$tmp"
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# ACs 14d / 15 — "proven terminal", and the cleanup gate that rests on it.
+#
+# The round dir holds every reviewer's payload AND the path each writes its
+# verdict to. Cleanup therefore has two jobs that pull against each other: it
+# must run on every exit path, and it must never run while a reviewer might
+# still write there. Deleting a live reviewer's output path does not fail
+# loudly — the reviewer writes into a removed directory and the round records
+# `subagent-no-output`, which reads as the REVIEWER's fault.
+#
+# Proof comes from the round's own records, never from the clock. A reviewer
+# whose deadline passed may still be running; that is precisely why TaskStop
+# and the stop-failed outcome exist.
+# ---------------------------------------------------------------------------
+
+# review_subagent_terminal <round-dir> <agent> <reason>
+# — stamp a reviewer that will never complete: timed out, confirmed stopped,
+# refused at preflight. `review_subagent_completed` covers the happy path; this
+# covers the rest, and without it a round containing one timeout could never be
+# cleaned up and would have to wait for lease expiry.
+#
+# The reason is REQUIRED. A bare `terminal=` is unauditable: an operator
+# reading the record cannot tell a confirmed stop from a give-up.
+review_subagent_terminal() {
+  local dir="${1:-}" agent="${2:-}" reason="${3:-}" rec
+  rec="$(_review_subagent_rec "$dir" "$agent")" || return 2
+  [ -f "$rec" ] || {
+    review_error "review_subagent_terminal: no launch record for agent \"$agent\" in $dir"
+    return 2
+  }
+  [ -n "$reason" ] || {
+    review_error "review_subagent_terminal: a reason is required for agent \"$agent\" — 'terminal' with no reason cannot be audited"
+    return 2
+  }
+  case "$reason" in
+    *[!A-Za-z0-9._-]*)
+      review_error "review_subagent_terminal: reason '$reason' must be a single bare token"
+      return 2
+      ;;
+  esac
+  printf 'terminal=%s %s\n' "$(date +%s)" "$reason" >> "$rec"
+}
+
+# review_round_all_terminal <round-dir>
+#   0 — every recorded reviewer is proven terminal (or none was recorded)
+#   1 — at least one is still pending; the pending names go to stderr
+#   2 — a named error
+#
+# A round with NO launch records is terminal: nothing was launched through the
+# record, so nothing can still be writing. Answering "pending" there would make
+# cleanup unreachable for every cli-only round, which is most of them.
+review_round_all_terminal() {
+  local dir="${1:-}" pending="" agent rec
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_round_all_terminal: round dir not found: '${dir:-}'"
+    return 2
+  }
+  while IFS= read -r agent; do
+    [ -n "$agent" ] || continue
+    rec="$dir/$agent.subagent"
+    # Either stamp proves it: `completed` (it returned) or `terminal` (it was
+    # stopped, timed out, or refused). An expired deadline is NOT a stamp.
+    grep -qE '^(completed|terminal)=' "$rec" 2>/dev/null && continue
+    pending="$pending $agent"
+  done <<EOF
+$(review_subagent_active_list "$dir")
+EOF
+  [ -n "$pending" ] || return 0
+  review_error "review_round_all_terminal: still pending:$pending (each needs review_subagent_completed or review_subagent_terminal)"
+  return 1
+}
+
+# review_round_quarantine_count <round-dir> — how many reviewers the dir has
+# unresolved. Zero when there is no quarantine file at all.
+#
+# One round can have TWO reviewers whose stop never confirmed, and the record
+# used to be written with `mv -f`: the second overwrote the first, the operator
+# lost that agent's handle, and resolving the surviving record would release
+# the dir while the first reviewer might still be writing to it. Found by
+# round 8.
+review_round_quarantine_count() {
+  local dir="${1:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_round_quarantine_count: round dir not found: '${dir:-}'"
+    return 2
+  }
+  [ -f "$dir/quarantine" ] || { printf '0\n'; return 0; }
+  grep -c '^id ' "$dir/quarantine" 2>/dev/null || printf '0\n'
 }
