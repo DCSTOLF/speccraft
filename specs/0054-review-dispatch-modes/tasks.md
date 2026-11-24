@@ -129,9 +129,9 @@ contract: done-means-v1
   done: $ test -f tests/hooks/spec-review-subagent.bats && grep -q 'missing-write-tool' tests/hooks/spec-review-subagent.bats
 - [x] T53 — GREEN: review_subagent_preflight
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats -f subagent_preflight && grep -q 'review_subagent_preflight()' commands/spec/review*.lib.sh
-- [ ] T54 — RED: TaskStop timeout, stop-failed, late-completion, subagent-no-output
+- [x] T54 — RED: TaskStop timeout, stop-failed, late-completion, subagent-no-output
   done: $ grep -q 'late-completion' tests/hooks/spec-review-subagent.bats && grep -q 'subagent-no-output' tests/hooks/spec-review-subagent.bats
-- [ ] T55 — GREEN: the subagent record, collect and deadline helpers plus the runbook protocol
+- [x] T55 — GREEN: the subagent record, collect and deadline helpers plus the runbook protocol
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats && grep -q 'review_subagent_collect()' commands/spec/review*.lib.sh
 - [ ] T56 — RED: attribution over the snapshot interval with two concurrent subagents
   done: $ grep -q 'unattributed' tests/hooks/spec-review-subagent.bats

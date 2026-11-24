@@ -439,3 +439,365 @@ AGENT
     }
   done
 }
+
+# ---------------------------------------------------------------------------
+# ACs 20a / 20b / 17a — the subagent timeout, cancellation and collection
+# protocol.
+#
+# A subagent is not a process: the shell cannot see it, signal it, or wait on
+# it. Only the orchestrating session can, through the Agent and TaskStop tools,
+# across many separate tool calls between which NO shell state survives. So the
+# agent id and the deadline have to live in the round dir, and the arithmetic
+# that decides "is this reviewer late?" has to be a helper rather than a sum a
+# model does in prose.
+#
+# The deadline is recorded as an ABSOLUTE epoch second. A relative timeout
+# re-read on a later tool call would restart the clock every time it was
+# consulted, so a reviewer could never be late.
+# ---------------------------------------------------------------------------
+
+make_round_dir() {
+  ROUND_DIR="$TEST_DIR/round"
+  mkdir -p "$ROUND_DIR"
+}
+
+@test "review_subagent_record stores the agent id and an absolute deadline" {
+  source "$LIB"
+  make_round_dir
+  run review_subagent_record "$ROUND_DIR" codex-sub agent_abc123 600
+  [ "$status" -eq 0 ]
+  local rec="$ROUND_DIR/codex-sub.subagent"
+  [ -f "$rec" ] || { echo "no record written; dir holds: $(ls -A "$ROUND_DIR")" >&2; return 1; }
+  grep -qF 'agent_abc123' "$rec"
+  # An ABSOLUTE epoch, not the 600: a relative timeout re-read on a later tool
+  # call restarts the clock, so nothing is ever late.
+  local dl now
+  dl="$(awk -F= '/^deadline=/ {print $2}' "$rec")"
+  now="$(date +%s)"
+  [ -n "$dl" ] || { echo "no deadline recorded: $(cat "$rec")" >&2; return 1; }
+  [ "$dl" -gt "$now" ] || { echo "deadline $dl is not in the future (now $now)" >&2; return 1; }
+  [ "$dl" -le "$((now + 601))" ] || { echo "deadline $dl is not now+600 (now $now)" >&2; return 1; }
+}
+
+@test "the recorded deadline is per agent, not per round" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" a agent_a 600
+  review_subagent_record "$ROUND_DIR" b agent_b 900
+  # Two reviewers launched moments apart must not share one deadline, or
+  # stopping the slow one stops the round's accounting for the fast one.
+  grep -qF 'agent_a' "$ROUND_DIR/a.subagent"
+  grep -qF 'agent_b' "$ROUND_DIR/b.subagent"
+  run review_subagent_agent_id "$ROUND_DIR" b
+  [ "$output" = "agent_b" ]
+}
+
+@test "review_subagent_deadline_expired is false before and true after" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" slow agent_s 600
+  run review_subagent_deadline_expired "$ROUND_DIR" slow
+  [ "$status" -eq 1 ]
+  # A NEGATIVE timeout records a deadline already in the past — the clean way
+  # to test lateness without sleeping or injecting a clock.
+  review_subagent_record "$ROUND_DIR" late agent_l -5
+  run review_subagent_deadline_expired "$ROUND_DIR" late
+  [ "$status" -eq 0 ]
+}
+
+@test "deadline_expired on an unrecorded agent is a named error, not false" {
+  source "$LIB"
+  make_round_dir
+  # "No record" must not read as "not expired": that would let a reviewer the
+  # round never recorded run forever, and the cleanup gate would wait on it.
+  run review_subagent_deadline_expired "$ROUND_DIR" neverlaunched
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qF "neverlaunched"
+}
+
+@test "review_subagent_collect accepts an on-time, non-empty artifact" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" good agent_g 600
+  printf 'verdict: approve\n' > "$ROUND_DIR/good.out"
+  run review_subagent_collect "$ROUND_DIR" good
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+}
+
+@test "a missing artifact after the agent returns is failed subagent-no-output" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" silent agent_s 600
+  run review_subagent_collect "$ROUND_DIR" silent
+  [ "$status" -eq 0 ]
+  [ "$output" = "failed subagent-no-output" ]
+}
+
+@test "an empty artifact is failed subagent-no-output, never an empty verdict" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" empty agent_e 600
+  : > "$ROUND_DIR/empty.out"
+  run review_subagent_collect "$ROUND_DIR" empty
+  [ "$status" -eq 0 ]
+  [ "$output" = "failed subagent-no-output" ]
+  # A whitespace-only artifact is the same thing: a reviewer that wrote a
+  # newline has not returned a verdict.
+  printf '\n  \n' > "$ROUND_DIR/empty.out"
+  run review_subagent_collect "$ROUND_DIR" empty
+  [ "$output" = "failed subagent-no-output" ]
+}
+
+@test "a reviewer completing after its deadline is recorded timeout late-completion" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" tardy agent_t -5
+  printf 'verdict: approve\n' > "$ROUND_DIR/tardy.out"
+  run review_subagent_collect "$ROUND_DIR" tardy
+  [ "$status" -eq 0 ]
+  [ "$output" = "timeout late-completion" ]
+}
+
+@test "the late outcome classifies as a non-verdict" {
+  source "$LIB"
+  # This is what keeps a late approve out of quorum: the round reads the
+  # outcome column, and `timeout` is in REVIEW_NON_VERDICTS.
+  run _review_outcome_kind timeout
+  [ "$output" = "non-verdict" ]
+}
+
+@test "a late approve is not counted toward quorum" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" tardy agent_t -5
+  printf 'verdict: approve\n' > "$ROUND_DIR/tardy.out"
+  out="$(review_subagent_collect "$ROUND_DIR" tardy)"
+  printf 'tardy %s\n' "$out" > "$TEST_DIR/outcomes"
+  run review_approval_quorum_met 1 "$TEST_DIR/outcomes"
+  [ "$status" -eq 1 ]
+  run review_responses_complete "$TEST_DIR/outcomes"
+  [ "$status" -eq 1 ]
+}
+
+@test "an already-finalized review.md is byte-unchanged after a late completion" {
+  source "$LIB"
+  make_round_dir
+  local dir="$TEST_DIR/specs/0001-x"
+  mkdir -p "$dir"
+  printf '# Spec\n\nSPEC\n' > "$dir/spec.md"
+  printf '# Spec\n\nSNAP\n' > "$dir/review-snapshot.md"
+  printf '# Review\n\nFINALIZED-REVIEW\n' > "$dir/review.md"
+  # The round completed on its other reviewer and finalized.
+  printf 'ontime approve\n' > "$TEST_DIR/outcomes"
+  run review_finalize_round "$dir" 1 "$TEST_DIR/outcomes"
+  [ "$status" -eq 0 ]
+  cp "$dir/review.md" "$TEST_DIR/review.after-finalize"
+
+  # NOW the late reviewer lands. Collecting it must not move review.md, and
+  # re-finalizing with the late record must not either — the round is over.
+  review_subagent_record "$ROUND_DIR" tardy agent_t -5
+  printf 'verdict: approve\n' > "$ROUND_DIR/tardy.out"
+  out="$(review_subagent_collect "$ROUND_DIR" tardy)"
+  printf 'tardy %s\n' "$out" >> "$TEST_DIR/outcomes"
+  run review_finalize_round "$dir" 1 "$TEST_DIR/outcomes"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF "responses_complete: false"
+  cmp -s "$TEST_DIR/review.after-finalize" "$dir/review.md" || {
+    echo "review.md moved after a late completion" >&2
+    return 1
+  }
+}
+
+@test "review_subagent_collect reads the artifact from disk, not an argument" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" ondisk agent_o 600
+  # AC17a. Pass a plausible verdict as a THIRD argument and leave the artifact
+  # absent: a collector that accepted pasted content would answer ok.
+  run review_subagent_collect "$ROUND_DIR" ondisk 'verdict: approve'
+  [ "$output" = "failed subagent-no-output" ] || {
+    echo "collect honoured pasted content over the artifact: $output" >&2
+    return 1
+  }
+}
+
+@test "review_subagent_stop_failed names the agent id, not the agent name" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" stuck agent_xyz789 600
+  run review_subagent_stop_failed "$ROUND_DIR" stuck
+  [ "$status" -eq 0 ]
+  [ "$output" = "failed subagent-stop-failed agent_xyz789" ] || {
+    echo "unexpected stop-failed record: $output" >&2
+    return 1
+  }
+}
+
+@test "a stop-failed quarantines the round dir rather than cleaning it up" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" stuck agent_xyz789 600
+  run review_subagent_stop_failed "$ROUND_DIR" stuck
+  [ "$status" -eq 0 ]
+  [ -f "$ROUND_DIR/quarantine" ] || {
+    echo "no quarantine file; dir holds: $(ls -A "$ROUND_DIR")" >&2
+    return 1
+  }
+  # A reviewer that may still be running needs its payload and output path kept.
+  grep -qF 'subagent-stop-failed' "$ROUND_DIR/quarantine"
+  grep -qF 'agent_xyz789' "$ROUND_DIR/quarantine"
+}
+
+@test "a subagent quarantine records no companion root to probe" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" stuck agent_q 600
+  review_subagent_stop_failed "$ROUND_DIR" stuck
+  # No shell-reachable API can ask whether a subagent is alive, so recording a
+  # root would invite a probe that cannot mean anything.
+  #
+  # `^root[ =]`, not `^root=`: the quarantine record is space-separated
+  # (`root <path>`), so an `=` pattern could never match and the negative would
+  # be vacuous whatever the code did.
+  grep -qE '^root[ =]' "$ROUND_DIR/quarantine" && {
+    echo "a subagent quarantine recorded a probe root:" >&2
+    cat "$ROUND_DIR/quarantine" >&2
+    return 1
+  }
+  # Premise: the record really is written in that shape, so the pattern above
+  # is aimed at the format in use.
+  grep -qE '^mode subagent$' "$ROUND_DIR/quarantine" || {
+    echo "the quarantine record is not in the space-separated shape assumed:" >&2
+    cat "$ROUND_DIR/quarantine" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "stop_failed on an unrecorded agent is a named error, not an empty id" {
+  source "$LIB"
+  make_round_dir
+  # `failed subagent-stop-failed` with no id is unactionable: the operator
+  # cannot tell the host which agent to look for.
+  run review_subagent_stop_failed "$ROUND_DIR" neverlaunched
+  [ "$status" -ne 0 ]
+  printf '%s\n' "$output" | grep -qF "neverlaunched"
+}
+
+@test "the cleanup gate refuses a quarantined round dir" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" stuck agent_s 600
+  review_subagent_stop_failed "$ROUND_DIR" stuck
+  run review_round_cleanup "$ROUND_DIR"
+  [ "$status" -ne 0 ]
+  [ -d "$ROUND_DIR" ] || { echo "the round dir was removed despite quarantine" >&2; return 1; }
+}
+
+# ---------------------------------------------------------------------------
+# AC20a — the protocol as the runbook states it
+# ---------------------------------------------------------------------------
+
+@test "the runbook's timeout protocol launches in the background and waits for notifications" {
+  # The spec's protocol is explicit that the orchestrator does NOT poll: it
+  # launches in the background, which yields an agent id, and waits for a
+  # completion notification. The landed text said "stop polling for a
+  # response", which describes a loop that was never meant to exist.
+  grep -qiE 'in the background' "$RUNBOOK" || {
+    echo "the runbook does not say the Agent launch is backgrounded:" >&2
+    grep -niE 'agent id|background' "$RUNBOOK" >&2
+    return 1
+  }
+  grep -qiE 'notification' "$RUNBOOK" || {
+    echo "the runbook does not say the round waits for completion notifications" >&2
+    return 1
+  }
+  grep -qiE '(rather than|instead of|never|not by) poll' "$RUNBOOK" || {
+    echo "the runbook does not contrast waiting with polling:" >&2
+    grep -niE 'poll' "$RUNBOOK" >&2
+    return 1
+  }
+}
+
+@test "the runbook's protocol calls each of the four subagent helpers" {
+  local fn
+  for fn in review_subagent_record review_subagent_deadline_expired \
+            review_subagent_collect review_subagent_stop_failed; do
+    grep -qF "$fn" "$RUNBOOK" || {
+      echo "the runbook's protocol never calls $fn:" >&2
+      sed -n '/^## 4\./,/^## 5\./p' "$RUNBOOK" >&2
+      return 1
+    }
+  done
+}
+
+@test "the runbook states that partial output is never a verdict" {
+  grep -qiE 'partial output is never a verdict|subagent-no-output' "$RUNBOOK" || {
+    echo "the runbook does not cover the no-output case" >&2
+    return 1
+  }
+}
+
+@test "the runbook states that cleanup waits for every reviewer to be proven terminal" {
+  grep -qiE 'proven terminal|proven to be terminal|every reviewer is proven' "$RUNBOOK" || {
+    echo "the runbook does not state the cleanup gate in those terms:" >&2
+    grep -niE 'cleanup|terminal' "$RUNBOOK" >&2
+    return 1
+  }
+}
+
+@test "the runbook's timeout protocol still has exactly seven numbered steps" {
+  # Pinned by spec 0054 AC20 and asserted in spec-review-round-runbook.bats
+  # too. Repeated here because this file is what rewrites the section: a
+  # rewrite that drops a step would otherwise only red in the other file.
+  local n
+  n="$(sed -n '/^## 4\./,/^## 5\./p' "$RUNBOOK" | grep -cE '^[1-9]\. ')"
+  [ "$n" -eq 7 ] || {
+    echo "expected 7 numbered steps in the protocol, found $n" >&2
+    sed -n '/^## 4\./,/^## 5\./p' "$RUNBOOK" >&2
+    return 1
+  }
+}
+
+@test "a late reviewer with no artifact is recorded late, not as no-output" {
+  source "$LIB"
+  make_round_dir
+  # The ordering case. Both facts are true — it was late AND it wrote nothing —
+  # so the order of the two checks decides the label, and that has to be a
+  # CHOICE rather than an accident of how the function was written.
+  #
+  # Lateness wins: once the deadline has passed the round has already
+  # finalized, so "this arrived too late to count" is the governing fact, and
+  # what the artifact holds no longer matters. Both labels are non-verdicts, so
+  # quorum is unaffected either way; this pins which one an operator reads.
+  review_subagent_record "$ROUND_DIR" tardy agent_t -5
+  run review_subagent_collect "$ROUND_DIR" tardy
+  [ "$status" -eq 0 ]
+  [ "$output" = "timeout late-completion" ] || {
+    echo "expected lateness to govern; got: $output" >&2
+    return 1
+  }
+}
+
+@test "an agent name carrying a path separator is refused, not written through" {
+  source "$LIB"
+  make_round_dir
+  # The record path is built from the agent name, so a name with a separator
+  # would write the launch record outside the round dir — where the lease and
+  # the cleanup gate do not reach it.
+  run review_subagent_record "$ROUND_DIR" "../escape" agent_x 600
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qF "../escape"
+  [ ! -e "$TEST_DIR/escape.subagent" ] || {
+    echo "a record was written outside the round dir" >&2
+    return 1
+  }
+  # Every reader of the record must refuse it too, not just the writer.
+  run review_subagent_collect "$ROUND_DIR" "../escape"
+  [ "$status" -eq 2 ]
+  run review_subagent_deadline_expired "$ROUND_DIR" "sub/dir"
+  [ "$status" -eq 2 ]
+  run review_subagent_stop_failed "$ROUND_DIR" "sub/dir"
+  [ "$status" -ne 0 ]
+}

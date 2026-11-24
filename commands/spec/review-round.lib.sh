@@ -674,3 +674,167 @@ review_tree_snapshot() {
   rm -f "$listing"
   return "$rc"
 }
+
+# ---------------------------------------------------------------------------
+# ACs 20a / 20b / 17a — the subagent timeout, cancellation and collection
+# protocol.
+#
+# A subagent is not a process. The shell cannot see it, signal it, or wait on
+# it: only the orchestrating session can, through the Agent and TaskStop tools,
+# across many separate tool calls between which NO shell state survives. Two
+# consequences shape every helper below.
+#
+# First, the agent id and the deadline live in the round dir. A model that had
+# to carry them in prose across a dozen tool calls would eventually carry them
+# wrong, and the failure mode is silent: a reviewer nobody can stop.
+#
+# Second, the deadline is recorded as an ABSOLUTE epoch second, not as the
+# timeout it came from. A relative timeout re-read on a later tool call
+# restarts the clock every time it is consulted, so no reviewer is ever late
+# and the whole protocol is inert.
+# ---------------------------------------------------------------------------
+
+# _review_subagent_rec <round-dir> <agent> — the record path, or exit 2 naming
+# the reason. An agent name is a registry key, not a path: one carrying a
+# separator would write outside the round dir.
+_review_subagent_rec() {
+  local dir="${1:-}" agent="${2:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review subagent: round dir not found: '${dir:-}'"
+    return 2
+  }
+  [ -n "$agent" ] || { review_error "review subagent: agent name required"; return 2; }
+  case "$agent" in
+    *[/\\]*|.|..)
+      review_error "review subagent: agent name '$agent' is not a bare registry key"
+      return 2
+      ;;
+  esac
+  printf '%s/%s.subagent\n' "$dir" "$agent"
+}
+
+# _review_is_int <value> — a base-10 integer, optionally negative. A negative
+# timeout is accepted on purpose: it is how a caller (and every test here)
+# records a deadline already in the past without sleeping or injecting a clock.
+_review_is_int() {
+  case "${1:-}" in
+    ''|-) return 1 ;;
+    -*) case "${1#-}" in ''|*[!0-9]*) return 1 ;; esac ;;
+    *[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# review_subagent_record <round-dir> <agent> <agent-id> <timeout-s>
+# — persist what the round will need to stop and judge this reviewer later.
+review_subagent_record() {
+  local dir="${1:-}" agent="${2:-}" id="${3:-}" timeout_s="${4:-}" rec now deadline
+  rec="$(_review_subagent_rec "$dir" "$agent")" || return 2
+  [ -n "$id" ] || {
+    review_error "review_subagent_record: agent id required for agent \"$agent\" — a stop-failed outcome with no id is unactionable"
+    return 2
+  }
+  _review_is_int "$timeout_s" || {
+    review_error "review_subagent_record: timeout must be an integer number of seconds (got '${timeout_s:-}')"
+    return 2
+  }
+  now="$(date +%s)"
+  deadline=$((now + timeout_s))
+  # Same-dir temp + rename: a half-written record would be read as a missing
+  # one, and a missing record is a named error the round cannot proceed past.
+  {
+    printf 'agent=%s\n' "$agent"
+    printf 'agent_id=%s\n' "$id"
+    printf 'launched=%s\n' "$now"
+    printf 'deadline=%s\n' "$deadline"
+  } > "$rec.tmp.$$"
+  mv -f "$rec.tmp.$$" "$rec"
+}
+
+# _review_subagent_field <round-dir> <agent> <key>
+_review_subagent_field() {
+  local dir="${1:-}" agent="${2:-}" key="${3:-}" rec val
+  rec="$(_review_subagent_rec "$dir" "$agent")" || return 2
+  [ -f "$rec" ] || {
+    review_error "review subagent: no launch record for agent \"$agent\" in $dir"
+    return 2
+  }
+  val="$(awk -F= -v k="$key" '$1 == k { print $2; exit }' "$rec")"
+  [ -n "$val" ] || {
+    review_error "review subagent: launch record for agent \"$agent\" has no $key"
+    return 2
+  }
+  printf '%s\n' "$val"
+}
+
+# review_subagent_agent_id <round-dir> <agent>
+review_subagent_agent_id() {
+  _review_subagent_field "$1" "$2" agent_id
+}
+
+# review_subagent_deadline_expired <round-dir> <agent>
+#   0 — the deadline has passed
+#   1 — still within it
+#   2 — no launch record, named
+#
+# "No record" is deliberately NOT "not expired". A reviewer the round never
+# recorded would otherwise run forever while the cleanup gate waited on it.
+review_subagent_deadline_expired() {
+  local deadline now
+  deadline="$(_review_subagent_field "$1" "$2" deadline)" || return 2
+  _review_is_int "$deadline" || {
+    review_error "review_subagent_deadline_expired: deadline '$deadline' is not an epoch second"
+    return 2
+  }
+  now="$(date +%s)"
+  [ "$now" -lt "$deadline" ] || return 0
+  return 1
+}
+
+# review_subagent_collect <round-dir> <agent>
+#   stdout `ok`                            — a usable artifact, on time
+#   stdout `timeout late-completion`       — arrived after its deadline
+#   stdout `failed subagent-no-output`     — returned without a verdict
+#   exit 2                                 — no launch record, named
+#
+# Reads `<round-dir>/<agent>.out` FROM DISK (AC17a). Any further arguments are
+# ignored: a collector that accepted pasted content would let an Agent tool
+# result stand in for the artifact whose digest attestation covers, and the
+# attestation would then prove nothing.
+#
+# Lateness is checked FIRST. Once the deadline has passed the round has already
+# finalized, so what the artifact holds no longer matters — keeping a late
+# approve out of quorum matters more than labelling precisely why it is
+# unusable. `timeout` is in REVIEW_NON_VERDICTS, which is the mechanism.
+review_subagent_collect() {
+  local dir="${1:-}" agent="${2:-}" art rc=0
+  review_subagent_deadline_expired "$dir" "$agent" || rc=$?
+  [ "$rc" -ne 2 ] || return 2
+  if [ "$rc" -eq 0 ]; then
+    printf 'timeout late-completion\n'
+    return 0
+  fi
+  art="$dir/$agent.out"
+  # Whitespace-only counts as no output: a reviewer that wrote a newline has
+  # not returned a verdict, and an empty verdict is the one thing worse than a
+  # missing one.
+  if [ ! -f "$art" ] || [ -z "$(tr -d '[:space:]' < "$art")" ]; then
+    printf 'failed subagent-no-output\n'
+    return 0
+  fi
+  printf 'ok\n'
+}
+
+# review_subagent_stop_failed <round-dir> <agent>
+# — a TaskStop that did not confirm. Records the outcome naming the AGENT ID
+# (the handle the host knows it by, not the registry name the operator chose)
+# and quarantines the round dir, because a reviewer that may still be running
+# needs its payload and its output path kept.
+review_subagent_stop_failed() {
+  local dir="${1:-}" agent="${2:-}" id
+  id="$(review_subagent_agent_id "$dir" "$agent")" || return 2
+  # No companion root: no shell-reachable API can ask whether a subagent is
+  # still alive, so only an operator removing the file resolves this.
+  review_round_quarantine "$dir" "$id" subagent-stop-failed subagent || return 2
+  printf 'failed subagent-stop-failed %s\n' "$id"
+}

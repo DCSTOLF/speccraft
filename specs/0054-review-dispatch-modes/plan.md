@@ -926,6 +926,14 @@ is step 54/55; and §7's tree-check attribution says "both record it" rather
 than AC17d's rule conditioned on how many subagents are active — step 56/57.
 Both are landed TEXT that is known-wrong and must not be read as done.
 
+> **§4 resolved at step 55.** The timeout protocol is now the spec's seven
+> steps, each executable: background launch, `review_subagent_record` of the id
+> and an ABSOLUTE deadline, wait-for-notification rather than the poll loop the
+> old text described, `review_subagent_deadline_expired` + TaskStop,
+> `review_subagent_stop_failed` (which names the agent ID and quarantines in
+> one move), `review_subagent_collect` for late and no-output, and the cleanup
+> gate. §7's attribution is still known-wrong, pending step 56/57.
+
 #### Step 48 — arch/pm write `review.md` only on a complete round (RED)
 - Extend `tests/hooks/spec-review-round-runbook.bats`:
   - `@test "arch:review writes design/<id>/review.md on a complete round"`

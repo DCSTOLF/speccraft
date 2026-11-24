@@ -218,29 +218,58 @@ for the review.
 ## 4. Subagent timeout and cancellation protocol
 
 A subagent that outruns `review_timeout_s` must be **stopped and proven
-stopped**. Follow these steps in order:
+stopped**. A subagent is not a process — the shell cannot see it, signal it or
+wait on it — so this protocol is yours to run, across tool calls between which
+no shell state survives. Seven steps, in order:
 
-1. Note the deadline when the Agent call is made: `review_timeout_s` from the
-   registry, or its default.
-2. When the deadline passes with no artifact, stop polling for a response.
-3. Call **TaskStop** with that agent's id.
-4. Confirm the stop: the agent must report terminated. A stop that returns
-   without confirming is not a stop.
-5. On a **confirmed** stop, record `<agent> timeout` and continue the round.
-6. On an **unconfirmed** stop, record `failed subagent-stop-failed <agent>` —
-   never a plain `timeout`. A reviewer that may still be running is a different
-   situation from one that stopped late.
-7. Quarantine the round dir:
+1. **Launch each subagent reviewer in the background**, which yields an agent
+   id. Backgrounded so the reviewers run concurrently and so you keep a handle
+   to stop one by.
+2. **Record that id and an absolute deadline** in the round dir, immediately:
    ```bash
-   review_round_quarantine "$ROUND_DIR" "<agent>" subagent-stop-failed subagent
+   review_subagent_record "$ROUND_DIR" "$agent" "<agent-id>" "$TIMEOUT_S"
    ```
-   The dir is then retained rather than cleaned up, and only an operator
-   removing `$ROUND_DIR/quarantine` resolves it — no probe can tell whether a
-   subagent is still alive.
-
-A late response that arrives after the deadline is **ignored**: the round it
-belonged to is already finalized, and a late verdict must never re-enter
-quorum.
+   The deadline is stored as an absolute epoch second, not as the timeout it
+   came from: a relative timeout re-read on a later tool call restarts the
+   clock each time it is consulted, so nothing is ever late.
+3. **Wait for completion notifications rather than polling.** You are
+   re-invoked when a backgrounded agent finishes; a poll loop would burn tool
+   calls and still race the deadline.
+4. **At the deadline, stop whatever has not completed.** Check it, then call
+   **TaskStop** with that agent's recorded id:
+   ```bash
+   if review_subagent_deadline_expired "$ROUND_DIR" "$agent"; then
+     ID="$(review_subagent_agent_id "$ROUND_DIR" "$agent")"   # TaskStop this
+   fi
+   ```
+   On a **confirmed** stop record `<agent> timeout` and continue the round. A
+   `TaskStop` that errors or returns without confirming is **not** a stop:
+   ```bash
+   printf '%s %s\n' "$agent" \
+     "$(review_subagent_stop_failed "$ROUND_DIR" "$agent")" >> "$OUTCOMES"
+   ```
+   which records `failed subagent-stop-failed <agent-id>` — naming the id the
+   host knows the agent by, not the registry name — and **quarantines** the
+   round dir in the same move. A reviewer that may still be running is a
+   different situation from one that stopped late, and its payload and output
+   path must be kept. Only an operator removing `$ROUND_DIR/quarantine`
+   resolves it: no probe can ask whether a subagent is alive.
+5. **A reviewer that completes after its deadline has its output ignored**, and
+   is recorded `<agent> timeout late-completion`. The round it belonged to is
+   already finalized, so a late verdict must never re-enter quorum.
+6. **Partial output is never a verdict.** Collect from disk and let the helper
+   classify it:
+   ```bash
+   printf '%s %s\n' "$agent" \
+     "$(review_subagent_collect "$ROUND_DIR" "$agent")" >> "$OUTCOMES"
+   ```
+   `ok` means proceed to attestation; `timeout late-completion` and
+   `failed subagent-no-output` are the two non-verdicts. A missing or
+   whitespace-only `$ROUND_DIR/<agent>.out` is `subagent-no-output`, never an
+   empty verdict.
+7. **Cleanup runs only once every reviewer is proven terminal** — completed,
+   timed out, or *confirmed* stopped. See §7's gate; it refuses a quarantined
+   dir.
 
 ## 5. Record every outcome
 
