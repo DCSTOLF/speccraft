@@ -838,3 +838,88 @@ review_subagent_stop_failed() {
   review_round_quarantine "$dir" "$id" subagent-stop-failed subagent || return 2
   printf 'failed subagent-stop-failed %s\n' "$id"
 }
+
+# review_subagent_active_list <round-dir> — the registry names of every
+# subagent launched in this round, one per line, sorted.
+#
+# "Active over the snapshot interval" is read from these records rather than
+# inferred from wall-clock timing (conventions.md §Ledger write-lock:
+# contention tests use the seam, never timing). Every subagent with a launch
+# record WAS live at some point between the two snapshots by construction:
+# `tree.before` is taken immediately after the round dir is created, and
+# `tree.after` only once every reviewer is terminal. Asking instead "which
+# agents are running right now" would attribute a write to nobody, because by
+# §7 they have all returned.
+review_subagent_active_list() {
+  local dir="${1:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_subagent_active_list: round dir not found: '${dir:-}'"
+    return 2
+  }
+  # `find`, not a glob. In zsh an unmatched glob is a FATAL error, so
+  # `for f in "$dir"/*.subagent` would abort the caller on any round with no
+  # subagent reviewers — which is most rounds.
+  find "$dir" -maxdepth 1 -type f -name '*.subagent' 2>/dev/null \
+    | sed 's|.*/||; s|\.subagent$||' \
+    | LC_ALL=C sort
+}
+
+# review_attribute_tree_writes <round-dir>
+# — compare the pre- and post-round tree snapshots and emit one outcome line
+# per subagent that must answer for a write outside the round dir. Nothing on
+# stdout means no reviewer is to blame.
+#
+# A subagent shares the orchestrating session's filesystem access, so an
+# out-of-bounds write is DETECTABLE but not always ATTRIBUTABLE: with two
+# subagents running concurrently nothing in the snapshot says which one wrote.
+# The rule is therefore conditioned on how many were active (AC17d):
+#
+#   exactly one   — name THAT agent: `<agent> failed subagent-wrote-files`
+#   more than one — fail every one of them, marked `<unattributed>`
+#   none          — blame nobody; warn on stderr, emit nothing
+#
+# Failing both is deliberately harsh — one reviewer's misbehaviour voids the
+# other's verdict. The alternatives are worse: guessing blames an innocent
+# reviewer BY NAME, and letting both stand admits a verdict from a round whose
+# integrity is unknown.
+#
+# `codex-plugin` reviewers are never swept in. They leave no launch record, and
+# their `touchedFiles` is per job, self-attested and attributable on its own.
+review_attribute_tree_writes() {
+  local dir="${1:-}" before after list n agent
+  [ -n "$dir" ] && [ -d "$dir" ] || {
+    review_error "review_attribute_tree_writes: round dir not found: '${dir:-}'"
+    return 2
+  }
+  before="$dir/tree.before"
+  after="$dir/tree.after"
+  # A missing snapshot must NEVER read as "no change": that would turn the
+  # whole tree check into a no-op on exactly the round where it failed to run.
+  [ -f "$before" ] || {
+    review_error "review_attribute_tree_writes: no pre-round snapshot at $before — comparing against nothing cannot mean the tree is unchanged"
+    return 2
+  }
+  [ -f "$after" ] || {
+    review_error "review_attribute_tree_writes: no post-round snapshot at $after — comparing against nothing cannot mean the tree is unchanged"
+    return 2
+  }
+
+  ! cmp -s "$before" "$after" || return 0
+
+  list="$(review_subagent_active_list "$dir")" || return 2
+  n="$(printf '%s\n' "$list" | grep -c . || true)"
+  if [ "$n" -eq 0 ]; then
+    review_error "review_attribute_tree_writes: the tree changed during this round but no subagent was launched, so no reviewer can be blamed; inspect $dir and the working tree"
+    return 0
+  fi
+  if [ "$n" -eq 1 ]; then
+    printf '%s failed subagent-wrote-files\n' "$list"
+    return 0
+  fi
+  while IFS= read -r agent; do
+    [ -n "$agent" ] || continue
+    printf '%s failed subagent-wrote-files <unattributed>\n' "$agent"
+  done <<EOF
+$list
+EOF
+}

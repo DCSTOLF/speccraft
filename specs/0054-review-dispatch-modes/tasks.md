@@ -133,9 +133,9 @@ contract: done-means-v1
   done: $ grep -q 'late-completion' tests/hooks/spec-review-subagent.bats && grep -q 'subagent-no-output' tests/hooks/spec-review-subagent.bats
 - [x] T55 — GREEN: the subagent record, collect and deadline helpers plus the runbook protocol
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats && grep -q 'review_subagent_collect()' commands/spec/review*.lib.sh
-- [ ] T56 — RED: attribution over the snapshot interval with two concurrent subagents
+- [x] T56 — RED: attribution over the snapshot interval with two concurrent subagents
   done: $ grep -q 'unattributed' tests/hooks/spec-review-subagent.bats
-- [ ] T57 — GREEN: review_attribute_tree_writes
+- [x] T57 — GREEN: review_attribute_tree_writes
   done: $ PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-subagent.bats && grep -q 'review_attribute_tree_writes()' commands/spec/review*.lib.sh
 - [ ] T58 — RED: review_agent_vendor rows, quorum rows, single_vendor_approval rows
   done: $ test -f tests/hooks/spec-review-vendor.bats && grep -q 'single_vendor_approval' tests/hooks/spec-review-vendor.bats

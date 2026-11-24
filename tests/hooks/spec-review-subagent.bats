@@ -801,3 +801,260 @@ make_round_dir() {
   run review_subagent_stop_failed "$ROUND_DIR" "sub/dir"
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AC17d — attributing an out-of-bounds write when subagents run concurrently.
+#
+# A subagent shares the orchestrating session's filesystem access. The round
+# takes a tree snapshot before and after dispatch, so a write outside the round
+# dir is DETECTABLE — but with two subagents running concurrently it is not
+# ATTRIBUTABLE: nothing in the snapshot says which of them wrote.
+#
+# So the rule is conditioned on how many were active, and the honest answer
+# when two were is to fail BOTH with an `<unattributed>` marker. That is
+# deliberately harsh: it means one reviewer's misbehaviour voids the other's
+# verdict. The alternative — guessing, or letting both stand — would either
+# blame an innocent reviewer by name or admit a verdict from a round whose
+# integrity is unknown.
+#
+# "Active" is read from the launch records in the round dir, never inferred
+# from wall-clock timing (conventions.md §Ledger write-lock: contention tests
+# use the seam, never timing). Every subagent with a launch record was live at
+# some point between the two snapshots by construction, since `tree.before` is
+# taken right after the round dir is created and `tree.after` only once every
+# reviewer is terminal.
+# ---------------------------------------------------------------------------
+
+# snapshots <changed|same> — the pre/post pair the attributor compares.
+snapshots() {
+  printf 'a  111\nb  222\n' > "$ROUND_DIR/tree.before"
+  if [ "$1" = changed ]; then
+    printf 'a  111\nb  222\nc  333\n' > "$ROUND_DIR/tree.after"
+  else
+    cp "$ROUND_DIR/tree.before" "$ROUND_DIR/tree.after"
+  fi
+}
+
+@test "two concurrent subagents with one writing out of bounds both record unattributed" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  review_subagent_record "$ROUND_DIR" beta  agent_b 600
+  snapshots changed
+  run review_attribute_tree_writes "$ROUND_DIR"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qxF 'alpha failed subagent-wrote-files <unattributed>' || {
+    echo "alpha not failed: $output" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qxF 'beta failed subagent-wrote-files <unattributed>' || {
+    echo "beta not failed: $output" >&2
+    return 1
+  }
+  [ "$(printf '%s\n' "$output" | grep -c 'subagent-wrote-files')" = "2" ]
+}
+
+@test "that round's responses_complete is false and quorum cannot be met" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  review_subagent_record "$ROUND_DIR" beta  agent_b 600
+  snapshots changed
+  # beta reviewed honestly and approved. Its verdict must NOT carry the round.
+  review_attribute_tree_writes "$ROUND_DIR" > "$TEST_DIR/outcomes"
+  run review_responses_complete "$TEST_DIR/outcomes"
+  [ "$status" -eq 1 ]
+  run review_approval_quorum_met 1 "$TEST_DIR/outcomes"
+  [ "$status" -eq 1 ]
+}
+
+@test "with exactly one subagent active the outcome names that agent" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" solo agent_s 600
+  snapshots changed
+  run review_attribute_tree_writes "$ROUND_DIR"
+  [ "$status" -eq 0 ]
+  [ "$output" = "solo failed subagent-wrote-files" ] || {
+    echo "unexpected single-agent attribution: $output" >&2
+    return 1
+  }
+}
+
+@test "the single-agent outcome carries no unattributed marker" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" solo agent_s 600
+  snapshots changed
+  run review_attribute_tree_writes "$ROUND_DIR"
+  printf '%s\n' "$output" | grep -qF '<unattributed>' && {
+    echo "a sole subagent was marked unattributed: $output" >&2
+    return 1
+  }
+  return 0
+}
+
+@test "the unattributed guard bites on the two-agent output" {
+  source "$LIB"
+  # Premise for the row above: prove the marker IS what the two-agent case
+  # emits, so its absence in the one-agent case is a real distinction.
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  review_subagent_record "$ROUND_DIR" beta  agent_b 600
+  snapshots changed
+  run review_attribute_tree_writes "$ROUND_DIR"
+  printf '%s\n' "$output" | grep -qF '<unattributed>' || {
+    echo "the two-agent case emits no marker, so the negative is vacuous" >&2
+    return 1
+  }
+}
+
+@test "two concurrent subagents with no out-of-bounds write record neither failure" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  review_subagent_record "$ROUND_DIR" beta  agent_b 600
+  snapshots same
+  run review_attribute_tree_writes "$ROUND_DIR"
+  [ "$status" -eq 0 ]
+  # The rule is NOT "fail everything when more than one runs". Without this
+  # row, an implementation that failed both on sight of two records would pass
+  # every other row in this section.
+  [ -z "$output" ] || {
+    echo "a clean two-subagent round recorded a failure: $output" >&2
+    return 1
+  }
+}
+
+@test "a codex-plugin reviewer running alongside a writing subagent is not failed" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  # The codex-plugin reviewer leaves its own artifacts but NO launch record:
+  # its touchedFiles is per job, self-attested and attributable, so a tree
+  # difference is never charged to it.
+  printf 'verdict: approve\n' > "$ROUND_DIR/codexp.out"
+  printf 'job-1\n'            > "$ROUND_DIR/codexp.job"
+  snapshots changed
+  run review_attribute_tree_writes "$ROUND_DIR"
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qF 'codexp' && {
+    echo "a codex-plugin reviewer was swept into the attribution: $output" >&2
+    return 1
+  }
+  # …and the sole subagent is still named, rather than the round giving up.
+  [ "$output" = "alpha failed subagent-wrote-files" ]
+}
+
+@test "activity spans the snapshot interval, not an instant" {
+  source "$LIB"
+  make_round_dir
+  # Both subagents have already RETURNED — their artifacts are on disk and
+  # neither is running now. They were nonetheless both live between the two
+  # snapshots, so the write is still unattributable. An implementation that
+  # asked "which agents are running at this moment" would attribute it to
+  # nobody and let a tainted round complete.
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  review_subagent_record "$ROUND_DIR" beta  agent_b 600
+  printf 'verdict: approve\n' > "$ROUND_DIR/alpha.out"
+  printf 'verdict: approve\n' > "$ROUND_DIR/beta.out"
+  snapshots changed
+  run review_attribute_tree_writes "$ROUND_DIR"
+  [ "$(printf '%s\n' "$output" | grep -c '<unattributed>')" = "2" ]
+}
+
+@test "a tree change with no subagent active blames no reviewer, but says so" {
+  source "$LIB"
+  make_round_dir
+  snapshots changed
+  run review_attribute_tree_writes "$ROUND_DIR"
+  [ "$status" -eq 0 ]
+  # Nothing on stdout: no reviewer can be blamed, and inventing one would be
+  # worse than the change going unattributed.
+  out="$(review_attribute_tree_writes "$ROUND_DIR" 2>/dev/null)"
+  [ -z "$out" ] || { echo "blamed a reviewer that never ran: $out" >&2; return 1; }
+  # But NOT silently: an unexplained tree change during a round is worth a word.
+  err="$(review_attribute_tree_writes "$ROUND_DIR" 2>&1 >/dev/null)"
+  [ -n "$err" ] || { echo "an unattributable tree change passed silently" >&2; return 1; }
+}
+
+@test "a missing snapshot is a named error, not an implied clean tree" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" alpha agent_a 600
+  run review_attribute_tree_writes "$ROUND_DIR"
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qF 'tree.before'
+  # One present and one absent is the same error: comparing a snapshot against
+  # nothing must never read as "no change".
+  printf 'a  111\n' > "$ROUND_DIR/tree.before"
+  run review_attribute_tree_writes "$ROUND_DIR"
+  [ "$status" -eq 2 ]
+  printf '%s\n' "$output" | grep -qF 'tree.after'
+}
+
+@test "the attributed outcome classifies as a non-verdict the round can finalize" {
+  source "$LIB"
+  make_round_dir
+  review_subagent_record "$ROUND_DIR" solo agent_s 600
+  snapshots changed
+  out="$(review_attribute_tree_writes "$ROUND_DIR")"
+  run _review_outcome_kind "$(printf '%s\n' "$out" | awk '{print $2}')"
+  [ "$status" -eq 0 ]
+  [ "$output" = "non-verdict" ]
+}
+
+@test "the runbook's attribution rule is conditioned on how many subagents ran" {
+  # The landed text said both reviewers record it whenever "more than one
+  # subagent" is active, with no one-agent arm and no clean-round arm.
+  grep -qF 'review_attribute_tree_writes' "$RUNBOOK" || {
+    echo "the runbook does not call the attributor:" >&2
+    sed -n '/^## 7\./,$p' "$RUNBOOK" >&2
+    return 1
+  }
+  grep -qF '<unattributed>' "$RUNBOOK" || {
+    echo "the runbook never names the unattributed marker" >&2
+    return 1
+  }
+  # Scoped to §7, and anchored on the arm's OUTCOME rather than on a count
+  # phrase. A whole-file `exactly one` is satisfied by §0's "exactly one
+  # composer" — unrelated prose — so deleting the one-subagent arm from the
+  # table left this row green.
+  local sec
+  sec="$(sed -n '/^## 7\./,$p' "$RUNBOOK")"
+  [ -n "$sec" ] || { echo "could not isolate §7; row would be vacuous" >&2; return 1; }
+  printf '%s\n' "$sec" | grep -qE '(one|single)[^|]*\| *`?<agent> failed subagent-wrote-files`? *— *named' || {
+    echo "§7 states no one-subagent arm, so the rule reads as fail-everything:" >&2
+    printf '%s\n' "$sec" | grep -nE 'subagent-wrote-files|unattributed' >&2
+    return 1
+  }
+  printf '%s\n' "$sec" | grep -qiE 'more than one|two running|concurrent' || {
+    echo "§7 states no many-subagent arm" >&2
+    return 1
+  }
+  printf '%s\n' "$sec" | grep -qiE 'neither failure|records \*\*neither\*\*|not .fail everything' || {
+    echo "§7 does not say a clean two-subagent round records neither failure" >&2
+    return 1
+  }
+}
+
+@test "the attribution-arm guard is not satisfied by prose outside section 7" {
+  # Premise for the row above. §0 legitimately says "exactly one composer";
+  # that sentence must satisfy none of the three arm assertions.
+  printf 'contract: exactly one composer, so there is exactly one answer.\n' \
+    > "$TEST_DIR/sec0"
+  grep -qE '(one|single)[^|]*\| *`?<agent> failed subagent-wrote-files`? *— *named' \
+    "$TEST_DIR/sec0" && {
+    echo "the one-arm pattern matched unrelated composer prose" >&2
+    return 1
+  }
+  # And it must match the real table row, pipes and backticks included.
+  printf '| exactly one | `<agent> failed subagent-wrote-files` — named |\n' \
+    > "$TEST_DIR/sec7"
+  grep -qE '(one|single)[^|]*\| *`?<agent> failed subagent-wrote-files`? *— *named' \
+    "$TEST_DIR/sec7" || {
+    echo "the one-arm pattern misses the real table row" >&2
+    return 1
+  }
+  return 0
+}

@@ -324,13 +324,30 @@ diagnostic printed harmlessly beside it.
 
 ```bash
 review_tree_snapshot > "$ROUND_DIR/tree.after"
-cmp -s "$ROUND_DIR/tree.before" "$ROUND_DIR/tree.after"
+review_attribute_tree_writes "$ROUND_DIR" >> "$OUTCOMES"
 ```
 
-A difference means a reviewer wrote outside its round dir: record
-`failed subagent-wrote-files`. With more than one subagent active the write
-cannot be attributed, so **both** record it with an `<unattributed>` marker and
-neither verdict counts.
+A difference means a reviewer wrote outside its round dir. Who answers for it
+depends on **how many subagents were active** — with two running concurrently,
+nothing in the snapshot says which one wrote:
+
+| Subagents active | Recorded |
+|---|---|
+| exactly one | `<agent> failed subagent-wrote-files` — named |
+| more than one | every one of them, marked `<unattributed>` |
+| none | nothing; no reviewer can be blamed (a warning on stderr) |
+
+Failing both is deliberately harsh: one reviewer's misbehaviour voids the
+other's verdict, so `responses_complete` is false and the innocent reviewer's
+approval cannot carry quorum. The alternatives are worse — guessing blames an
+innocent reviewer by name, and letting both stand admits a verdict from a round
+whose integrity is unknown.
+
+A clean two-subagent round records **neither** failure. The rule is not "fail
+everything when more than one runs".
+
+`codex-plugin` reviewers are never swept in: they leave no launch record, and
+their `touchedFiles` is per job, self-attested and attributable on its own.
 
 Then finalize for this `KIND`. The verdict document is written **only on a
 complete round** — gate it, write it, then finalize:

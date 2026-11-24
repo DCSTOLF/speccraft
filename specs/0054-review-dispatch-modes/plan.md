@@ -934,6 +934,12 @@ Both are landed TEXT that is known-wrong and must not be read as done.
 > one move), `review_subagent_collect` for late and no-output, and the cleanup
 > gate. §7's attribution is still known-wrong, pending step 56/57.
 
+> **§7 resolved at step 57, and the deferral is now closed.** The attribution
+> rule is conditioned on how many subagents were active, as AC17d requires:
+> exactly one is NAMED, more than one are all marked `<unattributed>`, none
+> blames nobody, and a clean two-subagent round records neither failure. No
+> landed runbook text is known-wrong as of this step.
+
 #### Step 48 — arch/pm write `review.md` only on a complete round (RED)
 - Extend `tests/hooks/spec-review-round-runbook.bats`:
   - `@test "arch:review writes design/<id>/review.md on a complete round"`
