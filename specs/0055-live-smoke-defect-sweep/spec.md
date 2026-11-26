@@ -1,6 +1,6 @@
 ---
 id: "0055"
-title: "What the live smoke found: a cwd-keyed job store, an archive-blind id allocator, and six latent test and portability bugs"
+title: "What the live smoke found: a cwd-keyed job store, an archive-blind id allocator, and seven latent test and portability bugs"
 status: draft
 created: 2026-11-26
 revision: 0
@@ -21,7 +21,7 @@ written to do: it proved the `codex-plugin` dispatch path works live
 confirmed and the detached broker actually stops — the one thing no stub can
 establish.
 
-It also surfaced **eight defects that nothing else had caught**: not 1,093 green
+It also surfaced **nine defects that nothing else had caught**: not 1,093 green
 bats, not a green Go suite, not nine spec-review rounds, not four cross-model
 code-review rounds, and not five CI jobs across Linux and macOS. That is the
 point worth recording. Each of these is invisible to the checks this repo
@@ -38,6 +38,19 @@ already runs, for a specific and different reason:
 - One is a **live collision hazard in `/speccraft:spec:new` itself**, created
   when spec 0025 began archiving closed specs and never noticed since, because
   allocating an id is a thing the command tells a model to do by hand.
+- One was found by **this spec's own review round**, and is the sharpest
+  argument in the list: spec 0054 added per-verdict `mode`/`model`/`vendor`
+  reporting (ACs 23/23a), the round report emits them correctly — and the
+  `cross-reviewer` **silently omitted the entire `## Reviewers` table** from the
+  `review.md` it synthesized, on the first real use of those fields. The round
+  report is ephemeral; `review.md` is the durable artifact a reader has weeks
+  later. Nothing asserts the table exists, so ACs 23/23a reach a human reader
+  only by the synthesizer's goodwill.
+
+Two of the nine were found by reviewers rather than by running anything, and
+both were found by **cross-model review of this spec**, which is the process
+working as designed and is recorded here because the alternative reading — that
+the spec was right first time — would be false.
 
 Two consequences make this urgent rather than tidy. **The live smoke is red
 right now**, so the next engineer to run it sees two failures that have nothing
@@ -107,6 +120,29 @@ current "allocator" is an instruction in markdown telling a model to run
    archived and no longer runs, so the rename is finally free. The sibling
    static-corpus row at line 1488 still legitimately asserts the argv bound and
    must keep its name.
+9. **`review.md` can lose the `## Reviewers` table silently.** The
+   `cross-reviewer` template requires a per-reviewer table carrying
+   `Mode | Model | Vendor` — spec 0054's ACs 23/23a — and on this spec's own
+   review round the agent omitted the whole section. The round report had the
+   fields and was correct; the durable artifact simply did not carry them.
+   Nothing in the suite asserts `review.md`'s structure, so this stays invisible
+   until a reader opens a `review.md` and wonders which model answered.
+
+**Two scope notes on the job-store cwd, from the review round.** Item 2's fix
+must cover the *whole* job lifecycle, not just dispatch:
+`review_round_quarantine_resolve` probes the per-block companion `root` it
+recorded, but records **no job-store cwd** and calls
+`review_codex_job_status` without one — so quarantine recovery queries the
+ambient cwd's store and can retain a block forever. Existing quarantine blocks
+carry no such field, so the fix needs a defined behaviour for them rather than a
+format change that strands them. Separately,
+`review_codex_job_cancel` returns success on **any** terminal status
+(`completed | failed | cancelled`), so "confirmed cancellation" is weaker than
+its name: a job that finished on its own a moment earlier reports as a confirmed
+cancel. For the round's actual question — "is this reviewer still running?" —
+terminal is the correct predicate, so the **product behaviour stands**; what must
+change is the live smoke's **pass condition**, which must require that the job
+was observed active *before* the cancel and `cancelled` *after*.
 
 ## Acceptance criteria
 
@@ -115,30 +151,59 @@ current "allocator" is an instruction in markdown telling a model to run
    row asserts the launch argv's `--cwd` value equals that root. This row runs
    in CI with a stub `node`, ungated, so the fix is pinned on a host with no
    Codex plugin. **Negative:** reverting the cwd to a `/tmp` path fails the row.
-2. **The gated live smoke passes on a credentialed host.** With
-   `SPECCRAFT_LIVE_CODEX_SMOKE=1`, both `AC26` and `AC26a` rows pass, reporting
-   a job id and a confirmed cancel. Not a CI criterion — it is verified by one
-   manual run and recorded, exactly as spec 0054's AC26 was.
-3. **`_review_codex_dispatch` uses one cwd for the whole job lifecycle.** A
-   stub `node` records argv per subcommand; a row asserts that `task`,
-   `status`, `result` and `cancel` all carry the **same** `--cwd` value, equal to
-   the cwd the dispatcher was given. **Negative:** dropping `--cwd` from any one
-   of the three post-launch helpers fails the row. A second row asserts a
-   dispatch given an explicit cwd *outside* the repo still resolves its own job
-   (the exact scenario defect 1 hit).
+2. **The gated live smoke passes on a credentialed host, and its cancellation
+   row proves a cancellation rather than a coincidence.** With
+   `SPECCRAFT_LIVE_CODEX_SMOKE=1`, both `AC26` and `AC26a` rows pass. The
+   cancellation row's **pass condition** requires two observations, not one: the
+   job reported a non-terminal status (`queued` or `running`) **before** the
+   cancel, and `cancelled` specifically — not merely "some terminal status" —
+   **after** it. This is required because `review_codex_job_cancel` succeeds on
+   any terminal status, so a job that completed on its own a moment earlier
+   would otherwise be recorded as a confirmed cancel. Not a CI criterion: it is
+   verified by one manual run and recorded, as spec 0054's AC26 was.
+3. **One cwd owns a job for its whole lifecycle, including quarantine
+   recovery.** A stub `node` records argv per subcommand; a row asserts `task`,
+   `status`, `result` and `cancel` all carry the **same** `--cwd`, equal to the
+   cwd the dispatcher was given. **Negative:** dropping `--cwd` from any one of
+   the three post-launch helpers fails the row — checked per helper, so fixing
+   two of three cannot pass. A second row asserts a dispatch given an explicit
+   cwd *outside* the repo still resolves its own job, which is exactly the
+   scenario defect 1 hit.
+3a. **Quarantine blocks record their job-store cwd, and recovery uses it.**
+    `review_round_quarantine` writes a `cwd ` line beside the existing `root `
+    line, and `review_round_quarantine_resolve` probes with that recorded cwd
+    rather than the ambient one. A row proves recovery works when invoked from
+    an **unrelated** cwd: the block is retained while its job is active and
+    removed once that same job is terminal. **Legacy blocks:** a block with no
+    `cwd ` line is **retained with a named diagnostic**, never probed against a
+    guessed cwd and never silently dropped — a wrong guess would delete a live
+    reviewer's output path, which fails silently and then reports
+    `subagent-no-output` as the reviewer's fault. A row covers the legacy shape
+    explicitly.
 4. **No comment in `spec-review-payload.bats` claims an archive entry cannot red
    the corpus arm.** A grep-level row asserts the superseded sentence is absent,
    and that the surviving comment states what actually bounds the arm.
-5. **The corpus arm is invariant under an exported budget override.** A row runs
-   the arm's predicate with `REVIEW_MAX_ARGV_BYTES` exported to a value above
-   and below the live composition and asserts the same verdict both times — the
-   branch reads the **effective** limit (`review_effective_limit argv`), not the
-   compiled default. **Negative:** the pre-fix form fails under the override,
-   demonstrated rather than asserted.
+   **Negative:** restoring the superseded sentence fails the row — an absence
+   assertion that has never been seen to fail is indistinguishable from a typo
+   in its own pattern.
+5. **The corpus arm's disposition is pinned at both override values, named
+   explicitly.** "Same verdict" was ambiguous and is now spelled out: with the
+   effective argv limit set **below** the live tiered size the predicate must
+   yield `refuse:argv-limit` on argv and `ok` on stdin; with it set **above**
+   that size it must yield `ok` on both. The row asserts each disposition by
+   name, and the branch reads `review_effective_limit argv` rather than the
+   compiled default. The fixture also controls the effective **payload** limit,
+   because payload refusal takes precedence and would otherwise mask the argv
+   disposition being tested. **Negative:** the pre-fix form, which compares
+   against the compiled default, fails under an exported override —
+   demonstrated by running it, not asserted in prose.
 6. **`specs/domains/spec-lifecycle.md` no longer claims `git diff HEAD` is
-   reproducible from `HEAD`.** The bullet instead states that the frozen
-   artifact is the reproducible record, and scopes any ref-reproducibility claim
-   to the `<ref>...HEAD` form. A row asserts the false phrasing is absent.
+   reproducible from `HEAD`.** The corrected bullet says three things: the
+   **frozen artifact** is the reproducible record; a ref-based claim holds only
+   for `<ref>...HEAD` **with both endpoints pinned to commits**, since a movable
+   ref can change the merge base; and the artifact's **lifetime** is the round,
+   because round cleanup removes it. A row asserts the false phrasing is absent.
+   **Negative:** restoring the old phrasing fails the row.
 7. **Every hook command is space-safe.** All five entries in `hooks/hooks.json`
    either quote the placeholder or use the exec form, and
    `claude plugin validate` reports **no** unquoted-placeholder warning. A row
@@ -148,34 +213,66 @@ current "allocator" is an instruction in markdown telling a model to run
    A second row proves the hooks still execute from a path **containing a
    space**, which is the actual failure being prevented and the only thing a
    quoting grep cannot establish.
-8. **Spec id allocation is archive-aware, and it is a helper.** A new
-   `spec_new_next_id <repo-root>` in `commands/spec/new.lib.sh` scans
-   `specs/` **and** `specs/.archive/` and returns the highest id + 1, zero-padded
-   to four digits. It returns `0056` for this repo's current tree, `0001` for an
-   empty fixture, and `max+1` for a fixture whose ids exist **only** under
-   `.archive/`. **Negative:** an allocator that scans only `specs/` returns a
-   colliding id on the archived fixture and fails the row. `commands/spec/new.md`
-   step 4 calls the helper and no longer instructs `ls specs/`; a row asserts the
-   command body does not contain the bare `ls specs/` allocation instruction.
+8. **Spec id allocation is archive-aware, honours reservations, and is a
+   helper.** A new `spec_new_next_id <repo-root>` in `commands/spec/new.lib.sh`
+   scans `specs/` **and** `specs/.archive/`, and also every spec's
+   `reserves-specs:` frontmatter, returning the lowest four-digit id that is
+   greater than the highest existing id **and not reserved**. The reservation
+   rule is not optional decoration: `.speccraft/conventions.md:1197` defines
+   `reserves-specs` and `:1212` states ids are never reused, and the mechanism is
+   live — `0005` reserves `0006` (still unused) and `0031` reserved `0032`.
+   It returns `0056` for this repo's current tree, `0001` for an empty fixture,
+   `max+1` for a fixture whose ids exist **only** under `.archive/`, and skips a
+   reserved id in a fixture where the reservation sits at `max+1`.
+   **Negatives, each demonstrated by running it:** an allocator that scans only
+   `specs/` returns a colliding id on the archived fixture; one that ignores
+   `reserves-specs` returns the reserved id.
 8a. **No two specs share an id, and that keeps being true.** A standing row
     collects every `NNNN` prefix across `specs/` and `specs/.archive/` and fails
     if any id appears more than once, naming the duplicates. This is deliberately
     separate from AC8: the allocator fix prevents future collisions, while this
     row addresses the damage the archive-blind allocator could already have done
-    and then keeps watching. **Negative:** a fixture containing the same id in
-    both `specs/` and `specs/.archive/` fails the row — proving it detects the
-    exact shape the old allocator would have produced, rather than only a
+    and then keeps watching. The current tree is clean — 53 ids, no duplicates,
+    gaps at `0006` (a live reservation) and `0053` — so this row starts green and
+    must be proven to bite. **Negative:** a fixture containing the same id in
+    both `specs/` and `specs/.archive/` fails the row, proving it detects the
+    exact shape the old allocator would have produced rather than only a
     duplicate within one directory.
+8b. **The shipped command actually calls the helper.** `commands/spec/new.md`
+    step 4 invokes `spec_new_next_id` and no longer instructs `ls specs/`. Two
+    rows, because either alone is satisfiable by a broken body: one asserts the
+    bare `ls specs/` allocation instruction is **absent**, and one asserts the
+    `spec_new_next_id` call is **present** in step 4. **Negative:** deleting the
+    call while leaving the `ls` absent fails the second row — the gap the review
+    round identified, where both checks pass for a command that allocates
+    nothing.
 9. **The corpus test name matches its assertion.** The row at line 1504 is
    renamed to say it composes under the **payload** limit; the static-corpus row
    keeps its argv wording. A row asserts no `@test` name in that file claims an
    argv bound while its body asserts `REVIEW_MAX_PAYLOAD_BYTES_DEFAULT`.
-10. **Regression floor.** The whole bats suite and the Go suite green on Linux
-    and macOS with `go test -C tools -count=1 ./...`; `tasks-verify --run`
-    clean; drift scan clean; `bin/` not committed. The 0052 floor's assertions
-    are intact — a row count plus the names, now **119 identical plus one
-    deliberately renamed** by AC9, stated that way so the rename cannot be
-    confused with an accidental edit.
+   **Negative:** restoring the old name fails the row.
+9a. **`review.md` carries its `## Reviewers` table.** A row asserts that a
+    synthesized `review.md` contains a `## Reviewers` section whose table has a
+    row per reviewer with that reviewer's `Mode`, `Model` and `Vendor` — the
+    fields spec 0054 added as ACs 23/23a and which the `cross-reviewer` dropped
+    entirely on this spec's own round. The check is **structural, against the
+    file**, not a re-reading of the round report, because the report was already
+    correct; the artifact was not. **Negative:** a `review.md` with the section
+    removed, and one with the section present but the `Vendor` column missing,
+    both fail — so the row cannot be satisfied by a heading alone.
+10. **Regression floor, including shell parity.** The whole bats suite and the
+    Go suite green on Linux and macOS with `go test -C tools -count=1 ./...`;
+    `tasks-verify --run` clean; drift scan clean; `bin/` not committed. The 0052
+    floor's assertions are intact — a row count plus the names, now **119
+    identical plus one deliberately renamed** by AC9, stated that way so the
+    rename cannot be confused with an accidental edit. **And every helper this
+    spec adds or changes in `commands/**/*.lib.sh` has its body EXECUTED under
+    both bash and zsh**, not merely sourced: `spec_new_next_id` and the changed
+    quarantine helpers go through `tests/hooks/spec-review-shell-parity.bats`.
+    Naming operating systems is not enough and this repo has the scar to prove
+    it — zsh does not word-split an unquoted expansion, and these libs are
+    sourced into the caller's shell, which on macOS is zsh. `spec_new_next_id`
+    iterates a list of ids, which is precisely the shape that failed before.
 
 ## Out of scope
 
@@ -195,6 +292,18 @@ current "allocator" is an instruction in markdown telling a model to run
 - **Migrating existing host registries** to add the `subagent` / `codex-plugin`
   entries. This repo's own `.speccraft/agents.toml` is still the pre-0054
   registry; whether to update it is a separate decision, not a defect fix.
+- **Concurrency control for `spec:new`.** The review round raised that two
+  concurrent invocations could allocate the same id. Scoped out deliberately:
+  `/speccraft:spec:new` is an interactive slash command driven by one session,
+  and there is no path that invokes it concurrently — adding per-repo
+  serialisation would be machinery for a scenario the product cannot reach.
+  AC8a's standing duplicate check is the backstop if that ever stops being true,
+  and it also covers a manually created or merge-introduced duplicate, which is
+  the realistic version of this risk.
+- **Defining behaviour when id `9999` is occupied.** Noted by the review round
+  and left out: the allocator would need a four-digit overflow policy, which is
+  a format decision about spec ids rather than a defect, and at 55 specs it is
+  not reachable. Recorded so the omission is deliberate rather than overlooked.
 
 ## Open questions
 
