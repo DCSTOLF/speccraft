@@ -6,7 +6,9 @@ verdict: changes-requested
 generated: 2026-11-26T00:00:00Z
 ---
 
-# Cross-model review — 0055 (round 2, scoped --diff re-review)
+# Cross-model review — 0055 (round 3, scoped --diff re-review)
+
+This round supersedes round 2.
 
 ## Reviewers
 
@@ -18,43 +20,34 @@ generated: 2026-11-26T00:00:00Z
 
 **Verdict:** changes-requested
 
+Confirmed landed from round 2:
+- AC3a now tests the operator-facing sweep with mixed quarantine blocks. It requires the diagnostic to identify the legacy block, preserves that block, and clears only the new-format block once its job is terminal.
+- AC8b moves sourcing ahead of allocation and tests that the shipped invocation uses the real helper's returned ID for scaffolding.
+- The prose counts nine defects.
+- AC23 reviewer metadata is distinguished from AC23a's quorum-gated flag.
+
 Concerns:
-- AC9a specifies a structural test but leaves the production write path unchanged. The cross-reviewer template already required the table when the agent omitted it. A test against a sample review.md can pass while a complete live round still persists an incomplete artifact.
-- AC8b checks that step 4 mentions the helper, but can pass if the call uses the wrong root, runs before new.lib.sh is sourced, or discards the returned ID. The current runbook sources the library in step 5.
-- AC3a requires a diagnostic for legacy blocks, but the existing sweep suppresses resolver output and prints a generic quarantine message. The criterion can pass in a direct resolver test while an operator running the sweep cannot tell why the block remains or how to release it safely.
+- AC9a leaves finalization undefined when a complete round meets approval quorum but the synthesis fails table validation. The runbook writes `review.md` before finalizing and then reads the quorum result to promote status. Rejecting the candidate without stopping that sequence can advance the snapshot, stamp the prior `review.md`, or mark the spec reviewed without a valid artifact for this round.
 
 Suggestions:
-- Have the production review path render the table from the round report or validate it before persisting review.md. Exercise that path with omitted and malformed tables, and preserve the existing complete-round write gate and quorum rules.
-- Execute the shipped step 4 call against the real helper with an archive-and-reservation fixture. Assert that scaffolding uses the returned ID, and demonstrate failure with an incorrect root or a discarded return value.
-- Exercise the sweep with a mixed quarantine file containing a legacy Codex block and a new-format Codex block. Assert that the sweep exposes the missing-cwd diagnostic, retains the legacy block, and clears only the new block after its job becomes terminal.
-- Change the What introduction to nine defects and distinguish AC23's reviewer metadata requirement from AC23a's same-vendor approval flag.
+- Require AC9a to stage the synthesis and validate or render the table before publishing `review.md`. If validation fails, preserve the previous `review.md` and snapshot byte-for-byte and skip fingerprint stamping and status promotion.
+- Exercise that path with a complete, quorum-met round and a malformed synthesis, starting from an existing review and snapshot. Keep the quorum calculation unchanged.
 
 Guardrail violations: none.
 
-Convention violations:
-- "A behavioral contract added to a command runbook gets a bats pin against the real function." Location: Acceptance criteria, AC8b.
+Convention violations: none.
 
-Reviewer's closing note: The revision addresses the prior findings on active-before-cancel evidence, explicit budget outcomes, diff reproducibility, reserved IDs, and Bash and Zsh execution. I found no contradiction in the unchanged Open questions. The new legacy-quarantine rule safely retains blocks with an unknown job-store cwd. Its remaining gap is operator visibility through the sweep. The new reviewer-table criterion needs a production guarantee that survives another synthesis omission.
+Reviewer's closing note: no other regression found in the revised sections, the previously approved criteria, or the unchanged scope decisions.
 
 ## Synthesis
 
-This was round 2, a scoped `--diff` re-review by a single reviewer (quorum 1, not met). The reviewer explicitly confirmed that round 1's findings were addressed: active-before-cancel evidence, explicit budget outcomes, diff reproducibility, reserved ids, and bash/zsh execution. The remaining findings are new, all in the revision's added criteria.
+The findings have clearly diminished across the three rounds. Round 1 produced four concerns and four convention violations. Round 2 produced three concerns and one convention violation. Round 3 produced one concern and no convention or guardrail violations. This is the signal that the spec has stabilised.
 
-**Convention violation (surfaced regardless of quorum):** AC8b lacks a bats pin against the real function, as the conventions require for behavioral contracts added to a command runbook.
+The reviewer explicitly confirmed that the round-2 revisions landed. AC3a exercises the operator-facing sweep with mixed quarantine blocks. AC8b sources before allocating and pins the shipped invocation against the real helper. The prose counts nine defects. AC23 is distinguished from AC23a.
 
-Orchestrator-verified facts:
-1. The AC8b concern is correct and concrete. `commands/spec/new.md` sources `new.lib.sh` at step 5 but allocates the id at step 4. A `spec_new_next_id` call placed in step 4 would invoke an unsourced function. A mention-only check would pass anyway. The author must reorder the sourcing, or place the call after it, and pin the shipped call against the real helper with an archive-and-reservation fixture. That fixture must show failure for a wrong root or a discarded return value.
-2. The What introduction still reads "Fix eight defects. Seven are small", while the Why section says nine. The inconsistency is present and must be fixed. AC23 (reviewer metadata) should also be distinguished from AC23a (the same-vendor approval flag).
+The single remaining concern is accepted in full, and it is the one thing left to specify. AC9a put the Reviewers-table check in the production write path but did not define the failure branch. The runbook writes `review.md` before `review_finalize_round`. Finalize promotes the snapshot, stamps the fingerprint and can set status to `reviewed`. If a failed validation does not halt that sequence, a complete quorum-met round with an invalid synthesis could advance the snapshot, stamp the prior `review.md`, or mark the spec reviewed with no valid artifact for the round. This is the same class of defect spec 0052 already fixed once. There, promoting before a verdict existed re-baselined the anchor that an inert round must leave untouched.
 
-Accepted: the AC9a concern. A structural test over a fixture cannot prevent a live round from persisting an incomplete artifact, which is the very failure round 1 exhibited. The fix must be in the production write path. That means rendering the Reviewers table from the round report, or validating it before review.md is persisted. The existing complete-round write gate and quorum rules must be preserved, and the tests must cover omitted and malformed tables.
+Required behaviour: stage the synthesis and validate or render the table before publishing. On failure, preserve the previous `review.md` and `review-snapshot.md` byte-for-byte, skip fingerprint stamping and status promotion, and leave the quorum calculation unchanged.
 
-AC3a also needs work. The sweep suppresses resolver output and prints only a generic quarantine message, so an operator cannot see why a legacy block remains. The test should use a mixed quarantine file. The sweep must show the missing-cwd diagnostic, retain the legacy block, and clear only the new-format block once its job is terminal.
-
-**Action:** Revise the spec with these four changes.
-1. Make AC9a a production-path guarantee (render or validate the Reviewers table before persisting review.md).
-2. Rework AC8b so the step 4 call is made after `new.lib.sh` is sourced, and pin it with a bats test against the real helper.
-3. Make AC3a require the sweep itself to surface the legacy-block diagnostic, and test it with a mixed quarantine file.
-4. Fix the What introduction to say nine defects, and separate AC23 from AC23a.
-
-Then run another scoped re-review.
-reviewed_sha256: 37a84180af500ff9e1db63a342fea0f81ec953b40e42090366e5c18491af50a0
+**Action:** Revise AC9a to define the failure branch. Stage the synthesis and validate or render the Reviewers table before publishing. On rejection, keep the previous `review.md` and `review-snapshot.md` byte-for-byte, skip fingerprint stamping and status promotion, and do not change the quorum calculation. Add a test that starts from an existing review and snapshot, feeds a complete quorum-met round with a malformed synthesis, and asserts both files are unchanged, no fingerprint is stamped and status is not promoted. Then run a final scoped re-review.
+reviewed_sha256: 2e8f5149164124f8e337e7cacd7ce2eb528c7fb154a0bc65335cbe0174df82c2

@@ -40,11 +40,11 @@ already runs, for a specific and different reason:
   allocating an id is a thing the command tells a model to do by hand.
 - One was found by **this spec's own review round**, and is the sharpest
   argument in the list: spec 0054 added per-verdict `mode`/`model`/`vendor`
-  reporting (ACs 23/23a), the round report emits them correctly — and the
+  reporting (**AC23**; AC23a is the separate `single_vendor_approval` flag), the round report emits them correctly — and the
   `cross-reviewer` **silently omitted the entire `## Reviewers` table** from the
   `review.md` it synthesized, on the first real use of those fields. The round
   report is ephemeral; `review.md` is the durable artifact a reader has weeks
-  later. Nothing asserts the table exists, so ACs 23/23a reach a human reader
+  later. Nothing asserts the table exists, so AC23 reaches a human reader
   only by the synthesizer's goodwill.
 
 Two of the nine were found by reviewers rather than by running anything, and
@@ -61,7 +61,7 @@ id by hand to avoid it.
 
 ## What
 
-Fix eight defects. Seven are small; the id allocator needs a helper, because the
+Fix nine defects. Eight are small; the id allocator needs a helper, because the
 current "allocator" is an instruction in markdown telling a model to run
 `ls specs/`, and an instruction cannot be regression-tested.
 
@@ -122,7 +122,7 @@ current "allocator" is an instruction in markdown telling a model to run
    must keep its name.
 9. **`review.md` can lose the `## Reviewers` table silently.** The
    `cross-reviewer` template requires a per-reviewer table carrying
-   `Mode | Model | Vendor` — spec 0054's ACs 23/23a — and on this spec's own
+   `Mode | Model | Vendor` — spec 0054's **AC23** — and on this spec's own
    review round the agent omitted the whole section. The round report had the
    fields and was correct; the durable artifact simply did not carry them.
    Nothing in the suite asserts `review.md`'s structure, so this stays invisible
@@ -180,6 +180,17 @@ was observed active *before* the cancel and `cancelled` *after*.
     reviewer's output path, which fails silently and then reports
     `subagent-no-output` as the reviewer's fault. A row covers the legacy shape
     explicitly.
+    **The diagnostic must reach the operator through the SWEEP, not only the
+    resolver.** `review_round_sweep` discards resolver output and prints a
+    generic retention message, so a direct resolver test can pass while an
+    operator running the sweep cannot tell why a block survived or how to release
+    it safely — which is precisely how spec 0054's round 9 defect hid, the
+    sweep's `|| true` swallowing a refusal. So a row exercises the **sweep** over
+    a **mixed** quarantine file holding one legacy Codex block (no `cwd `) and
+    one new-format block, and asserts three things: the sweep surfaces the
+    missing-cwd diagnostic naming the block, the legacy block is retained, and
+    **only** the new-format block is cleared once its job is terminal.
+    **Negative:** restoring the output suppression fails the row.
 4. **No comment in `spec-review-payload.bats` claims an archive entry cannot red
    the corpus arm.** A grep-level row asserts the superseded sentence is absent,
    and that the surviving comment states what actually bounds the arm.
@@ -238,28 +249,48 @@ was observed active *before* the cancel and `cancelled` *after*.
     both `specs/` and `specs/.archive/` fails the row, proving it detects the
     exact shape the old allocator would have produced rather than only a
     duplicate within one directory.
-8b. **The shipped command actually calls the helper.** `commands/spec/new.md`
-    step 4 invokes `spec_new_next_id` and no longer instructs `ls specs/`. Two
-    rows, because either alone is satisfiable by a broken body: one asserts the
-    bare `ls specs/` allocation instruction is **absent**, and one asserts the
-    `spec_new_next_id` call is **present** in step 4. **Negative:** deleting the
-    call while leaving the `ls` absent fails the second row — the gap the review
-    round identified, where both checks pass for a command that allocates
-    nothing.
+8b. **The shipped command actually calls the helper, and the call is reachable.**
+    Two separate problems, because a grep for the helper's name fixes neither.
+    **(i) Ordering.** `commands/spec/new.md` currently sources
+    `commands/spec/new.lib.sh` in **step 5** while allocating in **step 4**, so a
+    `spec_new_next_id` call written into step 4 as-is would invoke an
+    **unsourced function**. The bootstrap therefore moves ahead of allocation —
+    one `source` before both — rather than the helper call being dropped into the
+    existing step 4.
+    **(ii) The pin executes the real thing.** A row asserting step 4 "mentions"
+    the helper passes for a call that uses the wrong root, runs before the
+    source, or discards the returned id. So the row **extracts the shipped step-4
+    invocation and runs it against the real helper** on a fixture that has both
+    archived ids and a `reserves-specs` reservation, then asserts the scaffold
+    was created at the **returned** id. **Negatives, each run:** a call given the
+    wrong repo root, and one whose return value is discarded, both fail — and the
+    bare `ls specs/` allocation instruction is asserted absent, with restoring it
+    failing the row.
 9. **The corpus test name matches its assertion.** The row at line 1504 is
    renamed to say it composes under the **payload** limit; the static-corpus row
    keeps its argv wording. A row asserts no `@test` name in that file claims an
    argv bound while its body asserts `REVIEW_MAX_PAYLOAD_BYTES_DEFAULT`.
    **Negative:** restoring the old name fails the row.
-9a. **`review.md` carries its `## Reviewers` table.** A row asserts that a
-    synthesized `review.md` contains a `## Reviewers` section whose table has a
-    row per reviewer with that reviewer's `Mode`, `Model` and `Vendor` — the
-    fields spec 0054 added as ACs 23/23a and which the `cross-reviewer` dropped
-    entirely on this spec's own round. The check is **structural, against the
-    file**, not a re-reading of the round report, because the report was already
-    correct; the artifact was not. **Negative:** a `review.md` with the section
-    removed, and one with the section present but the `Vendor` column missing,
-    both fail — so the row cannot be satisfied by a heading alone.
+9a. **The PRODUCTION path guarantees `review.md`'s `## Reviewers` table — a test
+    over a fixture is not enough.** The per-reviewer `Mode | Model | Vendor`
+    table is **AC23** of spec 0054 (`single_vendor_approval` is AC23a, a
+    different thing — the distinction matters because only the latter is gated on
+    quorum). The `cross-reviewer` template **already required** the table when
+    the agent omitted it on this spec's own round 1, and it omitted it again
+    nowhere else but the one place that counts. So a row asserting the table over
+    a sample file would pass while a complete live round still persists an
+    incomplete artifact — testing the thing that was never broken.
+    The fix is therefore in the **write path**: `review.md` is either rendered
+    from the round report's own fields, or **validated against it before being
+    persisted**, with a named failure when the table is missing or malformed.
+    The existing complete-round write gate and the quorum rules are preserved
+    exactly — an inert round must still leave an existing `review.md`
+    byte-unchanged, so validation must not become a new way to write one.
+    **Rows:** the production path is exercised with a synthesis that omits the
+    section entirely, one that has the heading but no `Vendor` column, and one
+    that is well-formed; the first two must not persist a `review.md` that
+    claims to describe reviewers it does not name. **Negative:** removing the
+    validation lets the omitted-section case through, demonstrated by running it.
 10. **Regression floor, including shell parity.** The whole bats suite and the
     Go suite green on Linux and macOS with `go test -C tools -count=1 ./...`;
     `tasks-verify --run` clean; drift scan clean; `bin/` not committed. The 0052

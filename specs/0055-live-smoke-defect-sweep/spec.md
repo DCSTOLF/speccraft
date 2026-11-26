@@ -291,6 +291,29 @@ was observed active *before* the cancel and `cancelled` *after*.
     that is well-formed; the first two must not persist a `review.md` that
     claims to describe reviewers it does not name. **Negative:** removing the
     validation lets the omitted-section case through, demonstrated by running it.
+9b. **A rejected synthesis must stop the whole publish sequence, not just the
+    write.** This is the part AC9a alone gets wrong, and it is the same class of
+    defect spec 0052 already fixed once: the runbook writes `review.md`
+    **before** `review_finalize_round`, and finalize then promotes
+    `review-snapshot.md`, stamps the fingerprint, and — on a met quorum —
+    promotes `status` to `reviewed`. So a validation that merely refuses to write
+    the candidate, without halting what follows, leaves a **complete,
+    quorum-met** round able to advance the snapshot, stamp a fingerprint against
+    the **prior** `review.md`, or mark the spec `reviewed` with no valid artifact
+    for the round at all.
+    Required behaviour: the synthesis is **staged**, then validated or rendered,
+    and only then published. On failure the previous `review.md` **and**
+    `review-snapshot.md` are left **byte-identical**, no fingerprint is stamped,
+    and `status` is not promoted — while the **quorum calculation itself is
+    unchanged**, because a malformed artifact is a publishing fault and must not
+    retroactively turn an approving round into a non-approving one.
+    **Row:** start from an existing `review.md` and `review-snapshot.md`, feed a
+    complete round that **meets** approval quorum together with a malformed
+    synthesis, and assert all four: both files byte-unchanged (`cmp -s`), no
+    fingerprint stamped, `status` still unpromoted, and the recorded quorum
+    result identical to the same round with a well-formed synthesis.
+    **Negative:** restoring the publish-then-finalize order lets the snapshot
+    advance, demonstrated by running it rather than asserted.
 10. **Regression floor, including shell parity.** The whole bats suite and the
     Go suite green on Linux and macOS with `go test -C tools -count=1 ./...`;
     `tasks-verify --run` clean; drift scan clean; `bin/` not committed. The 0052
