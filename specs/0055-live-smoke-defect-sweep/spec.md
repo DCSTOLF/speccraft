@@ -1,7 +1,7 @@
 ---
 id: "0055"
 title: "What the live smoke found: a cwd-keyed job store, an archive-blind id allocator, and seven latent test and portability bugs"
-status: draft
+status: planned
 created: 2026-11-26
 revision: 0
 authors: [claude]
