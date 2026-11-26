@@ -1,16 +1,35 @@
 # speccraft aux-agent registry
-# Each agent has a `mode`: "cli" or "acp".
-# CLI mode shells out directly. ACP mode goes through `acpx`.
+#
+# Each agent has a `mode` — how that reviewer is REACHED:
+#
+#   cli           shell out to `cmd` directly
+#   acp           shell out through `acpx`
+#   codex-plugin  hand the job to the Codex plugin's companion, which runs its
+#                 own agent loop and reports the files it touched per job
+#   subagent      dispatched by the orchestrating Claude Code session itself
+#
+# The last two are REVIEW-ONLY. `/speccraft:spec:delegate` and the
+# `aux-delegator` subagent refuse them by name: there is no command to shell out
+# to, so a delegation would compose a prompt and dispatch nothing.
 
 [defaults]
 review_quorum = 1     # how many aux agents must agree for /spec:review
 review_timeout_s = 600
 
-# `input` is "stdin" for every shipped agent, deliberately. A review payload is
-# large, and `argv` passes the WHOLE prompt as a single command-line argument:
-# `claude -p` on argv has a working limit around 70 KB, and a 622 KB payload
-# reported from the field timed out at 600 s with no verdict and no diagnostic.
-# stdin has no such limit. Only set `argv` for a CLI that genuinely requires it.
+# `input` is "stdin" for every shipped agent, deliberately (spec 0052). A review
+# payload is large, and `argv` passes the WHOLE prompt as a single command-line
+# argument: `claude -p` on argv has a working limit around 70 KB, and a 622 KB
+# payload reported from the field timed out at 600 s with no verdict and no
+# diagnostic. stdin has no such limit. Only set `argv` for a CLI that genuinely
+# requires it.
+#
+# OPEN QUESTION, recorded rather than guessed at: `opencode run <message>` is
+# documented as taking its prompt POSITIONALLY, so stdin may hand it an empty
+# prompt. It could not be verified in the dev container, where `opencode` on
+# PATH is this repo's own e2e mock rather than the real CLI. If it turns out
+# stdin is not accepted, this entry needs `argv` and the byte budget then
+# refuses an oversized payload by name — which is the right failure, where an
+# empty prompt returning a confident verdict is the worst one.
 #
 # `reference_read = true` says the agent can open files at the dispatched cwd,
 # which is what lets it receive reference-tier context as a path plus a heading
@@ -25,6 +44,7 @@ cmd = ["codex", "exec", "--full-auto"]
 input = "stdin"       # "stdin" | "argv" | "file"
 reference_read = true
 strengths = ["refactoring", "review"]
+enabled = false
 
 [[agents]]
 name = "opencode"
@@ -33,6 +53,7 @@ cmd = ["opencode", "run"]
 input = "stdin"
 reference_read = true
 strengths = ["analysis", "planning"]
+enabled = false
 
 [[agents]]
 name = "claude-p"
@@ -41,6 +62,65 @@ cmd = ["claude", "-p"]
 input = "stdin"
 reference_read = true
 strengths = ["general"]
+enabled = false
+
+# The reviewer that needs nothing installed. It runs inside the orchestrating
+# session via the Agent tool, reading its payload from the round directory and
+# writing its verdict to `<round-dir>/<agent>.out`. Its tools come from
+# `agents/reviewer.md`, which grants Read, Grep, Glob, Write and two scoped
+# digest commands — no Edit, no unscoped shell.
+#
+# `model = "opus"` is set explicitly. Omit it and the reviewer inherits the
+# orchestrator's model, which means the round cannot report which model
+# answered.
+[[agents]]
+name = "subagent"
+mode = "subagent"
+model = "opus"
+reference_read = true
+strengths = ["general", "review"]
+
+# ---------------------------------------------------------------------------
+# A note on the SAME-VENDOR DEFAULT.
+#
+# As shipped, exactly ONE reviewer is enabled: the `subagent`. It is the only
+# one that needs nothing installed — it runs inside the Claude Code session you
+# are already in — so a fresh repo can run a real review round immediately.
+#
+# The three `cli` entries above ship DISABLED because they need their binaries
+# on PATH, and an enabled reviewer whose binary is missing does not degrade
+# gracefully: its dispatch fails, the round is INCOMPLETE, and no `review.md`
+# is written at all — even if another reviewer approved. Enable the ones you
+# actually have.
+#
+# The consequence of the default is worth saying out loud: with only the
+# subagent enabled, quorum (1, below) can be met by a Claude reviewer on a
+# Claude-authored document. A round like that records
+# `single_vendor_approval: true` in its report and in `review.md`.
+#
+# That is a record, not a gate: the round still meets quorum and nothing is
+# refused. It is written down so a reader weeks later can see it, because "the
+# reviewers agreed" reads differently once you know they were one vendor.
+#
+# Enabling the `codex-plugin` entry below — after `/codex:setup` — is how you
+# get a genuine cross-vendor round without installing a separate CLI.
+# ---------------------------------------------------------------------------
+
+# Opt-in, and disabled until you have the Codex plugin. `/codex:setup` checks
+# whether the local Codex CLI and companion are ready; run it before setting
+# `enabled = true`, or the round records
+# `failed codex-plugin-unavailable <reason>` for this reviewer every time.
+#
+# The companion takes the job in the background and reports a status and the
+# files it touched, per job — which is why a `codex-plugin` reviewer is never
+# swept into the round's unattributed-write accounting the way concurrent
+# subagents are.
+[[agents]]
+name = "codex-plugin"
+mode = "codex-plugin"
+reference_read = true
+strengths = ["refactoring", "review"]
+enabled = false
 
 # Opt-in ACP. Requires `acpx` installed. Note that ACP is invoked as
 # `acpx <agent> <prompt>` — argv transport, so it is subject to the argv byte

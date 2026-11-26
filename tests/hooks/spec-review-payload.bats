@@ -589,7 +589,17 @@ start_single_use_source() {
   fifo="$TEST_DIR/.speccraft/conventions.md"
   start_single_use_source "$fifo"
   two_pass_size="$(wc -c < "$fifo" | tr -d ' ')"
-  two_pass_index="$(grep -E '^## |^### ' "$fifo" || true)"
+  # The second pass is BOUNDED. The writer's three extra `: > "$fifo"` opens do
+  # NOT block when a reader is already attached, so all three can be consumed
+  # inside the first read's open window — and then the second read finds no
+  # writer and blocks in open() forever. Observed hanging roughly half the runs
+  # in this container, with `grep` parked in the kernel's `wait_for_partner`.
+  #
+  # `timeout` turns "no writer left" into "reads nothing", which is the SAME
+  # conclusion this test asserts — a second pass does not see the content — but
+  # reached deterministically instead of by a race the helper's own comment
+  # assumed could not happen.
+  two_pass_index="$(timeout 10 grep -E '^## |^### ' "$fifo" || true)"
   [ "$two_pass_size" -gt 0 ]
   [ -z "$two_pass_index" ]
 }
@@ -1515,8 +1525,26 @@ largest_archived_spec() {
   full="$(review_full_paste_bytes "$PLUGIN_DIR/templates/prompts/review.md" "$spec" \
     .speccraft/guardrails.md .speccraft/index.md \
     .speccraft/architecture.md .speccraft/conventions.md)"
-  [ "$tiered" -le "$REVIEW_MAX_ARGV_BYTES_DEFAULT" ] || {
-    echo "live tiered composition is $tiered bytes, over the argv limit (spec: $spec)"; return 1; }
+  # AMENDED by spec 0054. This asserted `-le REVIEW_MAX_ARGV_BYTES_DEFAULT`, and
+  # the comment above claimed a new archive entry could not red it. A new
+  # archive entry did: 0054's own spec.md is 85,338 B, more than double the
+  # previous largest, so the tiered composition for the largest archived spec is
+  # now ~104 KB — over the 65,536 argv limit and under the 262,144 payload one.
+  #
+  # The DESIGN is intact and the empirical claim was not. Tiering never promised
+  # that every spec fits argv; it promised the payload is bounded and an
+  # over-budget agent is refused BEFORE dispatch with a reason naming the limit
+  # that bit. So the invariant asserted here is the payload bound, and the arm
+  # that makes an argv overflow SAFE is now pinned too — it was the one part of
+  # 0052's design this corpus arm never exercised.
+  [ "$tiered" -le "$REVIEW_MAX_PAYLOAD_BYTES_DEFAULT" ] || {
+    echo "live tiered composition is $tiered bytes, over the PAYLOAD limit (spec: $spec)"; return 1; }
+  if [ "$tiered" -gt "$REVIEW_MAX_ARGV_BYTES_DEFAULT" ]; then
+    [ "$(review_budget_check "$tiered" argv)" = "refuse:argv-limit" ] || {
+      echo "tiered is $tiered bytes, over argv, yet the budget did not refuse it by name"; return 1; }
+    [ "$(review_budget_check "$tiered" stdin)" = "ok" ] || {
+      echo "an over-argv payload must still pass on stdin"; return 1; }
+  fi
   # The reported bug, reproduced as an assertion: a full paste from THIS repo is
   # already several times the claude-p argv limit.
   [ "$full" -gt $((REVIEW_MAX_ARGV_BYTES_DEFAULT * 2)) ] || {
@@ -1671,7 +1699,15 @@ TOML
   # dispatch line is broken for it on a fresh /speccraft:init.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    [ "$(review_agent_field "$t" "$name" mode)" = "acp" ] && continue
+    # Only `cli` entries dispatch BY COMMAND. Spec 0052 wrote this exception as
+    # `= "acp"`, which was the complete set of command-less modes at the time;
+    # spec 0054 adds `codex-plugin` (the companion takes the job) and
+    # `subagent` (the orchestrating session launches it), and the loader
+    # REFUSES a `cmd` on either. Narrowed to `!= "cli"` so the row states its
+    # own intent instead of enumerating the exceptions of the day — strictly
+    # more precise, and it keeps biting for every entry that does dispatch by
+    # command. See the note at spec 0054's plan step 63.
+    [ "$(review_agent_mode "$t" "$name")" = "cli" ] || continue
     cmd="$(review_agent_cmd "$t" "$name")"
     [ -n "$cmd" ] || { echo "agent '$name' yields no command"; return 1; }
     case "$cmd" in *'['*|*'"'*) echo "agent '$name' cmd is unparsed TOML: $cmd"; return 1 ;; esac

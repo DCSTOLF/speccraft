@@ -1,0 +1,11 @@
+# Spec 0054 AC4 parity corpus — reject half. ONE offending entry per file,
+# because the Go loader fails the whole FILE on the first bad entry while the
+# shell reader is per-agent: a single file carrying every reject row could not
+# be driven by both readers.
+[defaults]
+review_quorum = 1
+
+[[agents]]
+name = "bad"
+mode = ""
+cmd = ["x"]

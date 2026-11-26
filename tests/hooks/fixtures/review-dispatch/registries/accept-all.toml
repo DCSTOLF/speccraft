@@ -1,0 +1,51 @@
+# Spec 0054 AC4 — the shared parity corpus, accept half.
+#
+# ONE file, read by BOTH the Go loader (delegate.LoadConfig) and the shell
+# reader (review_agent_mode). Every entry here must be accepted by both, and
+# every mode plus the mode-less form appears, so a reader that silently handles
+# only three of the four fails here rather than in production.
+[defaults]
+review_quorum = 1
+review_timeout_s = 600
+
+[[agents]]
+name = "a-cli"
+mode = "cli"
+cmd = ["codex", "exec"]
+input = "stdin"
+strengths = ["review"]
+
+[[agents]]
+name = "b-acp"
+mode = "acp"
+acp_agent = "codex"
+
+[[agents]]
+name = "c-codex-plugin"
+mode = "codex-plugin"
+effort = "high"
+plugin_root = "/tmp/fake-codex-root"
+
+[[agents]]
+name = "d-subagent"
+mode = "subagent"
+model = "opus"
+subagent_type = "speccraft:reviewer"
+
+# No `mode` key at all — the pre-0054 shape every already-written host registry
+# has. Normalizes to cli in both readers; an unknown key stays IGNORED here,
+# which is the AC3 regression floor.
+[[agents]]
+name = "e-modeless"
+cmd = ["claude", "-p"]
+input = "stdin"
+install_hint = "brew install claude"
+
+# A known key belonging to ANOTHER mode, on a legacy entry. Must be ignored,
+# not enum-checked: a host registry carrying this stopped loading before the
+# review-code round caught it.
+[[agents]]
+name = "f-legacy-foreign-key"
+mode = "cli"
+cmd = ["claude", "-p"]
+effort = "turbo"

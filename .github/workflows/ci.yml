@@ -47,7 +47,18 @@ jobs:
 
   unit-macos:
     name: Go unit tests (macOS)
-    runs-on: macos-14
+    # UNPINNED on purpose. This was `macos-14` until 2026-11-24, when GitHub
+    # retired that configuration: both macOS jobs began cancelling in under a
+    # second with no runner and no steps. The only visible explanation was a
+    # check-run annotation reading "The configuration
+    # 'macos-14-arm64-us-default' is not supported" — the JOB said only
+    # `cancelled`, which reads like a human cancelled the run rather than like
+    # a dead label. macOS last ran green here on 2026-09-30.
+    #
+    # What these jobs are FOR is BSD userland and darwin/arm64 Go, neither of
+    # which is tied to a macOS version, so pinning buys reproducibility we do
+    # not need and costs a silent outage every retirement cycle.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -127,7 +138,10 @@ jobs:
     # all three defects this spec fixes would have passed. The
     # assert-no-gnu-userland step below enforces that mechanically rather than
     # trusting this comment.
-    runs-on: macos-14
+    # Unpinned for the reason given on unit-macos above: `macos-14` was
+    # retired on 2026-11-24 and the failure mode was a sub-second `cancelled`
+    # with no annotation on the job itself.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

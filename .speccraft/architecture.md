@@ -6,9 +6,9 @@ speccraft is not a service; it is a Claude Code plugin. Its "layers" are executi
 
 1. `.claude-plugin/plugin.json` + root `marketplace.json` — packaging entry exposed via the `dcstolf-tools` marketplace. Helper binaries are delivered as GitHub Release assets (never committed). Since spec 0021 this is automated and self-verifying: a `main`-push `auto-tag` job (`ci.yml`) creates+pushes `vX.Y.Z` when `plugin.json`'s version is untagged, which triggers `release.yml` to build, publish, and `verify-release.sh`-self-verify the four platform tarballs + `checksums.txt`. See the §"Release / distribution pipeline" boundary below.
 2. `hooks/` — Bash hook scripts (`session-start.sh`, `prompt-submit.sh`, `pre-tool-use.sh`, `post-tool-use.sh`, `stop.sh`) registered through `hooks/hooks.json`. Hooks are the only layer that runs without explicit user invocation.
-3. `commands/` — Markdown slash commands. Top-level: `init.md`, `sync.md`. Spec lifecycle: `commands/spec/{new,plan,implement,review,review-code,delegate,close,override,revise}.md`. Architect conductor: `commands/arch/{decide,close,orchestrate}.md`; `orchestrate` colocates a sourceable `orchestrate.lib.sh` (the deterministic `orch_*` state-machine helpers, bats-tested — the shell/markdown analogue of the spec-0015 `.lib.sh` pattern below). A command may colocate a sourceable Bash helper alongside its `.md` body using the `commands/<group>/<name>.lib.sh` pattern (introduced by spec 0015; first instance: `commands/spec/revise.lib.sh`). The `.md` body sources the lib at runtime; the bats suite under `tests/hooks/<name>.bats` sources the same file at test time. Helpers MUST be pure functions (no top-level side effects). This pattern is sibling to the `tools/cmd/speccraft-*` Go binary layer (item 6) but distinct: `.lib.sh` runs in-process inside the command's shell, not as a separately invoked binary. A command lib may itself `source` another command's lib to reuse a pure parser (spec 0025: `commands/spec/consolidate.lib.sh` sources `commands/history/compact.lib.sh` for the history-parser reuse) — an explicit cross-spec coupling pinned by a bats test that sources both.
-4. `agents/` — Markdown subagent definitions: `spec-author`, `tdd-planner`, `spec-critic`, `cross-reviewer`, `aux-delegator`, `memory-keeper`.
-5. `skills/<name>/SKILL.md` — model-loaded skills: `speccraft-context`, `spec-format`, `aux-agents`.
+3. `commands/` — Markdown slash commands. Top-level: `init.md`, `sync.md`. Spec lifecycle: `commands/spec/{new,plan,implement,review,review-code,delegate,close,override,revise}.md`. Architect conductor: `commands/arch/{decide,close,orchestrate}.md`; `orchestrate` colocates a sourceable `orchestrate.lib.sh` (the deterministic `orch_*` state-machine helpers, bats-tested — the shell/markdown analogue of the spec-0015 `.lib.sh` pattern below). A command may colocate a sourceable Bash helper alongside its `.md` body using the `commands/<group>/<name>.lib.sh` pattern (introduced by spec 0015; first instance: `commands/spec/revise.lib.sh`). The `.md` body sources the lib at runtime; the bats suite under `tests/hooks/<name>.bats` sources the same file at test time. Helpers MUST be pure functions (no top-level side effects). This pattern is sibling to the `tools/cmd/speccraft-*` Go binary layer (item 6) but distinct: `.lib.sh` runs in-process inside the command's shell, not as a separately invoked binary. A command lib may itself `source` another command's lib to reuse a pure parser (spec 0025: `commands/spec/consolidate.lib.sh` sources `commands/history/compact.lib.sh` for the history-parser reuse) — an explicit cross-spec coupling pinned by a bats test that sources both. A command lib may be **split into concern-scoped siblings sourced by one entrypoint** (spec 0054, first instance): `commands/spec/review.lib.sh` sources `review-codex.lib.sh` (the Codex companion adapter) and `review-round.lib.sh` (the persistent round directory, lease, quarantine and tree snapshot), each self-locating through `${BASH_SOURCE[0]:-$0}`. **Consequence for guards:** every static grep over such a lib must address the set by **glob** (`commands/spec/review*.lib.sh`), never by file name — spec 0054's two extractions left seven guards silently vacuous, demonstrated by planting the forbidden forms in the extracted lib and watching the suite stay green.
+4. `agents/` — Markdown subagent definitions: `spec-author`, `tdd-planner`, `spec-critic`, `cross-reviewer`, **`reviewer`** (spec 0054: the in-session review subagent — `Read, Grep, Glob, Bash(shasum:*), Bash(sha256sum:*), Write`, `model: inherit`, no `Edit` and no bare `Bash`), `aux-delegator`, `memory-keeper`.
+5. `skills/<name>/SKILL.md` — model-loaded skills: `speccraft-context`, `spec-format`, `aux-agents`, **`review-round`** (spec 0054: the shared review-round runbook for all four review commands — it lives in `skills/` and not `commands/` because every `.md` under `commands/` registers as a slash command, and a runbook there would create a stray `/speccraft:spec:review-round`).
 6. `tools/cmd/speccraft-{state,guard,drift}` — Go entrypoints, one binary each, that hooks and commands shell out to.
 7. `tools/internal/speccraft/` — shared Go logic (state, config, files, root discovery, plugin-root resolution, drift scan, Rust static recognition, **stack detection** — `DetectStack` in `detect.go`, spec 0034, **revision/frontmatter-writer core** — `ComputeRevisionState`, `setFrontmatterField`, `SetRevision`, and the kind-scoped `SetStatus(path, ArtifactKind, status)` over `kindStatuses` in `revision.go`, specs 0036 + 0049, **build-repair + red-candidate-baseline state** — `NormalizeStateKey`, `CaptureRedCandidates`, `RecordBuildRepair` and the unexported `buildRepairMaxEdits` in `buildrepair.go`, spec 0048).
 8. `tools/internal/speccraft/runner/` — language-neutral test-runner invocation primitive (Outcome enum, TestRecord, Runner interface, AdapterFor + AdapterForLanguage factories, crate fingerprint, pre-edit gate). Per-language adapters live here; Rust was the first concrete implementation (cargo + nextest). Spec 0018 extended the primitive to Go (`go test`), Python (`pytest`), and JS/TS (one shared `JSTSAdapter` driven by a configured command), so the red→green invariant is a real observed-failure check for all four languages — superseding spec 0005's original Rust-only validation boundary.
@@ -127,6 +127,80 @@ See `history.md` for full ADR-style entries. Headlines:
   resolves once, preferring `shasum -a 256` (`sha256sum` is GNU-only — spec 0050's
   class). No Go binary is added, so this surface sits outside the TDD-gate boundary; the
   oracle is `tests/hooks/spec-review-payload.bats`.
+- **Review dispatch modes + the shared round (spec 0054, v1.19.0):**
+  `.speccraft/agents.toml`'s `mode` is the **dispatch** mode — how a reviewer is
+  reached — and now has four values: `cli` and `acp` (shell-outs to a binary),
+  plus `codex-plugin` (the Codex plugin's `scripts/codex-companion.mjs`, which
+  carries the user's Codex auth, config, job tracking and thread persistence)
+  and `subagent` (the orchestrating Claude Code session's own Agent tool, which
+  needs no binary, no auth and no argv/stdin transport). The last two are
+  **review-only**: `spec:delegate` and `aux-delegator` refuse them by name with
+  `unsupported-mode: <mode> is a review-only dispatch mode`, before composing a
+  prompt, because there is no command to shell out to. Strict keys apply to the
+  new modes only; `cli`/`acp` keep permissive decoding so no host registry stops
+  loading. **The Go loader (`tools/internal/delegate`) and the shell reader
+  (`review.lib.sh`) are held to one fixture corpus** under
+  `tests/hooks/fixtures/review-dispatch/registries/` — a directory, not one
+  file, because `LoadConfig` fails the whole file on the first bad entry while
+  `review_agent_mode` is per-agent.
+  **All four review commands** (`spec:review`, `spec:review-code`,
+  `arch:review`, `pm:review`) now run **one** round through
+  `skills/review-round/SKILL.md`; `arch`/`pm` previously had no runbook at all
+  and the model improvised dispatch. `review_compose_payload` gained `--label`
+  and `review_finalize_round` an optional `<kind>` (`spec` writes the snapshot
+  promote + fingerprint; `design`/`brief` write only `review.md` and report
+  `draft`, since a design is promoted by `/speccraft:arch:decide` and a brief by
+  `/speccraft:pm:prioritize`, never by a review round; `code` writes nothing
+  durable; an unknown kind is exit 2, never a fall-through to `spec`). Both
+  extensions are **defaulted**, which is what kept spec 0052's suites from
+  needing edits.
+  **A new on-disk surface: `.speccraft/.review-rounds/` — persistent, 0700,
+  self-ignoring.** Spec 0052's round lived in a `mktemp -d` with an `EXIT` trap;
+  a subagent is dispatched in a **later tool call**, so that lifetime made
+  running one structurally impossible. A round dir is published **atomically**
+  from `.building-<expiry-unix-ts>-<rand>`, carries a `lease`
+  (`review_timeout_s + 300 s`, written **once** — there is deliberately no
+  renewal helper, and the load-bearing test is that the expiry is byte-identical
+  before and after a full round), and is reclaimed by `review_round_sweep`
+  **on lease expiry, never on age**; a half-built dir is reclaimed only once the
+  expiry encoded in **its own name** has passed, which the sweep reads rather
+  than recomputes, so two concurrent rounds with different timeouts are each
+  judged by their own threshold. A `quarantine` record — one appended block per
+  reviewer — **beats cleanup**: a reviewer that could not be proven stopped
+  retains the dir, `review_round_cleanup` refuses it, and the sweep reports
+  instead of deleting. Resolution is per mode and per block, probed against the
+  companion root **recorded in that block**, never a re-resolved one; a
+  `subagent` block is released only by an operator removing the file.
+  `review_round_reclaim` is the sweep's entry point and deliberately skips the
+  proven-terminal gate that the round's own cleanup applies — the expired lease
+  IS the proof for an abandoned round, and conflating the two broke lease
+  reclamation entirely until review round 9 caught it. The `*` `.gitignore`
+  beside the round dir is written atomically and makes the surface invisible to
+  **pre-0054 repos with no re-init**, pinned against a checked-in copy of the
+  old template `.gitignore`.
+  **Integrity:** `review_tree_snapshot` is a **content digest** of every tracked
+  and every untracked regular file outside the round dir (plus path+type for
+  non-regular entries), enumerated with `git ls-files --others -z` and **no
+  `--exclude-standard`** — so a write to `bin/` is caught, which is the point —
+  and per file, never `--directory`-collapsed. The excluded volatile set is a
+  **closed four-entry contract list**: `.speccraft/.review-rounds/`, `.claude/`
+  (the whole tree: the orchestrating session writes permission allowlists there
+  mid-round), `.speccraft/state.json`, `tests/e2e/.logs/`. Attestation extends
+  spec 0052's reference digests with a `payload_sha256` the reviewer computes,
+  and every dispatchable template documents the `reference_access:` block it
+  will be parsed by, round-tripped through the real parser by test.
+  **Vendor record:** `review_agent_vendor` resolves `anthropic|openai|unknown`
+  by exact basename match on argv[0] (no substring, no prefix), with `subagent`
+  ⇒ `anthropic` and `codex-plugin` ⇒ `openai` by construction; `review.md`
+  carries `mode`/`model`/`vendor` per verdict unconditionally and
+  `single_vendor_approval` **only on a met quorum** (operator ruling: the line
+  describes an approval the round acted on).
+  **Shipped default changed for new repos:** `templates/speccraft/agents.toml`
+  now enables exactly ONE reviewer — the `subagent`, the only one needing
+  nothing installed — with the three `cli` entries `enabled = false`
+  explicitly, because `enabled` is opt-out and an enabled reviewer whose binary
+  is absent makes the entire round inert (no `review.md` at all, even if another
+  reviewer approved). Existing repos own their copy and are **not** migrated.
 - **`aux-delegator` is a pure dispatcher for review rounds (spec 0052).** In `review`
   mode it receives `payload_file` + `input_mode` + `cwd` and sends those bytes
   unmodified; it must not re-prefix the review template, re-inline context files, or

@@ -23,7 +23,10 @@ strengths = ["refactoring", "review"]
 [[agents]]
 name = "claude-p"
 mode = "cli"
-cmd = ["claude", "-p"]
+# --allowedTools: a non-interactive `claude -p` refuses every shasum call, so its spec-0052
+# reference digests were never computed and every verdict came back attestation-failed
+# (spec 0054 review round 1, 2026-10-02). Read-only tools plus the two hash commands only.
+cmd = ["claude", "-p", "--allowedTools", "Read", "Grep", "Glob", "Bash(shasum:*)", "Bash(sha256sum:*)"]
 input = "stdin"       # stdin, not argv: large review payloads overflow the single-argv exec limit
 strengths = ["general"]
 

@@ -1,7 +1,7 @@
 ---
 description: "Review the active product brief: pm-critic self-check, then cross-model review."
 argument-hint: ""
-allowed-tools: ["Read", "Write", "Edit", "Bash"]
+allowed-tools: ["Read", "Write", "Edit", "Bash", "Agent", "TaskStop", "Bash(shasum:*)", "Bash(sha256sum:*)"]
 ---
 
 Review the active product **brief**. Two stages: a cheap single-model
@@ -25,10 +25,45 @@ Steps:
    fix the brief, then re-run. The pm-critic is a single-model self-check,
    not a review quorum.
 
-3. **Cross-model review.** Only after pm-critic is satisfied, invoke the
-   `cross-reviewer` subagent (the same multi-model backend `/speccraft:spec:review`
-   uses, unchanged) over the enabled agents in `.speccraft/agents.toml`.
+3. **Cross-model review.** Only after pm-critic is satisfied, run the shared
+   `review-round` procedure (`skills/review-round/SKILL.md`) over the enabled
+   agents in `.speccraft/agents.toml`, with `KIND=brief`, `brief.md` as the
+   document under review and `templates/prompts/pm-review.md` as the template,
+   then synthesize via the `cross-reviewer` subagent.
 
-4. **Write** `product/$ACTIVE/review.md` with the synthesized verdict.
+   Pass `--label "Product brief under review (frozen for this round)"` to the composer. The default heading says "Spec
+   under review", which would tell the reviewer to check this document
+   against acceptance criteria a brief.md does not have.
+
+   It is the same multi-model backend `/speccraft:spec:review` uses, and that
+   backend now dispatches by the registry's `mode`: `cli` and `acp` through
+   `aux-delegator`, `codex-plugin` through the Codex plugin's companion, and
+   `subagent` from this orchestrating session via the Agent tool.
+
+4. **Gate the write on a complete round.** A refusal is not a verdict, and a
+   synthesis of refusals must never replace a real prior review:
+   ```bash
+   BRIEF_DIR="$REPO_ROOT/product/$ACTIVE"
+   AUTHORS="$(review_doc_authors "$BRIEF_DIR/brief.md")"
+   if ! review_responses_complete "$OUTCOMES"; then
+     review_finalize_round "$BRIEF_DIR" "$QUORUM" "$OUTCOMES" brief \
+       .speccraft/agents.toml "$AUTHORS"
+     exit 0
+   fi
+   ```
+   On that branch an existing `product/$ACTIVE/review.md` is left
+   **byte-unchanged** and none is created where none existed; the report names
+   every refusal and every verdict that WAS obtained. Only when the gate passes
+   do you **Write** `product/$ACTIVE/review.md` with the synthesized verdict,
+   and then:
+   ```bash
+   review_finalize_round "$BRIEF_DIR" "$QUORUM" "$OUTCOMES" brief \
+     .speccraft/agents.toml "$AUTHORS"
+   ```
+   The `brief` kind is what keeps this lane out of the spec lane's durable
+   writes: no `review-snapshot.md` is promoted and no `reviewed_sha256:` is
+   stamped, because a brief has neither. The report's `status:` stays `draft`
+   even at quorum — a brief is promoted by `/speccraft:pm:prioritize`, never by
+   a review round.
 
 5. Suggest next step: `/speccraft:pm:prioritize` or `/speccraft:pm:close`.

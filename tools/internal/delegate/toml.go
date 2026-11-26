@@ -24,17 +24,225 @@ type Defaults struct {
 // Agent is a single aux-agent entry.
 type Agent struct {
 	Name      string   `toml:"name"`
-	Mode      string   `toml:"mode"`       // "cli" or "acp"
+	Mode      string   `toml:"mode"`       // cli | acp | codex-plugin | subagent
 	Cmd       []string `toml:"cmd"`        // CLI mode: command + base args
 	Input     string   `toml:"input"`      // "stdin" | "argv" | "file"
 	ACPAgent  string   `toml:"acp_agent"`  // ACP mode: agent name for acpx
 	Strengths []string `toml:"strengths"`
 	Enabled   *bool    `toml:"enabled"`    // nil means true
+
+	// Spec 0054. ReferenceRead is opt-out: nil means true, so a registry
+	// written before this field existed stays permissive.
+	ReferenceRead *bool  `toml:"reference_read"`
+	Model         string `toml:"model"`         // subagent: opus|sonnet|haiku|fable|inherit
+	Effort        string `toml:"effort"`        // codex-plugin: none..xhigh
+	PluginRoot    string `toml:"plugin_root"`   // codex-plugin: explicit root
+	SubagentType  string `toml:"subagent_type"` // subagent: default speccraft:reviewer
 }
 
 // IsEnabled returns false only if explicitly set to false.
 func (a Agent) IsEnabled() bool {
 	return a.Enabled == nil || *a.Enabled
+}
+
+// IsReferenceRead returns false only if explicitly set to false (spec 0054).
+func (a Agent) IsReferenceRead() bool {
+	return a.ReferenceRead == nil || *a.ReferenceRead
+}
+
+// ValidModes are the dispatch modes a registry entry may name, in the order
+// error messages list them.
+var ValidModes = []string{"cli", "acp", "codex-plugin", "subagent"}
+
+// knownAgentKeys are every key an [[agents]] entry may carry. Kept adjacent to
+// the Agent struct tags it mirrors; a field added there must be added here or
+// strict-key checking will reject it on the new modes.
+var knownAgentKeys = []string{
+	"name", "mode", "cmd", "input", "acp_agent", "strengths", "enabled",
+	"reference_read", "model", "effort", "plugin_root", "subagent_type",
+}
+
+func isValidMode(m string) bool { return contains(ValidModes, m) }
+
+// joinWith concatenates parts with sep. A local construct rather than a
+// `strings` import: conventions §"Avoid a NEW import to dodge the
+// import-then-use guard deadlock" — the import line alone is a build-failing
+// edit until the using code lands, and the dependency-free form costs nothing.
+func joinWith(parts []string, sep string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += sep
+		}
+		out += p
+	}
+	return out
+}
+
+// agentKeySets returns, per [[agents]] element in document order, the set of
+// keys that element EXPLICITLY defined ("mode", "cmd", …).
+//
+// This exists because toml.MetaData.IsDefined cannot address array-of-table
+// elements: md.IsDefined("agents", "mode") reports false even when an element
+// does define mode. md.Keys() does carry the information — it emits keys in
+// document order with a bare "agents" key introducing each element — so each
+// bare "agents" starts a new set. Needed to tell an ABSENT mode (which
+// normalizes to cli) from an explicitly empty one (a named error).
+func agentKeySets(md toml.MetaData) []map[string]bool {
+	var out []map[string]bool
+	for _, k := range md.Keys() {
+		if len(k) == 0 || k[0] != "agents" {
+			continue
+		}
+		if len(k) == 1 {
+			out = append(out, map[string]bool{})
+			continue
+		}
+		if len(out) == 0 {
+			continue
+		}
+		out[len(out)-1][joinWith(k[1:], ".")] = true
+	}
+	return out
+}
+
+// ValidEfforts are the codex-plugin reasoning-effort values.
+var ValidEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
+
+// ValidSubagentModels are the subagent model values. "inherit" means omit the
+// model at dispatch, which resolves to the agent definition's own frontmatter.
+var ValidSubagentModels = []string{"opus", "sonnet", "haiku", "fable", "inherit"}
+
+// forbiddenFields lists, per NEW mode, the keys that belong to another mode.
+// Strict-key checking is scoped to the new modes on purpose: cli/acp keep
+// today's permissive decode so no existing host registry stops loading (the
+// opt-out convention for host-owned config).
+var forbiddenFields = map[string][]string{
+	"codex-plugin": {"cmd", "input", "acp_agent", "subagent_type"},
+	"subagent":     {"cmd", "input", "acp_agent", "effort", "plugin_root"},
+}
+
+func contains(set []string, v string) bool {
+	for _, s := range set {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// insertSorted returns set with v inserted in lexicographic position. Local for
+// the same reason as joinWith: it keeps this file dependency-free, and the sets
+// it orders are the handful of keys on one registry entry, where an insertion
+// sort is the clearer form anyway.
+func insertSorted(set []string, v string) []string {
+	out := make([]string, 0, len(set)+1)
+	placed := false
+	for _, s := range set {
+		if !placed && v < s {
+			out = append(out, v)
+			placed = true
+		}
+		out = append(out, s)
+	}
+	if !placed {
+		out = append(out, v)
+	}
+	return out
+}
+
+// validateAgentKeys reports every unknown key on one entry, sorted.
+//
+// All of them, not the first: the loop source is a Go map, so returning on the
+// first unknown key made the message depend on hash order — the same registry
+// produced `unknown key "alpha"` on one load and `"zeta"` on the next, and any
+// assertion naming a specific key would flake.
+func validateAgentKeys(name, mode string, keys map[string]bool) error {
+	var unknown []string
+	for k := range keys {
+		if !contains(knownAgentKeys, k) {
+			unknown = insertSorted(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	return fmt.Errorf("agents.toml: agent %q (mode %q) has unknown key(s) %s",
+		name, mode, joinWith(unknown, ", "))
+}
+
+// validateAgents normalizes an omitted mode to cli, rejects an explicitly
+// empty or unrecognised one, enforces per-mode strict keys and enums on the
+// new modes, and applies the subagent defaults.
+//
+// Modes are case-sensitive: a permissive decode would accept "Subagent" and
+// then route on a mode no dispatcher knows.
+func validateAgents(cfg *Config, defined []map[string]bool) error {
+	for i := range cfg.Agents {
+		a := &cfg.Agents[i]
+		keys := map[string]bool{}
+		if i < len(defined) {
+			keys = defined[i]
+		}
+
+		if !keys["mode"] {
+			a.Mode = "cli"
+			continue
+		}
+		if !isValidMode(a.Mode) {
+			return fmt.Errorf(
+				"agents.toml: agent %q has mode %q; valid modes are %s",
+				a.Name, a.Mode, joinWith(ValidModes, ", "))
+		}
+
+		for _, f := range forbiddenFields[a.Mode] {
+			if keys[f] {
+				return fmt.Errorf(
+					"agents.toml: agent %q has mode %q, which does not take %q",
+					a.Name, a.Mode, f)
+			}
+		}
+
+		// Unknown keys are strict on the NEW modes only. toml.MetaData's own
+		// Undecoded() cannot do this: it reports "agents.install_hint" with no
+		// element index, so it cannot say WHICH entry carried the key (same
+		// limitation as IsDefined — both verified against BurntSushi/toml).
+		// Per-entry resolution comes from agentKeySets instead.
+		if _, isNewMode := forbiddenFields[a.Mode]; isNewMode {
+			if err := validateAgentKeys(a.Name, a.Mode, keys); err != nil {
+				return err
+			}
+		}
+
+		// Enum checks belong to the mode that OWNS the field. Unscoped, this one
+		// fired on cli/acp entries too, so a host registry carrying `effort` on
+		// a non-codex entry stopped loading on upgrade — the breakage
+		// conventions.md §"A capability key added to host-owned config is
+		// OPT-OUT" exists to prevent. It was asymmetric as well: an entry with
+		// no `mode` returns early above and loaded fine, so deleting
+		// `mode = "cli"` appeared to "fix" the error.
+		if a.Mode == "codex-plugin" && keys["effort"] && !contains(ValidEfforts, a.Effort) {
+			return fmt.Errorf(
+				"agents.toml: agent %q has effort %q; valid values are %s",
+				a.Name, a.Effort, joinWith(ValidEfforts, ", "))
+		}
+		if a.Mode == "subagent" {
+			if keys["model"] && !contains(ValidSubagentModels, a.Model) {
+				return fmt.Errorf(
+					"agents.toml: agent %q has model %q; valid values are %s",
+					a.Name, a.Model, joinWith(ValidSubagentModels, ", "))
+			}
+			// Defaults applied AFTER validation, so a default can never be
+			// the thing that fails a check.
+			if a.SubagentType == "" {
+				a.SubagentType = "speccraft:reviewer"
+			}
+			if a.Model == "" {
+				a.Model = "inherit"
+			}
+		}
+	}
+	return nil
 }
 
 // LoadConfig reads agents.toml from the repo's .speccraft/ directory.
@@ -45,8 +253,12 @@ func LoadConfig(root string) (*Config, error) {
 		return nil, fmt.Errorf("reading agents.toml: %w", err)
 	}
 	var cfg Config
-	if _, err := toml.Decode(string(data), &cfg); err != nil {
+	md, err := toml.Decode(string(data), &cfg)
+	if err != nil {
 		return nil, fmt.Errorf("parsing agents.toml: %w", err)
+	}
+	if err := validateAgents(&cfg, agentKeySets(md)); err != nil {
+		return nil, err
 	}
 	if cfg.Defaults.ReviewTimeoutS == 0 {
 		cfg.Defaults.ReviewTimeoutS = 600
