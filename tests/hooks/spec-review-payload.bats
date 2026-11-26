@@ -1525,8 +1525,26 @@ largest_archived_spec() {
   full="$(review_full_paste_bytes "$PLUGIN_DIR/templates/prompts/review.md" "$spec" \
     .speccraft/guardrails.md .speccraft/index.md \
     .speccraft/architecture.md .speccraft/conventions.md)"
-  [ "$tiered" -le "$REVIEW_MAX_ARGV_BYTES_DEFAULT" ] || {
-    echo "live tiered composition is $tiered bytes, over the argv limit (spec: $spec)"; return 1; }
+  # AMENDED by spec 0054. This asserted `-le REVIEW_MAX_ARGV_BYTES_DEFAULT`, and
+  # the comment above claimed a new archive entry could not red it. A new
+  # archive entry did: 0054's own spec.md is 85,338 B, more than double the
+  # previous largest, so the tiered composition for the largest archived spec is
+  # now ~104 KB — over the 65,536 argv limit and under the 262,144 payload one.
+  #
+  # The DESIGN is intact and the empirical claim was not. Tiering never promised
+  # that every spec fits argv; it promised the payload is bounded and an
+  # over-budget agent is refused BEFORE dispatch with a reason naming the limit
+  # that bit. So the invariant asserted here is the payload bound, and the arm
+  # that makes an argv overflow SAFE is now pinned too — it was the one part of
+  # 0052's design this corpus arm never exercised.
+  [ "$tiered" -le "$REVIEW_MAX_PAYLOAD_BYTES_DEFAULT" ] || {
+    echo "live tiered composition is $tiered bytes, over the PAYLOAD limit (spec: $spec)"; return 1; }
+  if [ "$tiered" -gt "$REVIEW_MAX_ARGV_BYTES_DEFAULT" ]; then
+    [ "$(review_budget_check "$tiered" argv)" = "refuse:argv-limit" ] || {
+      echo "tiered is $tiered bytes, over argv, yet the budget did not refuse it by name"; return 1; }
+    [ "$(review_budget_check "$tiered" stdin)" = "ok" ] || {
+      echo "an over-argv payload must still pass on stdin"; return 1; }
+  fi
   # The reported bug, reproduced as an assertion: a full paste from THIS repo is
   # already several times the claude-p argv limit.
   [ "$full" -gt $((REVIEW_MAX_ARGV_BYTES_DEFAULT * 2)) ] || {
