@@ -622,6 +622,119 @@ form, so the caller's handler is destroyed silently.
   `_review_round_cleanup` in `commands/spec/review.lib.sh` (spec 0052), pinned on a
   clean round and an interrupted one.
 
+### A sourced lib must behave identically under bash and zsh — pinned by EXECUTING its function bodies in both
+
+Introduced by spec 0054, found by the first cross-model review of its diff, 24
+commits in. **zsh does not word-split an unquoted parameter expansion**, and a
+`commands/**/*.lib.sh` is `source`d into the caller's shell — which on macOS is
+zsh.
+
+- **Sourcing is not the test.** `tests/hooks/lib-zsh-safety.bats` proved every
+  review lib *sources* under zsh and had done so for three specs. Nothing had
+  ever *executed* a function body there, and the bodies are where the shells
+  disagree. Four defects shipped behind that gap, all macOS-fatal:
+  - `$digest "$p"` holding `shasum -a 256` execs a command name containing a
+    space, so every digest — the whole attestation chain and the tree snapshot —
+    fails. Wrap the resolved primitive (`_review_digest_exec`).
+  - `for x in $LIST` iterates **once**, with the whole list as one element. The
+    tier table, the outcome tokens, the mode enum, the effort/model enums and the
+    volatile set all answered "no" to everything. Chop with POSIX parameter
+    expansion (`_review_list_has`), no subprocess.
+  - `$RANDOM` is **inherited by a command-substitution subshell** under zsh, so
+    `$$-$RANDOM` names collide, `mv` nests one directory inside the other and
+    returns 0, and one caller's cleanup deletes the other's data. Take uniqueness
+    from `mktemp -d` and refuse an existing final path before `mv`.
+  - An `exec 9<&0` / `exec 9<&-` pair inside a function runs in the **caller**
+    and closes its fd 9, taking an `exec 9>lock; flock 9` advisory lock with it.
+    Redirect on the subshell (`<&0`), never on the caller.
+- **The pin:** a parity harness that runs the same script under both shells and
+  compares the outputs, with **two self-check rows** — one proving the harness
+  detects a genuine difference, one proving it agrees on a stable probe — without
+  which the whole file passes vacuously. zsh is **required**, never
+  silent-skipped (specs 0029/0030's rule).
+- **A rejected fix, recorded so it is not re-proposed.** The padded
+  `case " $list " in *" $item "*)` idiom is wrong here: the item lands on the
+  **pattern** side, so a glob character matches more than itself, and it already
+  accepted `model = "opus sonnet"` as one valid model because that is a
+  contiguous substring of the enum list.
+- **The honest limit.** A parity test **cannot** catch a defect both shells share.
+  `review_tree_snapshot` returned `sort`'s exit status with git's errors
+  discarded, so outside a work tree the snapshot was empty AND successful — and
+  two empty snapshots compare equal, so the before/after check passed while
+  detecting nothing. That needed its own row. Parity is additive coverage, not a
+  substitute for checking the status of the command that produces the data.
+
+### A helper's PROCEED token is never a recordable outcome
+
+Introduced by spec 0054, round 8. `review_budget_check` and
+`review_subagent_preflight` echo `ok` to mean "continue"; `review_subagent_collect`
+adopted the same shape, and the runbook **recorded** `ok` into the outcomes file.
+That file is read as `<agent> <outcome> <rest>` against a closed outcome
+vocabulary, so a recorded `ok` hit the unknown-token arm and **aborted the whole
+round with exit 2 at its first predicate**. Every successful subagent round died,
+and no test saw it because both helpers were individually correct.
+
+- **The rule.** A proceed signal and an outcome vocabulary are two namespaces. A
+  caller **branches** on `ok`; it never stores it. If a helper's output can be
+  either, the caller's first act is to discriminate.
+- **The structural half.** Give the outcome vocabulary a registered table and
+  scan it in **both** directions: every token the libs emit must be registered,
+  and every registered token must be emitted somewhere
+  (`REVIEW_FAILURE_REASONS` + `review_failure_reason_known`). Without the first
+  half, nothing can tell a new reason from a **typo** of an existing one — and a
+  typo'd reason is recorded, classified as a non-verdict, and reported to the
+  operator as if it meant something. Without the second half, a registered token
+  nothing emits is either dead vocabulary or a sign the emitting path was lost in
+  a refactor, and either way the operator can never see it.
+
+### A status-bearing helper read through a substitution has had its status discarded
+
+Introduced by spec 0054, rounds 8 and 9, which hit four variants of one shape:
+**a failure that is structurally invisible to its caller.**
+
+- **`printf 'x: %s\n' "$(helper)"` throws away `helper`'s exit status.** The
+  vendor flag was printed this way, so a helper exiting 2 produced
+  `single_vendor_approval: ` with an empty value and rc 0 — a failure reported as
+  success. Assign first (`v="$(helper)" || return $?`), then print.
+- **`grep -c` prints `0` AND exits 1,** so a `grep -c … || printf '0'` fallback
+  runs *as well*, printing `0` twice.
+- **In POSIX awk, `exit` inside a main rule still runs `END`** — a parser that
+  printed its value in both places printed it twice.
+- **`[ "$x" -gt "$y" ]` on a non-integer exits 2, which `if` reads as FALSE.** A
+  malformed completion stamp therefore admitted a late verdict as on time;
+  validate the integer explicitly, as the sibling helper already did.
+- **The ordering corollary: resolve every failable value BEFORE the first durable
+  write.** `review_finalize_round` resolved the vendor flag *after* promoting the
+  snapshot and stamping the fingerprint, so one unresolvable agent left both
+  written and then returned 2 — a partially committed round that reads as a
+  failed one. Durable writes go last, after everything that can refuse has
+  refused.
+
+### An `awk` range must not use an interval in its END pattern, and `awk` closes a range on its own start line
+
+Introduced by spec 0054's first CI run, from a test this spec wrote —
+`awk '/[Tt]imeout .*protocol/,/^#{2,3} /'` — two bugs that compose into a silent
+one.
+
+- **mawk does not implement interval expressions** (this devcontainer's awk, and
+  Debian's default), so the end pattern matched **nothing**, the range ran to EOF,
+  and the count happened to come out plausible. Spec 0050 already recorded the
+  interval trap for `awk`; this is the same trap inside a range.
+- **An awk that DOES implement intervals closed the range on its own START
+  line**, because the section header matched `^#{2,3} ` too. `sed` ranges never
+  close on the start line. So one expression meant "the whole file" on one
+  platform and "one line" on the other, and neither was the section intended.
+- **Use `sed -n '/start/,/^## [0-9]/p'`** — no interval needed, and no
+  start-line closure — and check the extraction is non-empty, so an empty result
+  is a named failure rather than an errexit abort inside an unrelated pipeline
+  (`grep -c` printing 0 and exiting 1 made the error name the whole pipeline).
+- **The guard is scoped to the COMBINATION** (an awk range whose end pattern is
+  an interval) in `tests-portability-sweep.bats`, deliberately narrow: the
+  guard's own forbidden fixtures and spec 0052's mawk-behaviour proof legitimately
+  contain non-range intervals, and narrowing the pattern is what keeps the rule
+  free of an exemption list. `portability-guard.bats` excludes `tests/` by design,
+  so this class can only be caught by the sweep.
+
 ### bats authoring: derived paths in `setup()`, and assert on a field, not on `$output`
 
 Introduced by spec 0052, which shipped both halves as defects before catching them.
@@ -1010,6 +1123,22 @@ And the fixture lesson that let this ship: **BSD tools do not uniformly reject `
 
 Introduced by spec 0050. Spec 0049 AC10 added a runtime assertion so a GNU-shimmed macOS runner could not pass vacuously. The assertion itself then failed on a legitimate runner, and because it runs *before* bats, the suite produced **no signal in either direction** for every run of its existence — while the job's red status was read as "the macOS work is still in progress". When a precondition assertion guards a suite, its false-positive cost is the entire suite, so it must be pinned against the real environment's actual output, not against an assumption about it.
 
+
+- **Do not pin a runner label when the job's purpose is not tied to the label's
+  version.** `runs-on: macos-14` was retired; both macOS jobs then **cancelled in
+  under a second with no runner and zero steps**, twice. The jobs exist for BSD
+  userland and darwin/arm64 Go, neither tied to a macOS version, so the pin
+  bought reproducibility we do not need and cost a silent outage every retirement
+  cycle. Now `macos-latest`, with the reason in a comment beside it.
+- **A `cancelled` job with no steps means a dead label — read the check-run
+  annotation.** The only visible diagnosis was
+  `The configuration 'macos-14-arm64-us-default' is not supported`, on the
+  check-run and **not** on the job, which said only `cancelled` — and that reads
+  like a human cancelled the run.
+- **CI firing only on push/PR to `main` is how this stayed invisible for ~8
+  weeks** (last macOS green 2026-09-30), and how 41 commits of a spec branch ran
+  no CI at all.
+
 ### Release automation jobs are cheap-hermetic (`auto-tag`, `release.yml` self-verify)
 
 Introduced by spec 0021. The release/distribution CI surfaces are cheap-hermetic — they invoke no `claude -p` and require no `ANTHROPIC_API_KEY`:
@@ -1082,6 +1211,51 @@ reserves-specs: ["0006"]
 
 - Spec IDs are zero-padded four-digit (`0001`, `0002`, …) and never reused.
 - Closed specs (`status: closed`) are immutable. Corrections go in a follow-up spec.
+
+### A feature behind an optional argument needs a test that the SHIPPED CALLERS pass it
+
+Introduced by spec 0054, round 8, where **ACs 23/23a shipped dead**. The vendor
+record (`mode`/`model`/`vendor` per verdict, `single_vendor_approval` per round)
+switched on only when a 5th and 6th argument were passed to
+`review_finalize_round`, and **not one of the nine call sites passed them**. The
+helper was tested, correct, and never invoked in the mode that mattered. Both
+cross-model reviewers found it independently; the local suite could not, because
+every test called the helper directly.
+
+- **Why this repo is especially exposed.** Defaulted parameters are the
+  deliberate technique for extending a surface whose test suite is a **regression
+  floor** that must stay byte-unedited — spec 0054's plan decisions 3 and 4
+  (`review_compose_payload --label`, `review_finalize_round <kind>`) exist for
+  exactly that reason. So the pattern that protects the floor is the same pattern
+  that hides a dead feature.
+- **The rule.** When a capability is reachable only by passing a new optional
+  argument, add an assertion over the **call sites** — grep the shipped commands
+  and runbook for the call shape — not only a unit test of the helper. Spec 0049's
+  lesson in a different costume: a lib feature no command invokes is not shipped.
+  Compare `review-code.md` step 5, which had to be given the `code` kind
+  explicitly for the same reason.
+
+### A remediation phase gets its own review round
+
+Introduced by spec 0054, which has the cleanest evidence this repo has produced:
+**round 9 reviewed round 8's fixes and found eleven more defects, six of them
+newly introduced by those fixes.** The same shape appeared in the spec review —
+three findings across rounds 5–6 were introduced by the immediately preceding
+revision, not pre-existing.
+
+- **The rule.** A remediation commit is a diff like any other and gets reviewed
+  like one. Never close on the round that produced the fixes, and never treat a
+  remediation phase as exempt because it is "just applying findings".
+- **Why the regressions cluster there.** Remediation edits are made under the
+  belief that the design is settled, so they are made at the seams, quickly, and
+  often in several helpers at once — which is exactly where round 8's eleven
+  SEAM defects and round 9's six regressions lived. The T65 cleanup gate placed
+  inside `review_round_cleanup` (which the **sweep** also calls) broke
+  lease-based reclamation entirely, silently, because the sweep's `|| true`
+  swallowed the refusal.
+- **Corollary already in use here:** record which findings are deliberately NOT
+  changed, with the argument, in `plan.md` — two of round 9's were, and both were
+  then overruled by the operator on better reasoning than mine.
 
 ### tasks.md decomposition contract (`contract: done-means-v1`)
 
@@ -1156,6 +1330,24 @@ A `grep` inside the spec's own `tasks.md` `done:` predicate is **not** a substit
 predicates execute only during that spec's close, and the archive sweep runs without
 `--run`, so the guarantee evaporates the moment the spec closes. Spec 0047's AC9/AC10
 shipped that way initially and had no durable coverage until `close-gate.bats` landed.
+
+
+- **A runbook executed by a model IS the implementation.** Pin its fenced calls
+  against the real functions: §2 passed a PATH to `review_budget_check`, which
+  takes a byte count, so the shared round's first gate errored for every reviewer
+  in all four commands; §2 composed one `payload.md` while §6 validated
+  `<agent>.payload`, a path nothing wrote. Include a **premise row** proving the
+  function really does reject the wrong argument shape, or the pin is vacuous.
+- **An unset variable in such markdown is not an error — it expands to empty and
+  the step quietly does the wrong thing.** `$OUTCOMES` was appended to for three
+  phases without ever being assigned. Guard it generally: grep every `$VAR` out
+  of the runbook's `bash` fences and require each to be assigned there or
+  declared exempt in the parameter table. That guard reds for the next such
+  variable without anyone thinking to look.
+- **Derive a shared default FROM the other reader.** The runbook defaulted
+  `subagent_type` to `reviewer` while the Go loader and the spec default to
+  `speccraft:reviewer`; the row now derives the expected value from `toml.go`, so
+  the two readers cannot drift again.
 
 ### Mid-implementation amendment
 
@@ -1343,6 +1535,32 @@ explicit negative changes behavior.
   `input = "stdin"` and the path `.speccraft/agents.toml`; surfacing a still-`argv`
   registry in the drift report is filed as the durable follow-up. Rewriting the user's
   file is not on the list.
+
+
+- **Opt-out is right for a capability flag and wrong for `enabled` on a reviewer
+  whose dispatch can fail the round.** An absent `enabled` means true, which is
+  exactly how three `cli` entries came to be enabled in the shipped template:
+  nobody ever wrote one. On a host without those binaries each dispatch fails,
+  `responses_complete` is false, and **no `review.md` is written at all — even if
+  another reviewer approved.**
+- **The rule:** the shipped template enables only entries that need nothing
+  installed, and disables the rest **explicitly**, with the reason written beside
+  them — without the reason the next reader re-enables them to be helpful and
+  reintroduces an inert round on every bare host. Existing host registries are
+  **not migrated**; they own their copy, and the named per-agent failure is the
+  nudge.
+
+### (Optional, lowest confidence) C8 — one word, two namespaces
+
+`aux-delegator` took a `mode` parameter meaning the kind of task while the
+registry's `mode` means how an agent is reached; passing one where the other
+belonged was a live defect in `/speccraft:spec:review`. When a new key reuses an
+existing parameter's name, **rename the older one at the boundary**
+(`mode` → `task_mode`), state the distinction where both appear, and update the
+golden that pins the doc. Proposed only because it cost a real defect; it may be
+too situational to be worth a section.
+
+---
 
 ## External-tool boundaries
 
