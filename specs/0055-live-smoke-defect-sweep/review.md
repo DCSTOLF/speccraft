@@ -6,71 +6,55 @@ verdict: changes-requested
 generated: 2026-11-26T00:00:00Z
 ---
 
-# Cross-model review — 0055
+# Cross-model review — 0055 (round 2, scoped --diff re-review)
 
 ## Reviewers
 
 | Agent | Verdict | Mode | Model | Vendor |
-|---|---|---|---|---|
+|-------|---------|------|-------|--------|
 | codex-plugin | changes-requested | codex-plugin | inherit | openai |
 
 ## codex-plugin
 
-Round-report fields: mode=codex-plugin, model=inherit, vendor=openai
-
 **Verdict:** changes-requested
 
 Concerns:
-- AC3 fixes dispatch through cancellation, but quarantine recovery still looks up jobs using the resolver's ambient cwd. A job launched outside the repo can remain quarantined after it stops because the resolver queries the wrong store.
-- AC8a promises continuing ID uniqueness, but AC8 separates computing the next ID from creating the spec. Concurrent spec:new calls can choose the same ID and create different slugs with that prefix. The standing check detects the collision only after creation.
-- AC5 leaves "same verdict" ambiguous. The corpus test should pass at both override values, while the adapter should return refuse:argv-limit below the payload size and ok above it. The specified branch can skip checking the second outcome altogether.
-- AC2 can report confirmed cancellation for a job that completed or failed before cancel ran. The helper accepts any terminal status, and the smoke prints a reminder to verify the outcome without making that verification part of the pass condition.
+- AC9a specifies a structural test but leaves the production write path unchanged. The cross-reviewer template already required the table when the agent omitted it. A test against a sample review.md can pass while a complete live round still persists an incomplete artifact.
+- AC8b checks that step 4 mentions the helper, but can pass if the call uses the wrong root, runs before new.lib.sh is sourced, or discards the returned ID. The current runbook sources the library in step 5.
+- AC3a requires a diagnostic for legacy blocks, but the existing sweep suppresses resolver output and prints a generic quarantine message. The criterion can pass in a direct resolver test while an operator running the sweep cannot tell why the block remains or how to release it safely.
 
 Suggestions:
-- For AC1 and AC3, pin the job-store cwd across launch, completion, timeout, cancellation confirmation, and quarantine recovery. Run the live harness from an unrelated directory in the stub test and assert what the companion receives at every stage.
-- For AC8, serialize allocation and spec creation per repository, or recheck and retry on contention. Add a two-creator fixture with distinct slugs and define what happens when 9999 is already occupied.
-- For AC5, exercise the same predicate used by the live corpus row at both override values and assert the disposition for each. Control the effective payload limit in the fixture because payload refusal takes precedence.
-- For AC6, qualify reproducibility on fixed base and HEAD commits. A movable ref can change the merge base, and round cleanup removes the frozen artifact, so describe its lifetime explicitly.
+- Have the production review path render the table from the round report or validate it before persisting review.md. Exercise that path with omitted and malformed tables, and preserve the existing complete-round write gate and quorum rules.
+- Execute the shipped step 4 call against the real helper with an archive-and-reservation fixture. Assert that scaffolding uses the returned ID, and demonstrate failure with an incorrect root or a discarded return value.
+- Exercise the sweep with a mixed quarantine file containing a legacy Codex block and a new-format Codex block. Assert that the sweep exposes the missing-cwd diagnostic, retains the legacy block, and clears only the new block after its job becomes terminal.
+- Change the What introduction to nine defects and distinguish AC23's reviewer metadata requirement from AC23a's same-vendor approval flag.
 
 Guardrail violations: none.
 
 Convention violations:
-- "A sourced lib must behave identically under bash and zsh, pinned by executing the function bodies in both." Location: ACs 3, 8, and 10. The regression floor names operating systems but does not require executing the changed helper bodies in both shells.
-- "A behavioral contract added to a command runbook gets a bats pin against the real function." Location: AC8. The helper test and the absence check for `ls specs/` can both pass if step 4 drops or miscalls the helper.
-- "The reserves-specs convention requires spec:new to skip reserved IDs, with manual enforcement until tooling lands." Location: AC8. The unconditional highest-ID-plus-one rule omits the existing reservation check.
-- "Prove every negative assertion bites by restoring the forbidden behavior and observing failure." Location: ACs 4, 6, 8 (runbook check), and 9. These absence assertions lack the restoration checks specified for other criteria.
+- "A behavioral contract added to a command runbook gets a bats pin against the real function." Location: Acceptance criteria, AC8b.
 
-Reviewer prose notes:
-- Job ownership: `review_round_quarantine_resolve` already uses the companion installation recorded in each quarantine block. It needs the same treatment for the job-store cwd, with defined behavior for existing blocks that lack that field. Exercise recovery from a different cwd and confirm the correct block is retained while its job is active and cleared when the same job becomes terminal. (commands/spec/review-round.lib.sh:594)
-- Allocation: the command already sources `new.lib.sh` for scaffolding. Pin the shipped allocation call along with the scanner, and keep the standing duplicate check as a backstop for manually created or merged specs. The current tree has no duplicate four-digit directory prefixes across the active and archived spec directories. (commands/spec/new.md:43)
-- Cancellation evidence: for the credentialed run, record that the job was active before cancellation and that the companion subsequently reported it cancelled. If broker exit is part of the claim, make that observation part of the manual acceptance evidence. The existing terminal-status check also succeeds for ordinary completion. (commands/spec/review-codex.lib.sh:831)
-
-Reference access: `.speccraft/architecture.md` and `.speccraft/conventions.md` read, no failures. payload_sha256 0275f306340faf695f28d6ff99172a44942807f042ea20e29b8762fb89c3f13a.
+Reviewer's closing note: The revision addresses the prior findings on active-before-cancel evidence, explicit budget outcomes, diff reproducibility, reserved IDs, and Bash and Zsh execution. I found no contradiction in the unchanged Open questions. The new legacy-quarantine rule safely retains blocks with an unknown job-store cwd. Its remaining gap is operator visibility through the sweep. The new reviewer-table criterion needs a production guarantee that survives another synthesis omission.
 
 ## Synthesis
 
-Only one reviewer took part, so there is no cross-agent agreement or disagreement to weigh. The orchestrator checked four of the reviewer's claims against the repo, and all four hold.
+This was round 2, a scoped `--diff` re-review by a single reviewer (quorum 1, not met). The reviewer explicitly confirmed that round 1's findings were addressed: active-before-cancel evidence, explicit budget outcomes, diff reproducibility, reserved ids, and bash/zsh execution. The remaining findings are new, all in the revision's added criteria.
 
-1. **The `reserves-specs` convention is real.** It is at `.speccraft/conventions.md:1197`, and "spec IDs are never reused" is at :1212. It has been used twice: `0005` reserves `0006`, which is still unused, and `0031` reserves `0032`. An allocator that takes highest-ID-plus-one must therefore skip reserved ids. The AC8 convention violation stands and the spec must fix it.
-2. **The quarantine-recovery gap is real (AC3).** `review_round_quarantine_resolve` records and probes a per-block companion `root` but records no job-store cwd. `review_codex_job_status` takes no cwd, so recovery queries the ambient cwd's store. Fixing dispatch through cancellation does not fix recovery. The spec must record the job-store cwd in the quarantine block, pass it to the status call, and define what happens to older blocks that lack the field. It must also test recovery from a different cwd.
-3. **The current tree has no duplicate four-digit prefixes** across `specs/` and `specs/.archive/`, which matches the reviewer's statement. Gaps exist at `0006` and `0053`. The gap at `0006` is a reservation, so an allocator that fills gaps would break the convention. The standing duplicate check should stay as a backstop for manually created or merged specs.
-4. **"Confirmed cancellation" is weaker than it sounds (AC2).** `review_codex_job_cancel` accepts any terminal status (`completed|failed|cancelled`), so a job that finished normally before cancel ran still passes. The credentialed run must record that the job was active before cancellation and that the companion then reported `cancelled`. If broker exit is part of the claim, that observation must be recorded too.
+**Convention violation (surfaced regardless of quorum):** AC8b lacks a bats pin against the real function, as the conventions require for behavioral contracts added to a command runbook.
 
-**Out of scope.** The concern that concurrent `spec:new` invocations could race on an id (AC8a, and the matching suggestion to serialize allocation) is the one finding the orchestrator considers out of scope. `spec:new` is an interactive slash command and has no concurrent invocation path. The spec does not need a lock or a two-creator fixture for it. It is recorded here so it is not silently dropped. The spec may add a one-line non-goal. The reviewer's related point about defining behavior when 9999 is occupied is a cheap edge case and is not covered by this exclusion.
+Orchestrator-verified facts:
+1. The AC8b concern is correct and concrete. `commands/spec/new.md` sources `new.lib.sh` at step 5 but allocates the id at step 4. A `spec_new_next_id` call placed in step 4 would invoke an unsourced function. A mention-only check would pass anyway. The author must reorder the sourcing, or place the call after it, and pin the shipped call against the real helper with an archive-and-reservation fixture. That fixture must show failure for a wrong root or a discarded return value.
+2. The What introduction still reads "Fix eight defects. Seven are small", while the Why section says nine. The inconsistency is present and must be fixed. AC23 (reviewer metadata) should also be distinguished from AC23a (the same-vendor approval flag).
 
-Remaining items for the spec author:
-- AC5: define "same verdict" as `refuse:argv-limit` below the payload size and `ok` above it. Run the live corpus predicate at both override values, and control the effective payload limit in the fixture.
-- AC6: qualify reproducibility on fixed base and HEAD commits, and state the lifetime of the frozen artifact.
-- Convention violations to fix:
-  - Execute the changed helper bodies in both bash and zsh (ACs 3, 8, 10).
-  - Pin the AC8 runbook step 4 against the real allocation call, not only the helper and an `ls specs/` absence check.
-  - Add restoration checks for the absence assertions in ACs 4, 6, 8, and 9.
+Accepted: the AC9a concern. A structural test over a fixture cannot prevent a live round from persisting an incomplete artifact, which is the very failure round 1 exhibited. The fix must be in the production write path. That means rendering the Reviewers table from the round report, or validating it before review.md is persisted. The existing complete-round write gate and quorum rules must be preserved, and the tests must cover omitted and malformed tables.
 
-**Action:** Revise spec 0055 and re-run review. The changes are:
-1. In AC3, add the job-store cwd to quarantine blocks and to the recovery path. Define the legacy-block behavior and test recovery from an unrelated cwd.
-2. In AC2, add active-before-cancel and reported-cancelled evidence to the manual acceptance record.
-3. In AC8, make the allocator skip `reserves-specs` ids, pin the shipped `new.md` allocation call, and keep the duplicate check as a backstop.
-4. Tighten AC5 and AC6 as described above.
-5. Add the bash and zsh execution pins, and the restoration checks for the negative assertions.
-6. Do not add concurrency handling for `spec:new`.
-reviewed_sha256: 6db30f13acd27b089bb73496532d710c9c8be91d3676fd043715f1c5bfae1403
+AC3a also needs work. The sweep suppresses resolver output and prints only a generic quarantine message, so an operator cannot see why a legacy block remains. The test should use a mixed quarantine file. The sweep must show the missing-cwd diagnostic, retain the legacy block, and clear only the new-format block once its job is terminal.
+
+**Action:** Revise the spec with these four changes.
+1. Make AC9a a production-path guarantee (render or validate the Reviewers table before persisting review.md).
+2. Rework AC8b so the step 4 call is made after `new.lib.sh` is sourced, and pin it with a bats test against the real helper.
+3. Make AC3a require the sweep itself to surface the legacy-block diagnostic, and test it with a mixed quarantine file.
+4. Fix the What introduction to say nine defects, and separate AC23 from AC23a.
+
+Then run another scoped re-review.
+reviewed_sha256: 37a84180af500ff9e1db63a342fea0f81ec953b40e42090366e5c18491af50a0
