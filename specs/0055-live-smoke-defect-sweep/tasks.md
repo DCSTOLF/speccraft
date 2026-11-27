@@ -5,12 +5,12 @@ contract: done-means-v1
 
 # Tasks
 
-- [ ] T1 — RED: the live smoke's launch cwd and the AC26a pass condition (AC1, AC2)
+- [x] T1 — RED: the live smoke's launch cwd and the AC26a pass condition (AC1, AC2)
   done: $ grep -qF '@test "live_launch derives its cwd from the workspace root, not a temp dir"' tests/hooks/live-codex-smoke.bats && grep -qF '@test "the launch-cwd row rejects a /tmp cwd, so it is not vacuous"' tests/hooks/live-codex-smoke.bats && grep -qF '@test "the AC26a body requires a non-terminal status before the cancel and cancelled after"' tests/hooks/live-codex-smoke.bats
 
-- [ ] T2 — GREEN: launch at the workspace root, and make the cancel row prove a cancel (AC1, AC2)
-  - [ ] T2.a — `live_launch` derives its cwd from `speccraft-state find-root`
-  - [ ] T2.b — the AC26a body requires non-terminal before and `cancelled` after
+- [x] T2 — GREEN: launch at the workspace root, and make the cancel row prove a cancel (AC1, AC2)
+  - [x] T2.a — `live_launch` derives its cwd from `speccraft-state find-root`
+  - [x] T2.b — the AC26a body requires non-terminal before and `cancelled` after
   done: $ grep -qF 'speccraft-state find-root' tests/hooks/live-codex-smoke.bats && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/live-codex-smoke.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 11 && test "$(printf '%s\n' "$o" | grep -c '# skip')" -eq 2
 
 - [ ] T3 — RED: one cwd for task, status, result and cancel (AC3)

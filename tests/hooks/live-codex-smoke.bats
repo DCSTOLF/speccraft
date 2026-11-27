@@ -61,6 +61,23 @@ live_registry() {
   printf '%s\n' "$toml"
 }
 
+# live_workspace_cwd — the cwd every stage of a live round must share.
+#
+# The companion keys its job store by GIT WORKSPACE ROOT, so this is not a
+# cosmetic choice of working directory: it decides which store the job is
+# written into, and therefore whether the status/result/cancel calls can see it
+# at all. `find-root` is the same resolution the shipped dispatcher uses
+# (`review_dispatch_agent` defaults its cwd to it), so the smoke launches where
+# production launches. The plugin dir is the fallback for a host whose
+# `speccraft-state` is not on PATH; it is this file's own repo, hence also a
+# workspace root.
+live_workspace_cwd() {
+  local root
+  root="$(speccraft-state find-root 2>/dev/null || true)"
+  [ -n "$root" ] || root="$PLUGIN_DIR"
+  printf '%s\n' "$root"
+}
+
 # live_launch <root> <toml> <payload> — launch a background job and echo its id.
 #
 # Drives the stages DIRECTLY rather than through `_review_codex_dispatch`,
@@ -69,10 +86,16 @@ live_registry() {
 # ACs 26 and 26a require to be recorded. Uses the adapter's own launch idiom
 # (`xargs -0 env`, never a bare `xargs -0`, which defaults to `echo` and
 # launches nothing).
+#
+# The cwd is the WORKSPACE ROOT, never `$TEST_DIR`. The first live run of this
+# file passed the per-test temp dir, which the companion resolved to itself —
+# so the job went into a store keyed by a directory that is deleted in
+# `teardown`, and every later stage queried the repo's store and found nothing.
 live_launch() {
   local root="$1" toml="$2" art="$3"
-  local argv_file="$TEST_DIR/argv" launch_file="$TEST_DIR/launch"
-  review_codex_task_argv "$toml" codex-plugin "$root" "$art" "$TEST_DIR" > "$argv_file"
+  local argv_file="$TEST_DIR/argv" launch_file="$TEST_DIR/launch" cwd
+  cwd="$(live_workspace_cwd)"
+  review_codex_task_argv "$toml" codex-plugin "$root" "$art" "$cwd" > "$argv_file"
   xargs -0 env < "$argv_file" > "$launch_file" 2>/dev/null
   review_codex_job_id "$launch_file"
 }
@@ -168,6 +191,22 @@ live_launch() {
   [ -n "$job" ] || { echo "no job id came back from the launch" >&2; return 1; }
   echo "LIVE AC26a: cancelling job=$job" >&3
 
+  # OBSERVATION ONE — the job is still live. Without this the row proves
+  # nothing: `review_codex_job_cancel` returns 0 on ANY terminal status, so a
+  # job that completed on its own a moment ago would be recorded as a confirmed
+  # cancellation. That is not a flake to be retried past — it is the row
+  # silently changing what it attests, so it is a hard failure with the
+  # re-run instruction attached.
+  local st_pre
+  st_pre="$(review_codex_job_status "$root" "$job")"
+  if _review_codex_job_terminal "$st_pre"; then
+    echo "the job was already '$st_pre' BEFORE the cancel — nothing was cancelled" >&2
+    echo "AC26a needs a job still queued or running at cancel time; re-run." >&2
+    echo "If this repeats, make the prompt in this body longer-running." >&2
+    return 1
+  fi
+  echo "LIVE AC26a: pre-cancel status=$st_pre" >&3
+
   # The cancel must CONFIRM. An unconfirmed cancel is
   # `failed codex-cancel-unconfirmed <job-id>` and quarantines the round,
   # because the reviewer may still be running.
@@ -179,11 +218,175 @@ live_launch() {
     return 1
   }
 
-  local st
-  st="$(review_codex_job_status "$root" "$job")"
-  echo "LIVE AC26a: post-cancel status=$st" >&3
+  # OBSERVATION TWO — `cancelled` specifically, not merely terminal. A job that
+  # raced to `completed` between the check above and the cancel must not be
+  # recorded as a cancellation either.
+  local st_post
+  st_post="$(review_codex_job_status "$root" "$job")"
+  [ "$st_post" = "cancelled" ] || {
+    echo "post-cancel status is '$st_post', not 'cancelled'" >&2
+    echo "The cancel helper accepts any terminal status, so this is the only" >&2
+    echo "check that distinguishes a cancellation from a coincidence." >&2
+    return 1
+  }
+  echo "LIVE AC26a: post-cancel status=$st_post (was $st_pre)" >&3
   echo "LIVE AC26a reminder: confirm in /codex:status that the turn is no" >&3
   echo "  longer active, and record the job id in changelog.md." >&3
+}
+
+# ---------------------------------------------------------------------------
+# Spec 0055 ACs 1 / 2 — the two defects the first live run of this file found.
+#
+# Defect 1: `live_launch` passed `$TEST_DIR` as `--cwd`. The Codex companion
+# keys its job store by GIT WORKSPACE ROOT — every path inside a repo resolves
+# to that repo's root, and a non-repo directory resolves to ITSELF. So the
+# launch wrote its job into a per-tempdir store while the three post-launch
+# helpers, which pass no `--cwd` at all, queried the repo's store and saw
+# nothing. `No job found` is indistinguishable from "not terminal yet" to a
+# polling adapter, so the round looked like a 300 s timeout in `codex-plugin`
+# mode rather than a test that launched into the wrong store.
+#
+# Defect 2: the AC26a body asserted only that `review_codex_job_cancel`
+# returned 0 — but that helper returns 0 on ANY terminal status
+# (`completed | failed | cancelled`). A job that finished on its own a moment
+# before the cancel would have been recorded as a confirmed cancellation, which
+# is the one thing this file exists to prove and the one thing no stub can.
+#
+# The first two rows are UNGATED on purpose: they are the only part of AC1 that
+# a host with no Codex plugin and no credits can run, and the only thing
+# keeping the fix pinned between live runs.
+# ---------------------------------------------------------------------------
+
+# live_stub_node — put a recording `node` on PATH and echo its directory.
+#
+# Stands in for the companion so the launch idiom (`xargs -0 env`) really
+# executes. It records the argv the PROCESS received, which is a stronger thing
+# to assert on than the argv file the helper wrote: a launch that mangled word
+# boundaries would still have a correct-looking argv file.
+live_stub_node() {
+  local dir="$TEST_DIR/stub"
+  mkdir -p "$dir"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$@" > "%s"\n' "$TEST_DIR/node-argv"
+    printf 'printf "{\\"jobId\\":\\"job-stub-live-smoke\\"}\\n"\n'
+  } > "$dir/node"
+  chmod 0755 "$dir/node"
+  printf '%s\n' "$dir"
+}
+
+# live_mutant_tree <file> <sed-expr> — a minimal plugin tree under $TEST_DIR
+# whose tests/hooks/ holds a MUTATED copy of <file>; echoes that copy's path,
+# and returns 1 when the mutation changed nothing.
+#
+# Symlinks commands/ and bin/ rather than copying: `setup` resolves PLUGIN_DIR
+# from the test file's own path, so a mutant run from the temp dir directly
+# would resolve a plugin root with no lib to source and fail for a reason
+# having nothing to do with what is being tested.
+live_mutant_tree() {
+  local src="$1" expr="$2" tree="$TEST_DIR/mutant-plugin" out
+  mkdir -p "$tree/tests/hooks"
+  ln -sfn "$PLUGIN_DIR/commands" "$tree/commands"
+  ln -sfn "$PLUGIN_DIR/bin" "$tree/bin"
+  out="$tree/tests/hooks/$(basename "$src")"
+  sed "$expr" "$src" > "$out"
+  cmp -s "$src" "$out" && return 1
+  printf '%s\n' "$out"
+}
+
+@test "live_launch derives its cwd from the workspace root, not a temp dir" {
+  source "$LIB"
+
+  local toml want got job art
+  toml="$(live_registry)"
+  art="$TEST_DIR/codex-plugin.payload"
+  printf 'irrelevant to a stubbed launch\n' > "$art"
+  PATH="$(live_stub_node):$PATH"
+
+  want="$(live_workspace_cwd)"
+  job="$(live_launch "$TEST_DIR/fake-plugin-root" "$toml" "$art")"
+  [ "$job" = "job-stub-live-smoke" ] || {
+    echo "the stubbed launch did not return its job id; got '$job'" >&2
+    return 1
+  }
+
+  got="$(awk '$0 == "--cwd" { getline; print; exit }' "$TEST_DIR/node-argv")"
+  [ -n "$got" ] || {
+    echo "no --cwd in the launched argv:" >&2
+    cat "$TEST_DIR/node-argv" >&2
+    return 1
+  }
+  [ "$got" = "$want" ] || {
+    echo "launch cwd is '$got'; the workspace root is '$want'" >&2
+    return 1
+  }
+  # The property that actually matters, asserted directly rather than inferred
+  # from the string: the cwd must BE a git workspace root, because that is what
+  # the companion hashes to pick a job store.
+  [ -d "$got/.git" ] || {
+    echo "launch cwd '$got' is not a git workspace root" >&2
+    return 1
+  }
+  [ "$got" != "$TEST_DIR" ] || {
+    echo "launch cwd is the per-test temp dir — defect 1 is back" >&2
+    return 1
+  }
+}
+
+@test "the launch-cwd row rejects a /tmp cwd, so it is not vacuous" {
+  # Mutate, don't assert: revert `live_launch`'s cwd to the per-test temp dir —
+  # defect 1 verbatim — and run the row above against it in a child bats. It
+  # must report `not ok`. An assertion that has never been seen to fail is
+  # indistinguishable from a typo in its own pattern.
+  local mutant out
+  mutant="$(live_mutant_tree "$BATS_TEST_FILENAME" \
+    's|^  cwd="$(live_workspace_cwd)"$|  cwd="$TEST_DIR"|')" || {
+    echo "the mutation changed nothing — this row would be vacuous" >&2
+    return 1
+  }
+  # `-f` matches the launch-cwd row only; this row's own name does not match,
+  # so there is no recursion.
+  out="$(bats_child -f 'live_launch derives its cwd' "$mutant" || true)"
+  printf '%s\n' "$out" | grep -qE '^not ok' || {
+    echo "the pre-fix temp-dir cwd PASSED the launch-cwd row:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  }
+}
+
+@test "the AC26a body requires a non-terminal status before the cancel and cancelled after" {
+  # The AC26a body is gated and cannot run here, so this row reads it instead.
+  # AC2: a confirmed cancellation needs TWO observations in a fixed order — a
+  # non-terminal status BEFORE the cancel, and `cancelled` SPECIFICALLY after
+  # it. Asserting the order is the point; both checks present but reversed
+  # would prove nothing.
+  local body ln_status ln_pre ln_cancel ln_post
+  body="$(awk '/^@test "AC26a live cancellation/,/^}$/' "$BATS_TEST_FILENAME")"
+  [ -n "$body" ] || { echo "could not locate the AC26a body" >&2; return 1; }
+
+  # Patterns deliberately stop before the first argument: a pattern carrying a
+  # space after an adapter function name would itself be read as a call by the
+  # arity guard below.
+  ln_status="$(printf '%s\n' "$body" | grep -nF 'st_pre="$(review_codex_job_status' | head -1 | cut -d: -f1)"
+  ln_pre="$(printf '%s\n' "$body" | grep -nF 'if _review_codex_job_terminal' | head -1 | cut -d: -f1)"
+  ln_cancel="$(printf '%s\n' "$body" | grep -nF 'run review_codex_job_cancel' | head -1 | cut -d: -f1)"
+  ln_post="$(printf '%s\n' "$body" | grep -nF '[ "$st_post" = "cancelled" ]' | head -1 | cut -d: -f1)"
+
+  [ -n "$ln_status" ] || { echo "AC26a never reads a pre-cancel status" >&2; return 1; }
+  [ -n "$ln_pre" ] || { echo "AC26a never refuses a pre-cancel TERMINAL status" >&2; return 1; }
+  [ -n "$ln_cancel" ] || { echo "AC26a never calls the cancel helper" >&2; return 1; }
+  [ -n "$ln_post" ] || {
+    echo "AC26a does not assert the post-cancel status is cancelled specifically" >&2
+    echo "(review_codex_job_cancel() returns 0 on completed and failed too)" >&2
+    return 1
+  }
+
+  [ "$ln_status" -lt "$ln_pre" ] && [ "$ln_pre" -lt "$ln_cancel" ] \
+    && [ "$ln_cancel" -lt "$ln_post" ] || {
+    echo "AC26a's cancellation checks are out of order:" >&2
+    echo "  status=$ln_status terminal-refusal=$ln_pre cancel=$ln_cancel post=$ln_post" >&2
+    return 1
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -211,9 +414,16 @@ live_launch() {
     # The documented arity: `# fn <a> <b> — …` → count the <…> before the dash.
     want="$(printf '%s\n' "$doc" | sed 's/ —.*//' | grep -oE '<[^>]+>' | grep -c . || true)"
     # The actual arity: arguments after the function name on this call line,
-    # counting quoted words and bare tokens, stopping at a redirect or pipe.
+    # counting quoted words and bare tokens, stopping at the first shell
+    # control operator.
+    #
+    # `;` and `&` are in that set, not just `|` and `>`: spec 0055 added
+    # `if _review_codex_job_terminal "$st_pre"; then`, a one-argument call the
+    # earlier pattern read as two by counting `then`. A guard that red-flags a
+    # correct call is worse than no guard — the next engineer learns to reword
+    # around it rather than trust it.
     got="$(printf '%s\n' "$line" \
-      | sed "s/.*$fn//; s/[|>].*//" \
+      | sed "s/.*$fn//; s/[|>;&].*//" \
       | grep -oE '"[^"]*"|[^ ]+' | grep -c . || true)"
     [ "$want" = "$got" ] || fails="$fails
   $fn: documented $want args, called with $got — $line"
