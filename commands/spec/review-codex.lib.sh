@@ -740,18 +740,25 @@ review_codex_job_id() {
   printf '%s\n' "$job_id"
 }
 
-# review_codex_job_status <root> <job-id> — the job's status STRING.
+# review_codex_job_status <root> <job-id> <cwd> — the job's status STRING.
 # Terminal: completed | failed | cancelled. Active: queued | running
 # (job-control.mjs:262 and codex-companion.mjs:291 in 1.0.6).
+#
+# The cwd is REQUIRED, and is the same cwd the job was launched with. The
+# companion keys its job store by GIT WORKSPACE ROOT, resolved per invocation
+# from `--cwd` when present and from its own process cwd otherwise
+# (`resolveCommandCwd`). A query from a different workspace root answers `No job
+# found`, which this helper cannot distinguish from "not terminal yet" — so a
+# missing cwd here surfaces as a timeout rather than as an error.
 review_codex_job_status() {
-  local root="${1:-}" job_id="${2:-}"
-  [ -n "$root" ] && [ -n "$job_id" ] || {
-    review_error "review_codex_job_status: root and job id required"
+  local root="${1:-}" job_id="${2:-}" cwd="${3:-}"
+  [ -n "$root" ] && [ -n "$job_id" ] && [ -n "$cwd" ] || {
+    review_error "review_codex_job_status: root, job id and cwd required"
     return 2
   }
   local out
   out="$(review_with_deadline "$REVIEW_CODEX_CALL_DEADLINE_S" \
-    node "$root/scripts/codex-companion.mjs" status "$job_id" --json 2>/dev/null || true)"
+    node "$root/scripts/codex-companion.mjs" status "$job_id" --json --cwd "$cwd" 2>/dev/null || true)"
   local st
   st="$(printf '%s\n' "$out" | jq -r '.job.status // empty' 2>/dev/null || true)"
   [ -n "$st" ] || {
@@ -770,38 +777,45 @@ _review_codex_job_terminal() {
   esac
 }
 
-# review_codex_job_result <root> <job-id> <out-file> — capture `result <job-id>
-# --json` for review_parse_codex_task_output, and return the companion's own
-# exit status, which that parser needs as its second argument.
+# review_codex_job_result <root> <job-id> <out-file> <cwd> — capture `result
+# <job-id> --json` for review_parse_codex_task_output, and return the
+# companion's own exit status, which that parser needs as its second argument.
+#
+# The cwd is REQUIRED and must be the launch cwd: `result` resolves its job
+# from the store keyed by that workspace root.
 review_codex_job_result() {
-  local root="${1:-}" job_id="${2:-}" out_file="${3:-}"
-  [ -n "$root" ] && [ -n "$job_id" ] && [ -n "$out_file" ] || {
-    review_error "review_codex_job_result: root, job id and output file required"
+  local root="${1:-}" job_id="${2:-}" out_file="${3:-}" cwd="${4:-}"
+  [ -n "$root" ] && [ -n "$job_id" ] && [ -n "$out_file" ] && [ -n "$cwd" ] || {
+    review_error "review_codex_job_result: root, job id, output file and cwd required"
     return 2
   }
   local rc=0
   review_with_deadline "$REVIEW_CODEX_CALL_DEADLINE_S" \
-    node "$root/scripts/codex-companion.mjs" result "$job_id" --json \
+    node "$root/scripts/codex-companion.mjs" result "$job_id" --json --cwd "$cwd" \
     > "$out_file" 2>/dev/null || rc=$?
   return "$rc"
 }
 
-# _review_codex_poll <root> <job-id> <timeout-s> — poll until the job reports
-# terminal, echoing that status; return 124 when the budget runs out.
+# _review_codex_poll <root> <job-id> <timeout-s> <cwd> — poll until the job
+# reports terminal, echoing that status; return 124 when the budget runs out.
 #
 # The status is checked BEFORE the first sleep, so a job that finished during
 # launch is not charged a whole interval. The final sleep is clamped to the
 # remaining budget, so a 5 s interval cannot overshoot a 2 s deadline.
+#
+# The cwd is REQUIRED and threaded to every status call. Polling a store that
+# does not hold the job is the defect this argument exists to prevent: it
+# returns 124 after the whole budget, which reads as a slow reviewer.
 _review_codex_poll() {
-  local root="${1:-}" job_id="${2:-}" timeout_s="${3:-}"
-  [ -n "$root" ] && [ -n "$job_id" ] && [ -n "$timeout_s" ] || {
-    review_error "_review_codex_poll: root, job id and timeout required"
+  local root="${1:-}" job_id="${2:-}" timeout_s="${3:-}" cwd="${4:-}"
+  [ -n "$root" ] && [ -n "$job_id" ] && [ -n "$timeout_s" ] && [ -n "$cwd" ] || {
+    review_error "_review_codex_poll: root, job id, timeout and cwd required"
     return 2
   }
 
   local waited=0 st nap
   while :; do
-    st="$(review_codex_job_status "$root" "$job_id" 2>/dev/null || true)"
+    st="$(review_codex_job_status "$root" "$job_id" "$cwd" 2>/dev/null || true)"
     if [ -n "$st" ] && _review_codex_job_terminal "$st"; then
       printf '%s\n' "$st"
       return 0
@@ -816,8 +830,13 @@ _review_codex_poll() {
   done
 }
 
-# review_codex_job_cancel <root> <job-id> — cancel the job and CONFIRM it
+# review_codex_job_cancel <root> <job-id> <cwd> — cancel the job and CONFIRM it
 # stopped. Zero only on confirmed cancellation.
+#
+# The cwd is REQUIRED and must be the launch cwd. A cancel aimed at the wrong
+# store cannot find the job, so the turn keeps running while the confirming
+# status reports it active — `codex-cancel-unconfirmed`, which is the honest
+# outcome but for the wrong reason.
 #
 # One cancel, then exactly one confirming status. AC6b: a cancel that reports
 # success while the following status still shows the job active is
@@ -829,18 +848,18 @@ _review_codex_poll() {
 # interruptAppServerTurn; a process-group kill would stop this caller and leave
 # the turn running, producing exactly the false timeout above.
 review_codex_job_cancel() {
-  local root="${1:-}" job_id="${2:-}"
-  [ -n "$root" ] && [ -n "$job_id" ] || {
-    review_error "review_codex_job_cancel: root and job id required"
+  local root="${1:-}" job_id="${2:-}" cwd="${3:-}"
+  [ -n "$root" ] && [ -n "$job_id" ] && [ -n "$cwd" ] || {
+    review_error "review_codex_job_cancel: root, job id and cwd required"
     return 2
   }
 
   review_with_deadline "$REVIEW_CODEX_CALL_DEADLINE_S" \
-    node "$root/scripts/codex-companion.mjs" cancel "$job_id" --json \
+    node "$root/scripts/codex-companion.mjs" cancel "$job_id" --json --cwd "$cwd" \
     >/dev/null 2>&1 || true
 
   local st
-  st="$(review_codex_job_status "$root" "$job_id" 2>/dev/null || true)"
+  st="$(review_codex_job_status "$root" "$job_id" "$cwd" 2>/dev/null || true)"
   if [ -n "$st" ] && _review_codex_job_terminal "$st"; then
     return 0
   fi
@@ -916,15 +935,20 @@ _review_codex_dispatch() {
     return 1
   fi
 
+  # One cwd owns the job for its whole lifecycle. `$cwd` is what `task` was
+  # launched with, so it is what every later subcommand must be given: the
+  # companion resolves a different store for a different workspace root, and
+  # this function never cd's, so the ambient cwd is whatever the orchestrator
+  # happened to be in.
   local poll_rc=0
-  _review_codex_poll "$root" "$job_id" "$timeout_s" >/dev/null || poll_rc=$?
+  _review_codex_poll "$root" "$job_id" "$timeout_s" "$cwd" >/dev/null || poll_rc=$?
   if [ "$poll_rc" -eq 124 ]; then
     rm -f "$argv_file" "$launch_file" "$result_file"
     # The job outlived its budget. Cancel, and CONFIRM — an unconfirmed cancel
     # is never reported as a plain timeout, because the reviewer may still be
     # running.
     local cancel_out cancel_rc=0
-    cancel_out="$(review_codex_job_cancel "$root" "$job_id")" || cancel_rc=$?
+    cancel_out="$(review_codex_job_cancel "$root" "$job_id" "$cwd")" || cancel_rc=$?
     if [ "$cancel_rc" -ne 0 ]; then
       printf '%s\n' "$cancel_out"
       return 1
@@ -934,7 +958,7 @@ _review_codex_dispatch() {
   fi
 
   local result_rc=0
-  review_codex_job_result "$root" "$job_id" "$result_file" || result_rc=$?
+  review_codex_job_result "$root" "$job_id" "$result_file" "$cwd" || result_rc=$?
 
   local parsed parse_rc=0
   parsed="$(review_parse_codex_task_output "$result_file" "$result_rc")" || parse_rc=$?

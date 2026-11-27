@@ -104,8 +104,12 @@ live_launch() {
   live_gate "AC26"
   source "$LIB"
 
-  local toml root version
+  local toml root version cwd
   toml="$(live_registry)"
+  # The ONE cwd this round's whole lifecycle shares — launch, poll, status and
+  # result. Reading it once here, rather than per call, is the point: the two
+  # sides diverging is the defect.
+  cwd="$(live_workspace_cwd)"
 
   # Resolve and preflight first: without the plugin this is a named refusal,
   # not a hang.
@@ -133,18 +137,21 @@ live_launch() {
   [ -n "$job" ] || { echo "no job id came back from the launch" >&2; return 1; }
 
   # Stage 2 — `status`, polled to a terminal state.
-  run _review_codex_poll "$root" "$job" 300
+  run _review_codex_poll "$root" "$job" 300 "$cwd"
   [ "$status" -eq 0 ] || {
     echo "the job did not reach a terminal status inside 300s" >&2
     printf '%s\n' "$output" >&2
+    echo "A job launched under one workspace root is invisible from another," >&2
+    echo "and the companion answers 'No job found', not an error — so check" >&2
+    echo "that this cwd ($cwd) is the one live_launch used." >&2
     return 1
   }
   local st
-  st="$(review_codex_job_status "$root" "$job")"
+  st="$(review_codex_job_status "$root" "$job" "$cwd")"
 
   # Stage 3 — `result`.
   local out="$TEST_DIR/result.out"
-  run review_codex_job_result "$root" "$job" "$out"
+  run review_codex_job_result "$root" "$job" "$out" "$cwd"
   [ "$status" -eq 0 ] || {
     echo "the result could not be collected:" >&2
     printf '%s\n' "$output" >&2
@@ -171,8 +178,9 @@ live_launch() {
   live_gate "AC26a"
   source "$LIB"
 
-  local toml root
+  local toml root cwd
   toml="$(live_registry)"
+  cwd="$(live_workspace_cwd)"
   root="$(review_codex_plugin_root "$toml" codex-plugin)" || {
     echo "the Codex plugin root could not be resolved — run /codex:setup" >&2
     return 1
@@ -198,7 +206,7 @@ live_launch() {
   # silently changing what it attests, so it is a hard failure with the
   # re-run instruction attached.
   local st_pre
-  st_pre="$(review_codex_job_status "$root" "$job")"
+  st_pre="$(review_codex_job_status "$root" "$job" "$cwd")"
   if _review_codex_job_terminal "$st_pre"; then
     echo "the job was already '$st_pre' BEFORE the cancel — nothing was cancelled" >&2
     echo "AC26a needs a job still queued or running at cancel time; re-run." >&2
@@ -210,7 +218,7 @@ live_launch() {
   # The cancel must CONFIRM. An unconfirmed cancel is
   # `failed codex-cancel-unconfirmed <job-id>` and quarantines the round,
   # because the reviewer may still be running.
-  run review_codex_job_cancel "$root" "$job"
+  run review_codex_job_cancel "$root" "$job" "$cwd"
   [ "$status" -eq 0 ] || {
     echo "the live cancel did not confirm:" >&2
     printf '%s\n' "$output" >&2
@@ -222,7 +230,7 @@ live_launch() {
   # raced to `completed` between the check above and the cancel must not be
   # recorded as a cancellation either.
   local st_post
-  st_post="$(review_codex_job_status "$root" "$job")"
+  st_post="$(review_codex_job_status "$root" "$job" "$cwd")"
   [ "$st_post" = "cancelled" ] || {
     echo "post-cancel status is '$st_post', not 'cancelled'" >&2
     echo "The cancel helper accepts any terminal status, so this is the only" >&2

@@ -591,7 +591,14 @@ review_round_quarantine_resolve() {
     case "$mode" in
       codex-plugin)
         if [ -n "$root" ]; then
-          st="$(review_codex_job_status "$root" "$q_id" 2>/dev/null || true)"
+          # `$PWD` preserves this probe's pre-0055 behaviour EXACTLY — the
+          # helper used to send no `--cwd`, and the companion then resolved its
+          # store from its own process cwd. It is a placeholder, not a design:
+          # AC3a replaces it with the cwd recorded in the block, because a
+          # probe against a GUESSED workspace root answers `No job found` for a
+          # live job and the sweep would then reclaim the dir under a running
+          # reviewer.
+          st="$(review_codex_job_status "$root" "$q_id" "$PWD" 2>/dev/null || true)"
           if [ -n "$st" ] && _review_codex_job_terminal "$st"; then
             keep=0
             resolved=$((resolved + 1))

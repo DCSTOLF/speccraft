@@ -1421,7 +1421,7 @@ count_calls() {
   make_companion_root "$TEST_DIR/root" 1.0.6
   export STUB_CODEX_STATUS_SEQUENCE='running'
 
-  run review_codex_job_status "$TEST_DIR/root" task-1
+  run review_codex_job_status "$TEST_DIR/root" task-1 "$FAKE_REPO"
   [ "$status" -eq 0 ]
   [ "$output" = "running" ]
 }
@@ -1431,7 +1431,7 @@ count_calls() {
   codex_env
   make_companion_root "$TEST_DIR/root" 1.0.6
 
-  run review_codex_job_result "$TEST_DIR/root" task-1 "$TEST_DIR/result.json"
+  run review_codex_job_result "$TEST_DIR/root" task-1 "$TEST_DIR/result.json" "$FAKE_REPO"
   [ "$status" -eq 0 ]
 
   # The file must be exactly what the parser expects to be handed, nested shape
@@ -1448,7 +1448,7 @@ count_calls() {
   export STUB_CODEX_STATUS_SEQUENCE='running running completed'
   REVIEW_CODEX_POLL_INTERVAL_S=1
 
-  run _review_codex_poll "$TEST_DIR/root" task-1 20
+  run _review_codex_poll "$TEST_DIR/root" task-1 20 "$FAKE_REPO"
   [ "$status" -eq 0 ]
   [ "$output" = "completed" ]
 }
@@ -1467,7 +1467,7 @@ count_calls() {
   export STUB_CODEX_STATUS_SEQUENCE='running'
   REVIEW_CODEX_POLL_INTERVAL_S=1
 
-  run _review_codex_poll "$TEST_DIR/root" task-1 2
+  run _review_codex_poll "$TEST_DIR/root" task-1 2 "$FAKE_REPO"
   [ "$status" -eq 124 ]
 }
 
@@ -1484,7 +1484,7 @@ count_calls() {
   # none of them exercises the clamp; a mutation removing it passed them all.
   local t0 t1
   t0=$(date +%s)
-  run _review_codex_poll "$TEST_DIR/root" task-1 2
+  run _review_codex_poll "$TEST_DIR/root" task-1 2 "$FAKE_REPO"
   t1=$(date +%s)
 
   [ "$status" -eq 124 ]
@@ -1501,8 +1501,8 @@ count_calls() {
   export STUB_CODEX_STATUS_SEQUENCE='running'
   REVIEW_CODEX_POLL_INTERVAL_S=1
 
-  _review_codex_poll "$TEST_DIR/root" task-1 2 || true
-  review_codex_job_cancel "$TEST_DIR/root" task-1 || true
+  _review_codex_poll "$TEST_DIR/root" task-1 2 "$FAKE_REPO" || true
+  review_codex_job_cancel "$TEST_DIR/root" task-1 "$FAKE_REPO" || true
 
   [ "$(count_calls cancel)" -eq 1 ] || {
     echo "expected exactly 1 cancel, got $(count_calls cancel):" >&2
@@ -1518,8 +1518,8 @@ count_calls() {
   export STUB_CODEX_STATUS_SEQUENCE='running'
   REVIEW_CODEX_POLL_INTERVAL_S=1
 
-  _review_codex_poll "$TEST_DIR/root" task-1 2 || true
-  review_codex_job_cancel "$TEST_DIR/root" task-1 || true
+  _review_codex_poll "$TEST_DIR/root" task-1 2 "$FAKE_REPO" || true
+  review_codex_job_cancel "$TEST_DIR/root" task-1 "$FAKE_REPO" || true
 
   # Exactly one: cancellation must be CONFIRMED, and confirming it twice would
   # mean the first answer was not trusted.
@@ -1537,7 +1537,7 @@ count_calls() {
   # The stub's default cancel is honest: the confirming status reports terminal.
   export STUB_CODEX_STATUS_SEQUENCE='cancelled'
 
-  run review_codex_job_cancel "$TEST_DIR/root" task-1
+  run review_codex_job_cancel "$TEST_DIR/root" task-1 "$FAKE_REPO"
   [ "$status" -eq 0 ]
 }
 
@@ -1551,7 +1551,7 @@ count_calls() {
   export STUB_CODEX_CANCEL_CONFIRMS=0
   export STUB_CODEX_STATUS_SEQUENCE='running'
 
-  run review_codex_job_cancel "$TEST_DIR/root" task-99
+  run review_codex_job_cancel "$TEST_DIR/root" task-99 "$FAKE_REPO"
   [ "$status" -ne 0 ]
   assert_line 'failed codex-cancel-unconfirmed task-99'
 }
@@ -1563,7 +1563,7 @@ count_calls() {
   export STUB_CODEX_CANCEL_CONFIRMS=0
   export STUB_CODEX_STATUS_SEQUENCE='running'
 
-  run review_codex_job_cancel "$TEST_DIR/root" task-needle-4242
+  run review_codex_job_cancel "$TEST_DIR/root" task-needle-4242 "$FAKE_REPO"
   [ "$status" -ne 0 ]
   # Named so an operator can finish the job off by hand. A bare
   # "cancel unconfirmed" would leave them nothing to act on.
@@ -1594,6 +1594,327 @@ count_calls() {
     echo "the cancel path must invoke the companion's cancel" >&2
     return 1
   }
+}
+
+# ---------------------------------------------------------------------------
+# Spec 0055 AC3 — ONE cwd owns a job for its whole lifecycle.
+#
+# `review_codex_task_argv` emits `--cwd`; `review_codex_job_status`,
+# `review_codex_job_result` and `review_codex_job_cancel` emitted none. The
+# companion keys its job store by GIT WORKSPACE ROOT, resolved per invocation
+# from `--cwd` when present and from its OWN process cwd otherwise
+# (codex-companion.mjs 1.0.6, `resolveCommandCwd`: `options.cwd ?
+# path.resolve(process.cwd(), options.cwd) : process.cwd()`; `status`, `result`
+# and `cancel` each declare `cwd` in their valueOptions). So the launch side and
+# the query side agreed only by the accident of the dispatcher being run from
+# inside the repo — `_review_codex_dispatch` never cd's, and the shipped caller
+# defaults its cwd to `speccraft-state find-root`, which is the repo root.
+#
+# Hand the dispatcher an explicit cwd anywhere else and the job becomes
+# invisible to its own lifecycle: `No job found` is indistinguishable from "not
+# terminal yet" to a polling adapter, so the round reports a 300 s timeout.
+# ---------------------------------------------------------------------------
+
+# codex_dispatch_registry — a one-agent codex-plugin registry plus a payload.
+codex_dispatch_registry() {
+  write_registry "[[agents]]
+name = \"codex\"
+mode = \"codex-plugin\"
+plugin_root = \"$TEST_DIR/root\""
+  printf 'Reply with a verdict.\n' > "$TEST_DIR/payload"
+  # `_review_codex_dispatch` redirects a helper's stderr to this path and then
+  # lifts the reason token out of it; the production caller
+  # (`review_dispatch_agent`) mktemps it before dispatching, so a test driving
+  # the dispatcher directly has to do the same or every round fails as
+  # `codex-plugin-unavailable unknown` on a redirect to the empty string.
+  # Exported because the mutation rows dispatch in a child shell.
+  REVIEW_CODEX_LAST_ERR="$TEST_DIR/codex-last-err"
+  : > "$REVIEW_CODEX_LAST_ERR"
+  export REVIEW_CODEX_LAST_ERR
+}
+
+# plant_cwd_keyed_node — a `node` stub that keys its job store by `--cwd`, the
+# way the real companion does.
+#
+# The shared stub-node.sh is cwd-BLIND: it answers `status` for any job from
+# any directory, so it cannot fail the way the companion failed and cannot
+# distinguish the fix from the defect. This stub resolves a store from the
+# `--cwd` value, or — when the flag is ABSENT — from its own $PWD, which is
+# exactly the companion's rule. A job written under one store and queried under
+# another answers `No job found` on stderr with a non-zero status.
+#
+# Knobs: STUB_CWD_STORE (store parent), STUB_CWD_STATUS (`completed` or
+# `running`), STUB_CWD_RESULT_FILE, STUB_CWD_ARGV_LOG.
+plant_cwd_keyed_node() {
+  # rm FIRST: codex_env left a SYMLINK here pointing at the repo's shared
+  # stub-node.sh, and writing through a symlink would overwrite that file in
+  # the working tree.
+  rm -f "$TEST_DIR/bin/node"
+  cat > "$TEST_DIR/bin/node" <<'SH'
+#!/usr/bin/env sh
+set -u
+[ -z "${STUB_CWD_ARGV_LOG:-}" ] || printf '%s\n' "$*" >>"$STUB_CWD_ARGV_LOG"
+case ${1:-} in
+--version | -v)
+	printf 'v20.20.2\n'
+	exit 0
+	;;
+esac
+sub=${2:-help}
+
+# The store key: --cwd when given, else this process's own directory.
+cwd=$PWD
+prev=
+for a in "$@"; do
+	[ "$prev" = "--cwd" ] && cwd=$a
+	prev=$a
+done
+# The cwd is absolute, so nesting it under the parent yields a unique store
+# with no hashing and no non-POSIX tooling.
+store="${STUB_CWD_STORE:-/tmp/stub-cwd-store}$cwd"
+job=task-cwdkeyed-1
+
+no_job() {
+	printf 'No job found with id %s\n' "$job" >&2
+	exit 1
+}
+
+case $sub in
+setup)
+	printf '{ "ready": true, "nextSteps": [] }\n'
+	;;
+task)
+	mkdir -p "$store"
+	: >"$store/job"
+	printf '{ "jobId": "%s", "status": "queued" }\n' "$job"
+	;;
+status)
+	[ -f "$store/job" ] || no_job
+	st=${STUB_CWD_STATUS:-completed}
+	# A cancel that reached THIS store is what makes the job cancelled; a
+	# cancel that landed in another store leaves this one running, which is
+	# the codex-cancel-unconfirmed path.
+	[ -f "$store/cancelled" ] && st=cancelled
+	printf '{ "job": { "id": "%s", "status": "%s" } }\n' "$job" "$st"
+	;;
+result)
+	[ -f "$store/job" ] || no_job
+	cat -- "$STUB_CWD_RESULT_FILE"
+	;;
+cancel)
+	[ -f "$store/job" ] || no_job
+	: >"$store/cancelled"
+	printf '{ "job": { "id": "%s", "status": "cancelled" }, "cancelled": true }\n' "$job"
+	;;
+*)
+	printf 'cwd-keyed stub: unhandled subcommand %s\n' "$sub" >&2
+	exit 64
+	;;
+esac
+exit 0
+SH
+  chmod +x "$TEST_DIR/bin/node"
+}
+
+# cwd_keyed_env <status> — the cwd-keyed stub wired up, with the job store and
+# the result fixture in place.
+cwd_keyed_env() {
+  export STUB_CWD_STORE="$TEST_DIR/stores"
+  export STUB_CWD_STATUS="${1:-completed}"
+  export STUB_CWD_RESULT_FILE="$CODEX_FIX/task-success-1.0.6.json"
+  export STUB_CWD_ARGV_LOG="$ARGV_LOG"
+  plant_cwd_keyed_node
+}
+
+# argv_cwd_values <subcommand> — the `--cwd` value from every logged invocation
+# of that subcommand, one per line.
+argv_cwd_values() {
+  grep -E "codex-companion\.mjs $1( |\$)" "$ARGV_LOG" 2>/dev/null \
+    | awk '{ for (i = 1; i < NF; i++) if ($i == "--cwd") print $(i + 1) }'
+}
+
+@test "task status result and cancel all carry the dispatcher's cwd" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  codex_dispatch_registry
+  cwd_keyed_env completed
+
+  local cwd="$TEST_DIR/job-store-root"
+  mkdir -p "$cwd"
+  REVIEW_CODEX_POLL_INTERVAL_S=1
+
+  # TWO dispatches, because `result` and `cancel` are mutually exclusive
+  # branches of one lifecycle: a job that terminates is collected, a job that
+  # outlives its budget is cancelled. Both append to the same argv log.
+  _review_codex_dispatch "$TEST_DIR/agents.toml" codex "$TEST_DIR/payload" "$cwd" 10 \
+    >/dev/null 2>&1 || true
+  STUB_CWD_STATUS=running \
+    _review_codex_dispatch "$TEST_DIR/agents.toml" codex "$TEST_DIR/payload" "$cwd" 2 \
+    >/dev/null 2>&1 || true
+
+  # `setup` is excluded deliberately: it is a readiness probe with no job store
+  # behind it, so a cwd there would be noise rather than a requirement.
+  local sub matched total with
+  for sub in task status result cancel; do
+    matched="$(grep -E "codex-companion\.mjs $sub( |\$)" "$ARGV_LOG" || true)"
+    [ -n "$matched" ] || {
+      echo "the two dispatches never invoked '$sub'; argv log:" >&2
+      cat "$ARGV_LOG" >&2
+      return 1
+    }
+    # Counted rather than written as a negated grep: `grep -qv` inverts PER
+    # LINE and so succeeds whenever ANY line differs, which would pass here
+    # for free.
+    total="$(printf '%s\n' "$matched" | grep -c . || true)"
+    with="$(printf '%s\n' "$matched" | grep -cF -- "--cwd $cwd" || true)"
+    [ "$total" = "$with" ] || {
+      echo "'$sub' ran $total times but only $with carried --cwd $cwd:" >&2
+      printf '%s\n' "$matched" >&2
+      return 1
+    }
+  done
+
+  # …and it is the SAME cwd across all four, not merely present in each.
+  local distinct
+  distinct="$({ argv_cwd_values task; argv_cwd_values status
+                argv_cwd_values result; argv_cwd_values cancel; } | sort -u)"
+  [ "$(printf '%s\n' "$distinct" | grep -c . || true)" = "1" ] || {
+    echo "the lifecycle spanned more than one cwd:" >&2
+    printf '%s\n' "$distinct" >&2
+    return 1
+  }
+  [ "$distinct" = "$cwd" ] || {
+    echo "the lifecycle cwd is '$distinct', not the dispatcher's '$cwd'" >&2
+    return 1
+  }
+}
+
+@test "a dispatch given a cwd outside the repo still resolves its own job" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  codex_dispatch_registry
+  cwd_keyed_env completed
+
+  # A cwd outside the directory the dispatcher is running in. This is defect
+  # 1's scenario, and the only configuration in which a missing `--cwd` on the
+  # query side is distinguishable from a present one.
+  local outside="$TEST_DIR/outside-the-repo"
+  mkdir -p "$outside"
+  REVIEW_CODEX_POLL_INTERVAL_S=1
+
+  # The premise, asserted rather than assumed: if the test's own cwd were the
+  # dispatch cwd, an ambient-cwd query would reach the right store by accident
+  # and this row could not discriminate.
+  [ "$PWD" != "$outside" ] || {
+    echo "the test's cwd equals the dispatch cwd — the row is vacuous" >&2
+    return 1
+  }
+
+  run _review_codex_dispatch "$TEST_DIR/agents.toml" codex "$TEST_DIR/payload" "$outside" 10
+  [ "$status" -eq 0 ] || {
+    echo "the dispatch could not resolve its own job from an outside cwd:" >&2
+    printf '%s\n' "$output" >&2
+    echo "--- argv log ---" >&2
+    cat "$ARGV_LOG" >&2
+    return 1
+  }
+  printf '%s\n' "$output" | grep -qxF 'verdict: changes-requested' || {
+    echo "the round returned no verdict; got: $output" >&2
+    return 1
+  }
+}
+
+# codex_dispatch_in <lib-dir> <cwd> <timeout-s> — one dispatch in a CHILD shell
+# sourcing the lib from <lib-dir>. Echoes the combined output, never fails.
+#
+# A child `bash -c` rather than a second `source` in this shell: re-sourcing a
+# mutated lib over the real one leaves whichever definition ran last in place,
+# so the result would depend on ordering rather than on the mutation. Each run
+# starts from an empty job store, or a job left by the previous run would be
+# found by the next one for the wrong reason.
+codex_dispatch_in() {
+  rm -rf "$TEST_DIR/stores"
+  bash -c '
+    . "$1/review.lib.sh"
+    REVIEW_CODEX_POLL_INTERVAL_S=1
+    _review_codex_dispatch "$2" codex "$3" "$4" "$5"
+  ' _ "$1" "$TEST_DIR/agents.toml" "$TEST_DIR/payload" "$2" "$3" 2>&1 || true
+}
+
+# mutant_lib_dir <sed-expr> — a COPY of commands/spec/ whose
+# review-codex.lib.sh has been mutated. Echoes the directory; returns 1 when
+# the mutation changed nothing, which would otherwise make every negative below
+# pass against the unmodified lib.
+mutant_lib_dir() {
+  local src="$PLUGIN_DIR/commands/spec" dir="$TEST_DIR/mutant/spec"
+  rm -rf "$TEST_DIR/mutant"
+  mkdir -p "$dir"
+  cp "$src"/*.sh "$dir/"
+  sed "$1" "$src/review-codex.lib.sh" > "$dir/review-codex.lib.sh"
+  if cmp -s "$src/review-codex.lib.sh" "$dir/review-codex.lib.sh"; then
+    return 1
+  fi
+  printf '%s\n' "$dir"
+}
+
+@test "dropping the cwd from any one post-launch codex helper fails the lifecycle row" {
+  source "$LIB"
+  codex_env
+  make_companion_root "$TEST_DIR/root" 1.0.6
+  codex_dispatch_registry
+  cwd_keyed_env completed
+
+  local outside="$TEST_DIR/outside-the-repo"
+  mkdir -p "$outside"
+  local real="$PLUGIN_DIR/commands/spec"
+
+  # POSITIVE CONTROLS first. Three negatives that all pass because the scenario
+  # itself is broken are indistinguishable from three that bite.
+  local fixed_ok fixed_timeout
+  fixed_ok="$(codex_dispatch_in "$real" "$outside" 10)"
+  if ! printf '%s\n' "$fixed_ok" | grep -qF 'verdict:'; then
+    echo "the unmutated lib produced no verdict, so the negatives prove nothing:" >&2
+    printf '%s\n' "$fixed_ok" >&2
+    return 1
+  fi
+  fixed_timeout="$(STUB_CWD_STATUS=running codex_dispatch_in "$real" "$outside" 2)"
+  if ! printf '%s\n' "$fixed_timeout" | grep -qxF 'timeout'; then
+    echo "the unmutated lib did not report a clean timeout plus confirmed cancel:" >&2
+    printf '%s\n' "$fixed_timeout" >&2
+    return 1
+  fi
+
+  # PER HELPER, so fixing two of three cannot pass.
+  local dir out
+  for helper in status result; do
+    dir="$(mutant_lib_dir "/mjs\" $helper /s/ --cwd \"\$cwd\"//")" || {
+      echo "the $helper mutation changed nothing — it emits no --cwd to remove" >&2
+      return 1
+    }
+    out="$(codex_dispatch_in "$dir" "$outside" 10)"
+    if printf '%s\n' "$out" | grep -qF 'verdict:'; then
+      echo "a $helper helper with no --cwd still produced a verdict:" >&2
+      printf '%s\n' "$out" >&2
+      return 1
+    fi
+  done
+
+  # The cancel helper only runs on a timeout, so its mutant needs the running
+  # scenario. Its symptom is specific rather than merely non-zero: the cancel
+  # lands in another store, so the confirming status still reports the job
+  # active and the round is codex-cancel-unconfirmed rather than a timeout.
+  dir="$(mutant_lib_dir '/mjs" cancel /s/ --cwd "$cwd"//')" || {
+    echo "the cancel mutation changed nothing — it emits no --cwd to remove" >&2
+    return 1
+  }
+  out="$(STUB_CWD_STATUS=running codex_dispatch_in "$dir" "$outside" 2)"
+  if ! printf '%s\n' "$out" | grep -qF 'codex-cancel-unconfirmed'; then
+    echo "a cancel helper with no --cwd was still recorded as a confirmed cancel:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
 }
 
 # ---------------------------------------------------------------------------

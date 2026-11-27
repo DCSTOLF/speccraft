@@ -13,14 +13,14 @@ contract: done-means-v1
   - [x] T2.b — the AC26a body requires non-terminal before and `cancelled` after
   done: $ grep -qF 'speccraft-state find-root' tests/hooks/live-codex-smoke.bats && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/live-codex-smoke.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 11 && test "$(printf '%s\n' "$o" | grep -c '# skip')" -eq 2
 
-- [ ] T3 — RED: one cwd for task, status, result and cancel (AC3)
+- [x] T3 — RED: one cwd for task, status, result and cancel (AC3)
   done: $ grep -qF '@test "task status result and cancel all carry the dispatcher'"'"'s cwd"' tests/hooks/spec-review-codex.bats && grep -qF '@test "a dispatch given a cwd outside the repo still resolves its own job"' tests/hooks/spec-review-codex.bats && grep -qF '@test "dropping the cwd from any one post-launch codex helper fails the lifecycle row"' tests/hooks/spec-review-codex.bats
 
-- [ ] T4 — GREEN: thread the cwd through every post-launch codex helper (AC3)
-  - [ ] T4.a — `review_codex_job_status` / `_result` / `_cancel` / `_review_codex_poll` take a required cwd and emit `--cwd`
-  - [ ] T4.b — each helper's `# <fn> <args…>` doc header updated in lockstep (the arity guard reads them)
-  - [ ] T4.c — `_review_codex_dispatch` passes its own cwd to poll, result and cancel
-  - [ ] T4.d — the existing two-argument call sites in the two bats files updated
+- [x] T4 — GREEN: thread the cwd through every post-launch codex helper (AC3)
+  - [x] T4.a — `review_codex_job_status` / `_result` / `_cancel` / `_review_codex_poll` take a required cwd and emit `--cwd`
+  - [x] T4.b — each helper's `# <fn> <args…>` doc header updated in lockstep (the arity guard reads them)
+  - [x] T4.c — `_review_codex_dispatch` passes its own cwd to poll, result and cancel
+  - [x] T4.d — the existing two-argument call sites in the two bats files updated
   done: $ test "$(grep -c -- '--cwd' commands/spec/review-codex.lib.sh)" -ge 5 && grep -qF '# review_codex_job_status <root> <job-id> <cwd>' commands/spec/review-codex.lib.sh && grep -qF '# review_codex_job_result <root> <job-id> <out-file> <cwd>' commands/spec/review-codex.lib.sh && grep -qF '# review_codex_job_cancel <root> <job-id> <cwd>' commands/spec/review-codex.lib.sh && o=$(PATH="$PWD/bin:$PATH" bats tests/hooks/spec-review-codex.bats tests/hooks/live-codex-smoke.bats 2>&1) && test "$(printf '%s\n' "$o" | grep -cE '^not ok')" -eq 0 && test "$(printf '%s\n' "$o" | grep -cE '^ok ')" -ge 119
 
 - [ ] T5 — RED: quarantine records its cwd, and the sweep says why a block survived (AC3a)
